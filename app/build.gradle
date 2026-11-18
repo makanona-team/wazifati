@@ -6,6 +6,9 @@ plugins {
 def ksPath = System.getenv('WZ_KEYSTORE')
 // عنوان الخادم يُمرَّر من خطوة نشر Cloudflare في نفس سير العمل.
 def apiUrl = System.getenv('WZ_API') ?: ''
+// معرّف عميل Google (Web client ID) من الملف config/google-client-id.txt
+def gcidFile = rootProject.file('config/google-client-id.txt')
+def googleClientId = gcidFile.exists() ? gcidFile.text.trim() : ''
 
 android {
     namespace 'com.feras.wazifati'
@@ -15,9 +18,10 @@ android {
         applicationId 'com.feras.wazifati'
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 2
+        versionName '1.1'
         buildConfigField 'String', 'API_URL', "\"${apiUrl}\""
+        buildConfigField 'String', 'GOOGLE_CLIENT_ID', "\"${googleClientId}\""
     }
 
     buildFeatures {
@@ -63,4 +67,10 @@ android {
             outputFileName = "Wazifati-${variant.versionName}.apk"
         }
     }
+}
+
+dependencies {
+    implementation 'androidx.credentials:credentials:1.3.0'
+    implementation 'androidx.credentials:credentials-play-services-auth:1.3.0'
+    implementation 'com.google.android.libraries.identity.googleid:googleid:1.1.1'
 }

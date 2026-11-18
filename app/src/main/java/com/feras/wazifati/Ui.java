@@ -18,8 +18,52 @@ import android.widget.TextView;
 public final class Ui {
     private Ui() { }
 
-    public static final int PRIMARY = 0xFF1565C0, PRIMARY_LIGHT = 0xFFE3EDFB, BG = 0xFFF3F6FB, CARD = 0xFFFFFFFF,
+    // الألوان تتغير حسب الوضع النهاري/الليلي (Ui.apply)
+    public static int PRIMARY = 0xFF1565C0, PRIMARY_LIGHT = 0xFFE3EDFB, BG = 0xFFF3F6FB, CARD = 0xFFFFFFFF, HEADER = 0xFF1565C0,
             TEXT = 0xFF1C2333, MUTED = 0xFF6B7280, GREEN = 0xFF2E7D32, RED = 0xFFC62828, ORANGE = 0xFFE65100, LINE = 0xFFE5E9F0;
+    public static boolean DARK = false;
+
+    /** يحدد الوضع حسب إعداد المستخدم: auto / light / dark. */
+    public static boolean isDark(Context c) {
+        String t = Store.p(c).getString("theme", "auto");
+        if (t.equals("dark")) return true;
+        if (t.equals("light")) return false;
+        return (c.getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    public static void apply(Context c) {
+        DARK = isDark(c);
+        if (DARK) {
+            PRIMARY = 0xFF4C8DF6; PRIMARY_LIGHT = 0xFF1B2A44; BG = 0xFF101317; CARD = 0xFF1C2027; HEADER = 0xFF161A20;
+            TEXT = 0xFFE8EAED; MUTED = 0xFF9AA0A6; GREEN = 0xFF66BB6A; RED = 0xFFEF5350; ORANGE = 0xFFFFA726; LINE = 0xFF2C3138;
+        } else {
+            PRIMARY = 0xFF1565C0; PRIMARY_LIGHT = 0xFFE3EDFB; BG = 0xFFF3F6FB; CARD = 0xFFFFFFFF; HEADER = 0xFF1565C0;
+            TEXT = 0xFF1C2333; MUTED = 0xFF6B7280; GREEN = 0xFF2E7D32; RED = 0xFFC62828; ORANGE = 0xFFE65100; LINE = 0xFFE5E9F0;
+        }
+    }
+
+    public static int themeRes() {
+        return DARK ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar;
+    }
+
+    // ===== التاريخ الميلادي والهجري =====
+    static final String[] DAYS = {"الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"};
+    static final String[] MONTHS = {"كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران", "تموز", "آب", "أيلول", "تشرين الأول", "تشرين الثاني", "كانون الأول"};
+    static final String[] HIJRI = {"محرم", "صفر", "ربيع الأول", "ربيع الآخر", "جمادى الأولى", "جمادى الآخرة", "رجب", "شعبان", "رمضان", "شوال", "ذو القعدة", "ذو الحجة"};
+
+    public static String today() {
+        java.util.Calendar g = java.util.Calendar.getInstance();
+        String s = DAYS[g.get(java.util.Calendar.DAY_OF_WEEK) - 1] + " " + g.get(java.util.Calendar.DAY_OF_MONTH) + " "
+                + MONTHS[g.get(java.util.Calendar.MONTH)] + " " + g.get(java.util.Calendar.YEAR);
+        try {
+            android.icu.util.IslamicCalendar h = new android.icu.util.IslamicCalendar();
+            h.setCalculationType(android.icu.util.IslamicCalendar.CalculationType.ISLAMIC_UMALQURA);
+            h.setTime(new java.util.Date());
+            s += "  •  " + h.get(android.icu.util.Calendar.DAY_OF_MONTH) + " " + HIJRI[h.get(android.icu.util.Calendar.MONTH)] + " " + h.get(android.icu.util.Calendar.YEAR) + " هـ";
+        } catch (Throwable ignored) { }
+        return s;
+    }
 
     public static int dp(Context c, float v) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, c.getResources().getDisplayMetrics()));

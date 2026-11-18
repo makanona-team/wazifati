@@ -4,7 +4,7 @@ name: نشر الخادم (Cloudflare)
 on:
   push:
     branches: [ main ]
-    paths: [ 'worker/**', '.github/workflows/deploy.yml' ]
+    paths: [ 'worker/**', 'config/**', '.github/workflows/deploy.yml' ]
   workflow_dispatch:
 
 permissions:
@@ -37,7 +37,9 @@ jobs:
             if [ -z "${!s}" ]; then echo "::error::السر $s غير مضاف في إعدادات المستودع"; echo "missing secret $s" > deploy.log; exit 1; fi
           done
           cd worker
-          npx --yes wrangler@4 deploy 2>&1 | tee ../deploy.log
+          CID=$(tr -d ' \r\n' < ../config/google-client-id.txt 2>/dev/null || true)
+          if [ -n "$CID" ]; then VARS="--var GOOGLE_CLIENT_ID:$CID"; else VARS=""; echo "تنبيه: معرّف Google غير مضبوط بعد"; fi
+          npx --yes wrangler@4 deploy --keep-vars $VARS 2>&1 | tee ../deploy.log
           URL=$(grep -oE 'https://wazifati\.[a-zA-Z0-9-]+\.workers\.dev' ../deploy.log | head -1)
           if [ -z "$URL" ]; then
             SUB=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('subdomain',''))")

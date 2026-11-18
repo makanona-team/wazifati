@@ -31,6 +31,13 @@ public final class Api {
         return new String(bo.toByteArray(), StandardCharsets.UTF_8);
     }
 
+    /** انتهت الجلسة أو أُوقف الحساب: يجب تسجيل الدخول من جديد. */
+    public static class AuthException extends Exception {
+        public AuthException(String m) { super(m); }
+    }
+
+    public static String token = "";
+
     public static JSONObject get(String path) throws Exception {
         return call("GET", path, null);
     }
@@ -47,6 +54,7 @@ public final class Api {
         con.setRequestMethod(method);
         con.setRequestProperty("User-Agent", "Wazifati-Android");
         con.setRequestProperty("Accept", "application/json");
+        if (token != null && !token.isEmpty()) con.setRequestProperty("Authorization", "Bearer " + token);
         if (body != null) {
             con.setDoOutput(true);
             con.setRequestProperty("Content-Type", "application/json; charset=utf-8");
@@ -57,6 +65,7 @@ public final class Api {
         String t = in == null ? "" : readAll(in);
         JSONObject j;
         try { j = new JSONObject(t); } catch (Exception e) { throw new Exception("HTTP " + code); }
+        if (code == 401 || (code == 403 && j.optString("error").contains("موقوف"))) throw new AuthException(j.optString("error", "سجّل الدخول"));
         if (code >= 400) throw new Exception(j.optString("error", "HTTP " + code));
         return j;
     }

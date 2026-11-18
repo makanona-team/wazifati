@@ -11,6 +11,8 @@ public class SyncJob extends JobService {
             boolean retry = false;
             try {
                 Sync.run(getApplicationContext(), true);
+            } catch (Api.AuthException e) {
+                retry = false;
             } catch (Throwable e) {
                 retry = true;
             }
