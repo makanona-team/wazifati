@@ -85,29 +85,28 @@ def telegram(name):
 
 # ---------- ReliefWeb ----------
 def reliefweb(country):
-    q = {
-        "filter": {"field": "country.name", "value": country},
-        "fields": {"include": ["title", "body", "url", "source.name", "date.closing", "date.created", "city.name", "how_to_apply"]},
-        "sort": ["date.created:desc"],
-        "limit": 40,
-    }
-    _, t = http("https://api.reliefweb.int/v2/jobs?appname=wazifati-syria", q)
-    data = json.loads(t)
+    """خلاصة RSS العامة لوظائف ReliefWeb (لا تحتاج تسجيل appname)."""
+    q = urllib.parse.quote(country)
+    _, x = http(f"https://reliefweb.int/jobs/rss.xml?search={q}")
     posts = []
-    for it in data.get("data", []):
-        f = it.get("fields", {})
-        org = ", ".join(s.get("name", "") for s in f.get("source", []) if s.get("name"))
-        cities = ", ".join(c.get("name", "") for c in f.get("city", []) if c.get("name"))
-        body = re.sub(r"[#*_]+", "", f.get("body", "") or "")
-        apply_txt = re.sub(r"[#*_]+", "", f.get("how_to_apply", "") or "")
-        text = f"{f.get('title','')}\nOrganization: {org}\nLocation: {cities or country}\n\n{body[:2500]}\n\nHow to apply:\n{apply_txt[:600]}"
-        created = f.get("date", {}).get("created")
-        ts = int(datetime.fromisoformat(created).timestamp() * 1000) if created else int(time.time() * 1000)
-        posts.append({
-            "url": f.get("url") or f"https://reliefweb.int/job/{it.get('id')}",
-            "title": f.get("title", ""), "org": org, "text": text, "date": ts,
-            "deadline": (f.get("date", {}).get("closing") or "")[:10], "sector": "ngo",
-        })
+    for item in re.findall(r"(?s)<item>(.*?)</item>", x)[:40]:
+        def tag(t):
+            m = re.search(rf"(?s)<{t}[^>]*>(.*?)</{t}>", item)
+            v = m.group(1) if m else ""
+            v = re.sub(r"(?s)^<!\[CDATA\[(.*)\]\]>$", r"\1", v.strip())
+            return html.unescape(v)
+        title, link, desc = tag("title"), tag("link"), tag("description")
+        body = to_text(desc)
+        org = re.search(r"(?i)organi[sz]ation:\s*([^\n]+)", body)
+        dl = re.search(r"(?i)closing date:\s*([^\n]+)", body)
+        pub = tag("pubDate")
+        try:
+            ts = int(datetime.strptime(pub[:25].strip(), "%a, %d %b %Y %H:%M:%S").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except Exception:
+            ts = int(time.time() * 1000)
+        posts.append({"url": link, "title": title, "org": org.group(1).strip() if org else "",
+                      "text": f"{title}\n{body}"[:4000], "date": ts, "sector": "ngo",
+                      "links": [link]})
     return posts
 
 
@@ -160,7 +159,12 @@ def site(url):
 
 # ---------- روابط مختصرة (lnkd.in …) ----------
 def resolve(url):
-    final, page = http(url)
+    try:
+        final, page = http(url)
+    except urllib.error.HTTPError as e:
+        if e.code == 999:   # لينكدإن يمنع القراءة الآلية: يُعامل كمصدر بالمشاركة
+            return {"kind": "manual", "value": url}
+        raise
     target = final
     if "lnkd.in" in final or "linkedin.com/safety" in final:
         m = re.search(r'data-tracking-control-name="external_url_click"[^>]*href="([^"]+)"', page) or \
