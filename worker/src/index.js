@@ -1,5 +1,6 @@
 // خادم «وظيفتي» على Cloudflare Workers + Durable Object (قاعدة SQLite مجانية).
 import { classify, dupKeys, LABELS } from './classify.js';
+import { PRIVACY, TERMS } from './pages.js';
 
 const VERSION = '1.0';
 const DAY = 864e5;
@@ -81,6 +82,8 @@ export class Db {
     try {
       if (req.method === 'GET') {
         if (p === '/') return this.home();
+        if (p === '/privacy') return new Response(PRIVACY, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        if (p === '/terms') return new Response(TERMS, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
         if (p === '/api') return json({ ok: true, app: 'wazifati', v: VERSION, now: Date.now() });
         if (p === '/jobs') return this.jobs(url);
         if (p === '/user') return this.getUser(url.searchParams.get('dev'), url.searchParams);
