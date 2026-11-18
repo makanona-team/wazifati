@@ -73,13 +73,15 @@ def telegram(name):
     for blk in page.split('data-post="')[1:]:
         pid = blk.split('"', 1)[0]
         m = re.search(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', blk, re.S)
-        if not m:
+        ph = re.search(r"tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)", blk)
+        image = html.unescape(ph.group(1)) if ph else ""
+        if not m and not image:
             continue
-        inner = m.group(1)
+        inner = m.group(1) if m else ""
         text = to_text(inner)
         dt = re.search(r'<time datetime="([^"]+)"', blk)
         ts = int(datetime.fromisoformat(dt.group(1)).timestamp() * 1000) if dt else int(time.time() * 1000)
-        posts.append({"url": f"https://t.me/{pid}", "text": text, "date": ts, "links": links_of(inner)})
+        posts.append({"url": f"https://t.me/{pid}", "text": text, "date": ts, "links": links_of(inner), "image": image})
     return posts, (html.unescape(title.group(1)) if title else "")
 
 
@@ -132,7 +134,9 @@ def site(url):
         path = urllib.parse.urlparse(href).path
         if not (JOB_TEXT.search(text) or (JOB_HREF.search(path) and len(path.strip("/").split("/")) >= 2)):
             continue
-        if re.search(r"(/tag/|/category/|/page/|/author/|login|signup|\.pdf$|\.jpg$|\.png$)", href, re.I):
+        if re.search(r"(/tag/|/category/|/page/|/author/|login|signin|signup|register|pricing|membership|upgrade|premium|subscribe|checkout|discount|/pro\b|/plans?\b|\.pdf$|\.jpg$|\.png$)", href, re.I):
+            continue
+        if re.search(r"(membership|upgrade|pricing|premium|discount|subscribe|sign in|log in|assistant:|maximize)", text, re.I):
             continue
         seen.add(href)
         cands.append((href, text))

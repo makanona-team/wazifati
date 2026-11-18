@@ -1,10 +1,10 @@
 // خادم «وظيفتي» على Cloudflare Workers + Durable Object (قاعدة SQLite مجانية).
 // الدخول بحساب Google فقط. أدوار: admin / user.
-import { classify, dupKeys, LABELS } from './classify.js';
+import { classify, dupKeys, LABELS, jobScore } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '1.4';
+const VERSION = '1.5';
 const DAY = 864e5;
 const KEEP_DAYS = 60;
 const FIRST_DAYS = 30;
@@ -70,6 +70,8 @@ export class Db {
       specs TEXT, govs TEXT, sector TEXT, deadline TEXT, posted INTEGER, created INTEGER,
       src TEXT, srcs TEXT, apply TEXT, text TEXT, shared_by TEXT)`);
     this.tryRun(`ALTER TABLE jobs ADD COLUMN updated INTEGER DEFAULT 0`);
+    for (const col of ['image TEXT', 'doubt INTEGER DEFAULT 0', 'hidden INTEGER DEFAULT 0', 'flag_ok INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE jobs ADD COLUMN ${col}`);
+    this.run(`CREATE TABLE IF NOT EXISTS flags (job_id INTEGER, email TEXT, created INTEGER, PRIMARY KEY(job_id, email))`);
     this.run(`CREATE INDEX IF NOT EXISTS jobs_k1 ON jobs(k1)`);
     this.run(`CREATE INDEX IF NOT EXISTS jobs_k2 ON jobs(k2)`);
     this.run(`CREATE INDEX IF NOT EXISTS jobs_url ON jobs(url)`);
@@ -82,6 +84,7 @@ export class Db {
     this.tryRun(`ALTER TABLE sources ADD COLUMN nkey TEXT`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN pending INTEGER DEFAULT 0`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN created INTEGER DEFAULT 0`);
+    this.tryRun(`ALTER TABLE sources ADD COLUMN rejected INTEGER DEFAULT 0`);
     this.run(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
     this.run(`CREATE TABLE IF NOT EXISTS accounts (
       email TEXT PRIMARY KEY, name TEXT, photo TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
@@ -107,6 +110,18 @@ export class Db {
         else { seenKeys.add(k); this.run(`UPDATE sources SET nkey=?, pending=0, created=COALESCE(created,0) WHERE id=?`, k, s.id); }
       }
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('mig11','1')`);
+    }
+    // ترحيل 1.5: تنظيف الإعلانات الموجودة بفلتر «درجة الوظيفة»
+    if (!this.one(`SELECT v FROM meta WHERE k='mig15'`)) {
+      let removed = 0, doubt = 0;
+      const now = Date.now();
+      for (const j of this.q(`SELECT id, text, shared_by FROM jobs WHERE hidden=0`)) {
+        const c = classify(j.text || '', { now: new Date(), force: !!j.shared_by });
+        const v = jobScore(j.text || '', c);
+        if (v.verdict === 'reject' && (!j.shared_by || v.score <= -10)) { this.run(`UPDATE jobs SET hidden=2, updated=? WHERE id=?`, now, j.id); removed++; }
+        else if (v.verdict === 'doubt') { this.run(`UPDATE jobs SET doubt=1, updated=? WHERE id=?`, now, j.id); doubt++; }
+      }
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('mig15',?)`, JSON.stringify({ removed, doubt, at: now }));
     }
     this.run(`INSERT OR IGNORE INTO accounts(email,role,status,created) VALUES(?,?,?,?)`, FIRST_ADMIN, 'admin', 'active', Date.now());
     this.run(`UPDATE accounts SET role='admin', status='active' WHERE email=?`, FIRST_ADMIN);
@@ -146,6 +161,7 @@ export class Db {
         if (p === '/suggest') return this.suggest(me, b);
         if (p === '/fix') return this.fix(me, b);
         if (p === '/cv') return this.saveCV(me, b);
+        if (p === '/flag') return this.flag(me, b);
         if (p === '/cv/delete') { this.run(`UPDATE accounts SET cv_text=NULL, cv_profile=NULL, cv_name=NULL, cv_updated=0 WHERE email=?`, me.email); return json({ ok: true }); }
       }
 
@@ -157,6 +173,8 @@ export class Db {
         if (p === '/admin/fixes') return json({ fixes: this.q(`SELECT f.*, j.title, j.specs AS j_specs, j.govs AS j_govs, j.sector AS j_sector FROM fixes f LEFT JOIN jobs j ON j.id=f.job_id WHERE f.status='pending' ORDER BY f.id DESC LIMIT 100`) });
         if (p === '/admin/pending') return json(this.pending(+url.searchParams.get('since') || 0));
         if (p === '/admin/stats') return json(this.stats());
+        if (p === '/admin/flags') return json({ flags: this.q(`SELECT j.id, j.title, j.src, j.url, j.hidden, COUNT(f.email) AS n, GROUP_CONCAT(f.email, '، ') AS who, MAX(f.created) AS last
+          FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2 GROUP BY j.id ORDER BY last DESC LIMIT 100`) });
       }
       if (req.method === 'POST') {
         if (p === '/admin/sources/approve') return this.approve(b);
@@ -166,6 +184,7 @@ export class Db {
         if (p === '/admin/users/status') return this.setStatus(me, b);
         if (p === '/admin/fixes/decide') return this.decideFix(b);
         if (p === '/admin/announce') return this.announce(me, b);
+        if (p === '/admin/flags/decide') return this.decideFlag(b);
       }
       return json({ error: 'not found' }, 404);
     } catch (e) {
@@ -247,6 +266,7 @@ export class Db {
     return {
       id: r.id, t: r.title, o: r.org, s: r.specs, g: r.govs, c: r.sector, d: r.deadline,
       p: r.posted, src: r.src, n: (r.srcs || '').split('\n').filter(Boolean).length, u: r.url, a: r.apply, x: r.text, sh: r.shared_by ? 1 : 0,
+      im: r.image || '', dt: r.doubt ? 1 : 0,
     };
   }
 
@@ -255,21 +275,26 @@ export class Db {
     const limit = Math.min(+url.searchParams.get('limit') || 800, 2000);
     const rows = since > 0
       ? this.q(`SELECT * FROM jobs WHERE id > ? ORDER BY id ASC LIMIT ?`, since, limit)
-      : this.q(`SELECT * FROM jobs WHERE created > ? ORDER BY id DESC LIMIT ?`, Date.now() - FIRST_DAYS * DAY, limit).reverse();
+      : this.q(`SELECT * FROM jobs WHERE created > ? AND hidden=0 ORDER BY id DESC LIMIT ?`, Date.now() - FIRST_DAYS * DAY, limit).reverse();
+    const last = rows.length ? rows[rows.length - 1].id : since;
+    const more = rows.length === limit;
+    const visible = rows.filter(r => !r.hidden);
     const mx = this.one(`SELECT MAX(id) AS m FROM jobs`);
-    return json({ now: Date.now(), last: rows.length ? rows[rows.length - 1].id : since, max: (mx && mx.m) || 0, more: rows.length === limit, jobs: rows.map(r => this.jobRow(r)) });
+    return json({ now: Date.now(), last, max: (mx && mx.m) || 0, more, jobs: visible.map(r => this.jobRow(r)) });
   }
 
   // تصحيحات التصنيف التي حدثت بعد وقت معيّن
   changes(url) {
     const since = +url.searchParams.get('since') || 0;
-    const rows = this.q(`SELECT id, specs, govs, sector FROM jobs WHERE updated > ? ORDER BY updated LIMIT 500`, since);
-    return json({ now: Date.now(), items: rows.map(r => ({ id: r.id, s: r.specs, g: r.govs, c: r.sector })) });
+    const rows = this.q(`SELECT id, specs, govs, sector, hidden, doubt FROM jobs WHERE updated > ? ORDER BY updated LIMIT 1000`, since);
+    return json({ now: Date.now(), items: rows.map(r => ({ id: r.id, s: r.specs, g: r.govs, c: r.sector, h: r.hidden ? 1 : 0, dt: r.doubt ? 1 : 0 })) });
   }
 
   addJob(post, opts = {}) {
-    const text = String(post.text || '').trim();
-    if (text.length < 20) return 'short';
+    let text = String(post.text || '').trim();
+    const image = String(post.image || '').slice(0, 600);
+    if (text.length < 20 && !image) return 'short';
+    if (!text) text = '📷 الإعلان داخل الصورة';
     const url = String(post.url || '').slice(0, 500);
     if (url && this.q(`SELECT 1 FROM seen WHERE url=?`, url).length) return 'seen';
     const now = Date.now();
@@ -278,7 +303,10 @@ export class Db {
     const c = classify(text, { now: new Date(), links: post.links || [], force: opts.force, deadline: post.deadline || '', sectorHint: post.sector || '', srcName: post.srcName || '' });
     if (post.title && post.title.length > 3) c.title = String(post.title).slice(0, 140);
     if (post.org) c.org = String(post.org).slice(0, 80);
-    if (!c.isJob) { this.markSeen(url); return 'notjob'; }
+    const js = jobScore(text, c, { image: !!image });
+    if (opts.force) { if (js.score <= -10) { this.markSeen(url); return 'notjob'; } }
+    else if (js.verdict === 'reject' || (!c.isJob && !image)) { this.markSeen(url); return 'notjob'; }
+    if (image && text.startsWith('📷')) c.title = '📷 إعلان وظيفة بصورة';
     if (c.deadline && Date.parse(c.deadline) < now - 2 * DAY) { this.markSeen(url); return 'expired'; }
     const { k1, k2 } = dupKeys(c, text);
     const src = String(post.srcName || post.src || '').slice(0, 60);
@@ -290,9 +318,9 @@ export class Db {
       return 'dup';
     }
     this.run(
-      `INSERT INTO jobs(k1,k2,url,title,org,specs,govs,sector,deadline,posted,created,src,srcs,apply,text,shared_by,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
+      `INSERT INTO jobs(k1,k2,url,title,org,specs,govs,sector,deadline,posted,created,src,srcs,apply,text,shared_by,updated,image,doubt) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)`,
       k1, k2, url, c.title, c.org, c.specs.join(','), c.govs.join(','), c.sector, c.deadline, posted, now, src, src,
-      c.apply, text.slice(0, MAX_TEXT), opts.sharedBy || null);
+      c.apply, text.slice(0, MAX_TEXT), opts.sharedBy || null, image || null, js.verdict === 'doubt' && !opts.force ? 1 : 0);
     return 'added';
   }
 
@@ -302,6 +330,7 @@ export class Db {
     const out = { added: 0, dup: 0, seen: 0, notjob: 0, old: 0, expired: 0, short: 0 };
     for (const post of (b.posts || []).slice(0, 60)) { const r = this.addJob(post); out[r] = (out[r] || 0) + 1; }
     if (b.sourceId && out.added) this.run(`UPDATE sources SET total = total + ? WHERE id=?`, out.added, b.sourceId);
+    if (b.sourceId && out.notjob) this.run(`UPDATE sources SET rejected = COALESCE(rejected,0) + ? WHERE id=?`, out.notjob, b.sourceId);
     this.cleanup();
     return json(out);
   }
@@ -410,6 +439,29 @@ export class Db {
     return json({ ok: true });
   }
 
+  // ===== البلاغات =====
+  flag(me, b) {
+    const id = +b.id;
+    const j = this.one(`SELECT id, flag_ok, hidden FROM jobs WHERE id=?`, id);
+    if (!j) throw new HttpErr(404, 'الإعلان غير موجود');
+    this.run(`INSERT OR IGNORE INTO flags(job_id,email,created) VALUES(?,?,?)`, id, me.email, Date.now());
+    const n = this.one(`SELECT COUNT(*) AS n FROM flags WHERE job_id=?`, id).n;
+    let hidden = !!j.hidden;
+    if (!j.hidden && !j.flag_ok && (n >= 2 || me.role === 'admin')) {
+      this.run(`UPDATE jobs SET hidden=?, updated=? WHERE id=?`, me.role === 'admin' ? 2 : 1, Date.now(), id);
+      hidden = true;
+    }
+    return json({ ok: true, n, hidden });
+  }
+
+  decideFlag(b) {
+    const id = +b.id;
+    if (b.action === 'delete') this.run(`UPDATE jobs SET hidden=2, updated=? WHERE id=?`, Date.now(), id);
+    else this.run(`UPDATE jobs SET hidden=0, flag_ok=1, updated=? WHERE id=?`, Date.now(), id);
+    this.run(`DELETE FROM flags WHERE job_id=?`, id);
+    return json({ ok: true });
+  }
+
   // ===== المستخدمون =====
   users() {
     return this.q(`SELECT a.email, a.name, a.photo, a.role, a.status, a.created, a.last_seen, a.model, a.ver,
@@ -445,6 +497,8 @@ export class Db {
     return {
       sources: this.q(`SELECT id, name, value, added_by, created FROM sources WHERE pending=1 ORDER BY id`),
       fixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending'`).n,
+      flags: this.one(`SELECT COUNT(DISTINCT f.job_id) AS n FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2`).n,
+      newFlags: this.one(`SELECT COUNT(*) AS n FROM flags WHERE created > ?`, since).n,
       newFixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending' AND created > ?`, since).n,
       newUsers: this.q(`SELECT email, name FROM accounts WHERE created > ? AND ? > 0 ORDER BY created DESC LIMIT 10`, since, since),
     };
@@ -464,7 +518,9 @@ export class Db {
       active7: this.one(`SELECT COUNT(*) AS n FROM accounts WHERE last_seen > ?`, now - 7 * DAY).n,
       lastRun: +((this.one(`SELECT v FROM meta WHERE k='last_run'`) || {}).v || 0),
       days,
-      topSources: this.q(`SELECT name, total, last_count FROM sources WHERE pending=0 ORDER BY total DESC LIMIT 10`),
+      topSources: this.q(`SELECT name, total, last_count, COALESCE(rejected,0) AS rejected FROM sources WHERE pending=0 ORDER BY total DESC LIMIT 10`),
+      noisy: this.q(`SELECT name, total, rejected FROM sources WHERE pending=0 AND COALESCE(rejected,0) >= 5 ORDER BY 1.0*rejected/(total+rejected) DESC LIMIT 10`),
+      cleanup: JSON.parse((this.one(`SELECT v FROM meta WHERE k='mig15'`) || {}).v || 'null'),
       broken: this.q(`SELECT name, last_err FROM sources WHERE enabled=1 AND pending=0 AND last_err IS NOT NULL AND kind<>'manual'`),
     };
   }

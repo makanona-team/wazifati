@@ -25,7 +25,8 @@ public final class Store extends SQLiteOpenHelper {
 
     public static final class Job {
         public long id, posted;
-        public String title = "", org = "", specs = "", govs = "", sector = "", deadline = "", src = "", url = "", apply = "", text = "";
+        public String title = "", org = "", specs = "", govs = "", sector = "", deadline = "", src = "", url = "", apply = "", text = "", image = "";
+        public int doubt;
         public int nSrc, shared, seen;
         public String hay;   // نص البحث المطبَّع (يُحسب عند الحاجة)
         public int match = -1;   // نسبة التطابق مع السيرة (مخزّنة مؤقتاً)
@@ -42,18 +43,23 @@ public final class Store extends SQLiteOpenHelper {
     private final Context ctx;
 
     private Store(Context c) {
-        super(c, "wazifati.db", null, 1);
+        super(c, "wazifati.db", null, 2);
         ctx = c;
     }
 
     @Override
     public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE jobs (id INTEGER PRIMARY KEY, t TEXT, o TEXT, s TEXT, g TEXT, c TEXT, d TEXT, p INTEGER, src TEXT, n INTEGER, u TEXT, a TEXT, x TEXT, sh INTEGER, seen INTEGER DEFAULT 0)");
+        db.execSQL("CREATE TABLE jobs (id INTEGER PRIMARY KEY, t TEXT, o TEXT, s TEXT, g TEXT, c TEXT, d TEXT, p INTEGER, src TEXT, n INTEGER, u TEXT, a TEXT, x TEXT, sh INTEGER, seen INTEGER DEFAULT 0, img TEXT, dt INTEGER DEFAULT 0)");
         db.execSQL("CREATE INDEX jobs_p ON jobs(p)");
     }
 
     @Override
-    public void onUpgrade(SQLiteDatabase db, int o, int n) { }
+    public void onUpgrade(SQLiteDatabase db, int o, int n) {
+        if (o < 2) {
+            try { db.execSQL("ALTER TABLE jobs ADD COLUMN img TEXT"); } catch (Exception ignored) { }
+            try { db.execSQL("ALTER TABLE jobs ADD COLUMN dt INTEGER DEFAULT 0"); } catch (Exception ignored) { }
+        }
+    }
 
     // ===== الإعدادات =====
     public static SharedPreferences p(Context c) {
@@ -98,7 +104,7 @@ public final class Store extends SQLiteOpenHelper {
 
     /** الإعدادات التي تُحفظ على الخادم (تعود بعد حذف التطبيق وإعادة تثبيته). */
     static final String[] SYNC_SETS = {"specs", "govs", "sectors", "favs", "applied", "hidden"};
-    static final String[] SYNC_BOOLS = {"unk", "notify", "hide_expired", "remind", "quiet", "show_match", "cv_notify"};
+    static final String[] SYNC_BOOLS = {"unk", "notify", "hide_expired", "remind", "quiet", "show_match", "cv_notify", "hide_doubt"};
     static final String[] SYNC_INTS = {"digest_hour", "quiet_from", "quiet_to", "cv_threshold", "cv_remind"};
 
     public static JSONObject prefsJson(Context c) throws Exception {
@@ -190,6 +196,7 @@ public final class Store extends SQLiteOpenHelper {
                 v.put("id", j.id); v.put("t", j.title); v.put("o", j.org); v.put("s", j.specs); v.put("g", j.govs);
                 v.put("c", j.sector); v.put("d", j.deadline); v.put("p", j.posted); v.put("src", j.src); v.put("n", j.nSrc);
                 v.put("u", j.url); v.put("a", j.apply); v.put("x", j.text); v.put("sh", j.shared); v.put("seen", j.seen);
+                v.put("img", j.image); v.put("dt", j.doubt);
                 db.insertWithOnConflict("jobs", null, v, SQLiteDatabase.CONFLICT_IGNORE);
             }
             db.setTransactionSuccessful();
@@ -223,16 +230,26 @@ public final class Store extends SQLiteOpenHelper {
     /** كل الإعلانات بدون النص الكامل (للقوائم)، الأحدث أولاً. */
     public List<Job> all() {
         ArrayList<Job> l = new ArrayList<>();
-        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,t,o,s,g,c,d,p,src,n,u,a,sh,seen,x FROM jobs ORDER BY p DESC, id DESC", null)) {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,t,o,s,g,c,d,p,src,n,u,a,sh,seen,x,img,dt FROM jobs ORDER BY p DESC, id DESC", null)) {
             while (c.moveToNext()) {
                 Job j = new Job();
                 j.id = c.getLong(0); j.title = s(c, 1); j.org = s(c, 2); j.specs = s(c, 3); j.govs = s(c, 4); j.sector = s(c, 5);
                 j.deadline = s(c, 6); j.posted = c.getLong(7); j.src = s(c, 8); j.nSrc = c.getInt(9); j.url = s(c, 10); j.apply = s(c, 11);
-                j.shared = c.getInt(12); j.seen = c.getInt(13); j.text = s(c, 14);
+                j.shared = c.getInt(12); j.seen = c.getInt(13); j.text = s(c, 14); j.image = s(c, 15); j.doubt = c.getInt(16);
                 l.add(j);
             }
         }
         return l;
+    }
+
+    public void delete(long id) {
+        getWritableDatabase().delete("jobs", "id=?", new String[]{String.valueOf(id)});
+    }
+
+    public void updateDoubt(long id, int doubt) {
+        ContentValues v = new ContentValues();
+        v.put("dt", doubt);
+        getWritableDatabase().update("jobs", v, "id=?", new String[]{String.valueOf(id)});
     }
 
     public void updateClass(long id, String specs, String govs, String sector) {

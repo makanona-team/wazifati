@@ -113,8 +113,9 @@ public final class Sync {
                     j.govs = o.optString("g"); j.sector = o.optString("c"); j.deadline = o.optString("d"); j.posted = o.optLong("p");
                     j.src = o.optString("src"); j.nSrc = o.optInt("n", 1); j.url = o.optString("u"); j.apply = o.optString("a");
                     j.text = o.optString("x"); j.shared = o.optInt("sh"); j.seen = first ? 1 : 0;
+                    j.image = o.optString("im"); j.doubt = o.optInt("dt");
                     l.add(j);
-                    if (!first && !Store.expired(j) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) matched.add(j);
+                    if (!first && !Store.expired(j) && !(j.doubt == 1 && Store.bool(c, "hide_doubt")) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) matched.add(j);
                 }
                 st.insert(l);
                 last = Math.max(last, r.optLong("last", last));
@@ -135,7 +136,10 @@ public final class Sync {
         JSONArray a = r.optJSONArray("items");
         if (a != null) for (int i = 0; i < a.length(); i++) {
             JSONObject o = a.getJSONObject(i);
-            Store.get(c).updateClass(o.optLong("id"), o.optString("s"), o.optString("g"), o.optString("c"));
+            long id = o.optLong("id");
+            if (o.optInt("h") == 1) { Store.get(c).delete(id); continue; }
+            if (!o.isNull("s")) Store.get(c).updateClass(id, o.optString("s"), o.optString("g"), o.optString("c"));
+            Store.get(c).updateDoubt(id, o.optInt("dt"));
         }
         sp.edit().putLong("changes_since", r.optLong("now", System.currentTimeMillis())).apply();
     }
@@ -166,11 +170,12 @@ public final class Sync {
             JSONObject s = srcs.getJSONObject(i);
             if (s.optLong("created") > since) { newSrc++; who = s.optString("added_by"); }
         }
-        int fixes = r.optInt("fixes"), newFixes = r.optInt("newFixes");
-        sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putLong("admin_check", System.currentTimeMillis()).apply();
+        int fixes = r.optInt("fixes"), newFixes = r.optInt("newFixes"), flags = r.optInt("flags"), newFlags = r.optInt("newFlags");
+        sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putLong("admin_check", System.currentTimeMillis()).apply();
         if (!notify || since == 0) return;
         if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 3);
         if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 3);
+        if (newFlags > 0) post(c, CH_ADMIN, 42, "🚩 بلاغات جديدة", newFlags + " بلاغ «ليس إعلان وظيفة» بانتظار مراجعتك", 3);
     }
 
     /** مزامنة كاملة (من الخلفية ومن زر المزامنة). يعيد عدد الفرص الجديدة المطابقة. */
@@ -235,7 +240,7 @@ public final class Sync {
         Match.Profile prof = Store.bool(c, "cv_notify") ? Match.profile(c) : null;
         int thr = Store.intv(c, "cv_threshold");
         ArrayList<Store.Job> ok = new ArrayList<>();
-        for (Store.Job j : jobs) if (!Store.expired(j) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) ok.add(j);
+        for (Store.Job j : jobs) if (!Store.expired(j) && !(j.doubt == 1 && Store.bool(c, "hide_doubt")) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) ok.add(j);
         sp.edit().putString("queue", "").apply();
         if (!ok.isEmpty()) notifyJobs(c, ok, daily);
     }

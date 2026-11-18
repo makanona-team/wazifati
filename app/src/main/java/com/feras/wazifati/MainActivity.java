@@ -258,7 +258,7 @@ public class MainActivity extends Activity {
         if (status == null) return;
         long ls = Store.p(this).getLong("last_sync", 0);
         status.setText(syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls))));
-        int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) : 0;
+        int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) : 0;
         tabs[3].setText(pend > 0 ? "☰ " + pend + "🔴\nالمزيد" : "☰\nالمزيد");
     }
 
@@ -462,6 +462,7 @@ public class MainActivity extends Activity {
         Store.Filter f = Store.Filter.of(this);
         boolean useF = useFilter && !f.isEmpty();
         boolean hideExp = Store.bool(this, "hide_expired");
+        boolean hideDoubt = Store.bool(this, "hide_doubt");
         Set<String> hidden = Store.set(this, "hidden");
         Search.Query sq = Search.parse(query);
         Match.Profile prof = Match.enabled(this) ? Match.profile(this) : null;
@@ -474,6 +475,7 @@ public class MainActivity extends Activity {
                 if (useF && !f.matchNoGov(j)) continue;
             } else if (useF && !f.match(j)) continue;
             if (hideExp && Store.expired(j)) continue;
+            if (hideDoubt && j.doubt == 1) continue;
             if (onlyNew && j.seen != 0) continue;
             if (onlyShared && j.shared == 0) continue;
             if (!sq.isEmpty()) {
@@ -584,9 +586,9 @@ public class MainActivity extends Activity {
             String g = Labels.names(Labels.GOVS, j.govs), s = Labels.names(Labels.SPECS, j.specs);
             h.tags.setText("📍 " + (g.isEmpty() ? "غير محدد" : g) + "   🏷 " + (s.isEmpty() ? "غير مصنف" : s));
             deadlineText(h.deadline, j);
-            h.meta.setText(ago(j.posted) + " • " + j.src + (j.nSrc > 1 ? " +" + (j.nSrc - 1) : ""));
+            h.meta.setText((j.doubt == 1 ? "⚠️ قد لا يكون وظيفة • " : "") + ago(j.posted) + " • " + j.src + (j.nSrc > 1 ? " +" + (j.nSrc - 1) : ""));
             String id = String.valueOf(j.id);
-            h.marks.setText((favs.contains(id) ? "⭐" : "") + (applied.contains(id) ? "✅" : "") + (j.shared != 0 ? "🤝" : ""));
+            h.marks.setText((favs.contains(id) ? "⭐" : "") + (applied.contains(id) ? "✅" : "") + (j.shared != 0 ? "🤝" : "") + (j.image.isEmpty() ? "" : "📷"));
             if (showMatch && j.match < 0) { Match.Profile pf = Match.profile(c); if (pf != null) j.match = Match.score(c, j, pf).pct; }
             if (showMatch && j.match >= 45) {
                 h.match.setVisibility(View.VISIBLE);
@@ -668,7 +670,13 @@ public class MainActivity extends Activity {
         }
         addInfo(c, "🕒 نُشر", ago(j.posted));
         addInfo(c, "📡 المصدر", j.src + (j.nSrc > 1 ? " (ونُشر في " + (j.nSrc - 1) + " مصدر آخر)" : ""));
+        if (j.doubt == 1) {
+            TextView dw = text(this, "⚠️ قد لا يكون هذا إعلان وظيفة (نصه قصير أو ينقصه المسمى والموعد). تحقّق قبل التقديم.", 13, ORANGE, false);
+            dw.setPadding(0, dp(this, 8), 0, 0);
+            c.addView(dw);
+        }
         l.addView(c, lpm(this, -1, -2, 0, 10));
+        if (!j.image.isEmpty()) l.addView(imageView(j.image), lpm(this, -1, -2, 0, 10));
 
         LinearLayout r1 = row(this);
         if (j.url.startsWith("http")) {
@@ -726,7 +734,20 @@ public class MainActivity extends Activity {
         });
         r3.addView(fix, weight());
         r3.addView(hide, weight());
-        l.addView(r3, lpm(this, -1, -2, 0, 10));
+        l.addView(r3, lpm(this, -1, -2, 0, 8));
+        Button flag = button(this, Store.admin(this) ? "🚩 ليس إعلان وظيفة (حذف للجميع)" : "🚩 ليس إعلان وظيفة", false);
+        flag.setTextColor(RED);
+        flag.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setMessage(Store.admin(this) ? "حذف هذا الإعلان لكل المستخدمين؟" : "الإبلاغ أن هذا ليس إعلان وظيفة؟ سيختفي عندك فوراً، وإذا أبلغ عنه شخص آخر يختفي عن الجميع.")
+                .setPositiveButton("نعم", (x, w) -> post("/flag", jo("id", j.id), r -> {
+                    Store.toggle(this, "hidden", id);
+                    if (Store.admin(this)) { Store.get(this).delete(j.id); all.remove(j); }
+                    Sync.pushPrefs(this);
+                    Toast.makeText(this, "✅ شكراً، تم الإبلاغ", Toast.LENGTH_SHORT).show();
+                    d.dismiss();
+                    applyList();
+                })).setNegativeButton("إلغاء", null).show());
+        l.addView(flag, lpm(this, -1, -2, 0, 10));
 
         LinearLayout tc = card(this);
         tc.addView(text(this, "نص الإعلان", 14, MUTED, true));
@@ -878,6 +899,7 @@ public class MainActivity extends Activity {
         LinearLayout sw = card(this);
         sw.addView(switchRow("❔ أظهر الإعلانات غير المصنفة ضمن فلتري (حتى لا تفوتك فرصة)", "unk"));
         sw.addView(switchRow("⏳ إخفاء الإعلانات المنتهية", "hide_expired"));
+        sw.addView(switchRow("⚠️ إخفاء الإعلانات المشكوك أنها ليست وظائف", "hide_doubt"));
         l.addView(sw, lpm(this, -1, -2, 0, 12));
 
         l.addView(group("🏷 الاختصاصات", "specs", Labels.SPECS, "اترك الكل فارغاً لكل الاختصاصات"), lpm(this, -1, -2, 0, 12));
@@ -973,11 +995,14 @@ public class MainActivity extends Activity {
             bu.setOnClickListener(v -> adminUsers());
             Button bf = button(this, "🏷 تصحيحات التصنيف" + (pf > 0 ? "  (" + pf + " 🔴)" : ""), pf > 0);
             bf.setOnClickListener(v -> adminFixes());
+            int pfl = Store.p(this).getInt("pending_flags", 0);
+            Button bfl = button(this, "🚩 البلاغات" + (pfl > 0 ? "  (" + pfl + " 🔴)" : ""), pfl > 0);
+            bfl.setOnClickListener(v -> adminFlags());
             Button ba = button(this, "📢 إعلان لكل المستخدمين", false);
             ba.setOnClickListener(v -> adminAnnounce());
             Button bt = button(this, "📊 الإحصائيات", false);
             bt.setOnClickListener(v -> adminStats());
-            for (Button bb : new Button[]{bs, bu, bf, ba, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
+            for (Button bb : new Button[]{bs, bu, bf, bfl, ba, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
             l.addView(ad, lpm(this, -1, -2, 0, 12));
         }
 
@@ -1366,6 +1391,11 @@ public class MainActivity extends Activity {
         else if (s.optLong("last_ok", 0) > 0) st = "✅ " + ago(s.optLong("last_ok")) + " • أضاف " + s.optInt("total") + " إعلاناً";
         else st = "⏳ بانتظار أول جلب";
         t.addView(oneLine(text(this, st, 12, err.isEmpty() ? MUTED : RED, false)));
+        int rej = s.optInt("rejected"), tot = s.optInt("total");
+        if (rej > 0) {
+            int pct = Math.round(100f * rej / Math.max(1, rej + tot));
+            t.addView(oneLine(text(this, "🗑 رُفض " + rej + " منشوراً ليس وظيفة (" + pct + "%)", 11, pct >= 50 ? ORANGE : MUTED, false)));
+        }
         String by = str(s, "added_by");
         if (!by.isEmpty() && !by.equals("seed") && by.contains("@")) t.addView(oneLine(text(this, "أضافه: " + by, 11, MUTED, false)));
         r.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
@@ -1515,6 +1545,23 @@ public class MainActivity extends Activity {
                 }
                 l.addView(tc, lpm(this, -1, -2, 0, 10));
             }
+            JSONArray noisy = r.optJSONArray("noisy");
+            if (noisy != null && noisy.length() > 0) {
+                LinearLayout nc = card(this);
+                nc.addView(text(this, "🗑 أكثر المصادر نشراً لغير الوظائف", 15, ORANGE, true));
+                for (int i = 0; i < noisy.length(); i++) {
+                    JSONObject s = noisy.optJSONObject(i);
+                    int rj = s.optInt("rejected"), tt = s.optInt("total");
+                    nc.addView(text(this, "• " + str(s, "name") + ": " + Math.round(100f * rj / Math.max(1, rj + tt)) + "% مرفوض (" + rj + " من " + (rj + tt) + ")", 13, TEXT, false));
+                }
+                l.addView(nc, lpm(this, -1, -2, 0, 10));
+            }
+            JSONObject cl = r.optJSONObject("cleanup");
+            if (cl != null) {
+                LinearLayout cc = card(this);
+                cc.addView(text(this, "🧹 التنظيف التلقائي: حُذف " + cl.optInt("removed") + " منشوراً ليس وظيفة، ووُسم " + cl.optInt("doubt") + " كمشكوك", 13, TEXT, false));
+                l.addView(cc, lpm(this, -1, -2, 0, 10));
+            }
             JSONArray broken = r.optJSONArray("broken");
             if (broken != null && broken.length() > 0) {
                 LinearLayout bc = card(this);
@@ -1524,6 +1571,86 @@ public class MainActivity extends Activity {
                     bc.addView(text(this, "• " + str(s, "name") + ": " + str(s, "last_err"), 13, TEXT, false));
                 }
                 l.addView(bc, lp(-1, -2));
+            }
+        });
+    }
+
+    // صورة الإعلان (منشورات تيليغرام بالصورة)
+    private View imageView(String url) {
+        android.widget.ImageView iv = new android.widget.ImageView(this);
+        iv.setAdjustViewBounds(true);
+        iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        iv.setBackground(round(this, CARD, 14));
+        iv.setMinimumHeight(dp(this, 160));
+        iv.setContentDescription("صورة الإعلان");
+        new Thread(() -> {
+            android.graphics.Bitmap bm = loadBitmap(url);
+            ui.post(() -> {
+                if (bm != null) {
+                    iv.setImageBitmap(bm);
+                    iv.setOnClickListener(v -> {
+                        Dialog full = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+                        android.widget.ImageView big = new android.widget.ImageView(this);
+                        big.setImageBitmap(bm);
+                        big.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                        big.setBackgroundColor(Color.BLACK);
+                        big.setOnClickListener(x -> full.dismiss());
+                        full.setContentView(big);
+                        full.show();
+                        Toast.makeText(this, "اضغط على الصورة للإغلاق", Toast.LENGTH_SHORT).show();
+                    });
+                } else {
+                    iv.setMinimumHeight(0);
+                    iv.setVisibility(View.GONE);
+                }
+            });
+        }).start();
+        return iv;
+    }
+
+    private static android.graphics.Bitmap loadBitmap(String url) {
+        try {
+            java.net.HttpURLConnection con = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            con.setConnectTimeout(15000);
+            con.setReadTimeout(30000);
+            con.setRequestProperty("User-Agent", "Mozilla/5.0");
+            try (java.io.InputStream in = con.getInputStream()) {
+                android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+                o.inPreferredConfig = android.graphics.Bitmap.Config.RGB_565;
+                return android.graphics.BitmapFactory.decodeStream(in, null, o);
+            }
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    private void adminFlags() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("البلاغات", dh);
+        l.addView(text(this, "جارٍ التحميل…", 14, MUTED, false));
+        dh[0].show();
+        get("/admin/flags", r -> {
+            l.removeAllViews();
+            JSONArray a = r.optJSONArray("flags");
+            if (a == null || a.length() == 0) { l.addView(text(this, "لا توجد بلاغات ✅", 15, MUTED, false)); return; }
+            l.addView(text(this, "الإعلانات التي أبلغ عنها المستخدمون أنها ليست وظائف. ما وصل لبلاغين أُخفي تلقائياً عن الجميع.", 13, MUTED, false));
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject f = a.optJSONObject(i);
+                if (f == null) continue;
+                LinearLayout c = card(this);
+                c.addView(text(this, str(f, "title"), 15, TEXT, true));
+                c.addView(text(this, "🚩 " + f.optInt("n") + " بلاغ" + (f.optInt("hidden") > 0 ? " • مخفي عن الجميع" : " • ما زال ظاهراً") + "\nمن: " + str(f, "who") + "\nالمصدر: " + str(f, "src"), 12, MUTED, false));
+                String u = str(f, "url");
+                if (u.startsWith("http")) c.setOnClickListener(v -> openUrl(u));
+                LinearLayout r2 = row(this);
+                Button del = button(this, "🗑 حذف نهائياً", true);
+                Button res = button(this, "↩ إعادة (إعلان سليم)", false);
+                del.setOnClickListener(v -> post("/admin/flags/decide", jo("id", f.optInt("id"), "action", "delete"), x -> { dh[0].dismiss(); adminFlags(); refreshPending(); }));
+                res.setOnClickListener(v -> post("/admin/flags/decide", jo("id", f.optInt("id"), "action", "restore"), x -> { dh[0].dismiss(); adminFlags(); refreshPending(); }));
+                r2.addView(del, weight());
+                r2.addView(res, weight());
+                c.addView(r2, lpm(this, -1, -2, 8, 0));
+                l.addView(c, lpm(this, -1, -2, 0, 8));
             }
         });
     }

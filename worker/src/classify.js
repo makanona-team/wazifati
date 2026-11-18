@@ -310,3 +310,43 @@ export const LABELS = {
   govs: Object.fromEntries([...GOVS.map(g => [g.id, g.name]), ['all', 'كل سوريا'], ['remote', 'عن بعد'], ['abroad', 'خارج سوريا'], ['unknown', 'غير محدد']]),
   sectors: Object.fromEntries(SECTORS),
 };
+
+// ===== درجة «هل هذا إعلان وظيفة حقيقي؟» =====
+const SCAM = rx(['binance', 'بينانس', 'bitcoin', 'بيتكوين', 'btc', 'eth', 'usdt', 'crypto', 'كريبتو', 'عمله رقميه', 'عملات رقميه', 'العملات الرقميه', 'تداول', 'فوركس', 'forex', 'اربح يوميا', 'ربح يومي', 'ارباح يوميه', 'دخل يومي', 'استثمار مضمون', 'محفظه رقميه', 'airdrop', 'ايردروب', 'فارق السعر', 'binoter', 'pi network', 'tether', 'تيذر', 'casino', 'كازينو', 'مراهنات', 'رهان']);
+const PROMO = rx(['تابعونا', 'تابع قناتنا', 'تابع بوابه', 'انضموا', 'انضم الي', 'انضم لقناه', 'اشترك في القناه', 'اشتركوا', 'شاركوا القناه', 'انشر القناه', 'رابط القناه', 'رابط المجموعه', 'قناتنا', 'قناتنا علي', 'كن اول من يعرف', 'join our channel', 'join our group', 'subscribe', 'follow us', 'whatsapp.com/channel', 'دعوه للانضمام', 'ادعم القناه']);
+const SALE = rx(['membership', 'pro membership', 'upgrade today', 'pricing', 'get a discount', 'subscription plan', 'خصم', 'سعر الدوره', 'رسوم الدوره', 'دوره مدفوعه', 'بسعر', 'العرض ساري', 'للحجز والاستفسار', 'احجز مقعدك', 'كتابه السيره الذاتيه مقابل', 'نصمم لك', 'خدمات طلابيه', 'حلول واجبات']);
+const REQS = rx(['المتطلبات', 'المؤهلات', 'الشروط', 'المهام', 'المسؤوليات', 'الواجبات', 'الخبره المطلوبه', 'requirements', 'qualifications', 'responsibilities', 'duties', 'experience required', 'years of experience', 'سنوات خبره', 'شهاده جامعيه', 'bachelor', 'degree in', 'skills', 'المهارات']);
+const PLACE_LBL = rx(['مكان العمل', 'مقر العمل', 'موقع العمل', 'الموقع', 'location', 'duty station', 'based in']);
+const TYPE_LBL = rx(['دوام كامل', 'دوام جزئي', 'full time', 'full-time', 'part time', 'part-time', 'عقد', 'contract', 'الراتب', 'salary', 'مده العقد']);
+
+/**
+ * يعيد { score, verdict: 'ok' | 'doubt' | 'reject', why }
+ * opts.image: المنشور فيه صورة (الإعلان غالباً داخلها)
+ */
+export function jobScore(text, c, opts = {}) {
+  const raw = String(text || '');
+  const n = ' ' + norm(raw).replace(/\s+/g, ' ') + ' ';
+  const why = [];
+  if (SCAM.test(n)) return { score: -10, verdict: 'reject', why: ['احتيال مالي/عملات رقمية'] };
+  let s = 0;
+  if (TITLE_LABEL.test(norm(raw))) { s += 3; why.push('مسمى'); }
+  else if (c.specs[0] !== 'other') { s += 2; why.push('اختصاص'); }
+  if (c.deadline) { s += 2; why.push('موعد'); }
+  if (c.apply) { s += 1; why.push('رابط تقديم'); }
+  if (REQS.test(n)) { s += 2; why.push('متطلبات'); }
+  if (PLACE_LBL.test(n) || !c.govs.includes('unknown')) { s += 1; why.push('مكان'); }
+  if (c.org) { s += 1; why.push('جهة'); }
+  if (TYPE_LBL.test(n)) { s += 1; why.push('نوع العقد'); }
+  if (JOBWORDS.test(n)) s += 1;
+  const promo = PROMO.test(n), sale = SALE.test(n);
+  if (promo) { s -= 4; why.push('ترويج'); }
+  if (sale) { s -= 4; why.push('بيع/اشتراك'); }
+  const plain = raw.replace(/https?:\/\/\S+/g, '').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '').replace(/\s+/g, ' ').trim();
+  if (plain.length < 60 && !opts.image) { s -= c.specs[0] === 'other' ? 2 : 1; why.push('نص قصير'); }
+  const links = (raw.match(/https?:\/\/\S+/g) || []).length;
+  if (links >= 2 && plain.length < 120) { s -= 2; why.push('روابط فقط'); }
+  if (opts.image) s += 1;
+  let verdict = s >= 3 ? 'ok' : s >= 1 ? 'doubt' : 'reject';
+  if ((promo || sale) && s < 5) verdict = 'reject';
+  return { score: s, verdict, why };
+}
