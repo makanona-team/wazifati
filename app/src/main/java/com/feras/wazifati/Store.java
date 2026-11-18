@@ -96,14 +96,17 @@ public final class Store extends SQLiteOpenHelper {
 
     /** الإعدادات التي تُحفظ على الخادم (تعود بعد حذف التطبيق وإعادة تثبيته). */
     static final String[] SYNC_SETS = {"specs", "govs", "sectors", "favs", "applied", "hidden"};
-    static final String[] SYNC_BOOLS = {"unk", "notify", "hide_expired"};
+    static final String[] SYNC_BOOLS = {"unk", "notify", "hide_expired", "remind", "quiet"};
+    static final String[] SYNC_INTS = {"digest_hour", "quiet_from", "quiet_to"};
 
     public static JSONObject prefsJson(Context c) throws Exception {
         JSONObject j = new JSONObject();
         for (String k : SYNC_SETS) j.put(k, new JSONArray(new ArrayList<>(set(c, k))));
         SharedPreferences sp = p(c);
         for (String k : SYNC_BOOLS) j.put(k, sp.getBoolean(k, defBool(k)));
-        j.put("name", sp.getString("name", ""));
+        for (String k : SYNC_INTS) j.put(k, sp.getInt(k, defInt(k)));
+        j.put("notify_mode", sp.getString("notify_mode", "instant"));
+        j.put("setup_done", sp.getBoolean("setup_done", false));
         return j;
     }
 
@@ -117,13 +120,47 @@ public final class Store extends SQLiteOpenHelper {
             e.putString(k, String.join(",", l));
         }
         for (String k : SYNC_BOOLS) if (j.has(k)) e.putBoolean(k, j.optBoolean(k));
-        if (j.has("name")) e.putString("name", j.optString("name"));
+        for (String k : SYNC_INTS) if (j.has(k)) e.putInt(k, j.optInt(k, defInt(k)));
+        if (j.has("notify_mode")) e.putString("notify_mode", j.optString("notify_mode", "instant"));
         e.putLong("prefs_updated", updated).putLong("prefs_pushed", updated).putBoolean("setup_done", true);
         e.apply();
     }
 
     public static boolean defBool(String k) {
-        return k.equals("unk") || k.equals("notify") || k.equals("hide_expired");
+        return k.equals("unk") || k.equals("notify") || k.equals("hide_expired") || k.equals("remind");
+    }
+
+    public static int defInt(String k) {
+        switch (k) {
+            case "digest_hour": return 20;
+            case "quiet_from": return 23;
+            case "quiet_to": return 7;
+            default: return 0;
+        }
+    }
+
+    public static int intv(Context c, String k) {
+        return p(c).getInt(k, defInt(k));
+    }
+
+    public static void putInt(Context c, String k, int v) {
+        p(c).edit().putInt(k, v).putLong("prefs_updated", System.currentTimeMillis()).apply();
+    }
+
+    // ===== الحساب =====
+    public static String token(Context c) { return p(c).getString("token", ""); }
+    public static boolean admin(Context c) { return "admin".equals(p(c).getString("role", "")); }
+
+    public static void applyMe(Context c, JSONObject me) {
+        p(c).edit().putString("email", me.optString("email")).putString("uname", me.optString("name"))
+                .putString("photo", me.optString("photo")).putString("role", me.optString("role", "user")).apply();
+    }
+
+    public static void logout(Context c) {
+        SharedPreferences sp = p(c);
+        String theme = sp.getString("theme", "auto");
+        sp.edit().clear().putString("theme", theme).apply();
+        get(c).getWritableDatabase().delete("jobs", null, null);
     }
 
     public static boolean bool(Context c, String k) {
@@ -185,6 +222,19 @@ public final class Store extends SQLiteOpenHelper {
         return l;
     }
 
+    public void updateClass(long id, String specs, String govs, String sector) {
+        ContentValues v = new ContentValues();
+        v.put("s", specs); v.put("g", govs); v.put("c", sector);
+        getWritableDatabase().update("jobs", v, "id=?", new String[]{String.valueOf(id)});
+    }
+
+    public List<Job> byIds(Set<String> ids) {
+        ArrayList<Job> out = new ArrayList<>();
+        if (ids.isEmpty()) return out;
+        for (Job j : all()) if (ids.contains(String.valueOf(j.id))) out.add(j);
+        return out;
+    }
+
     public String fullText(long id) {
         try (Cursor c = getReadableDatabase().rawQuery("SELECT x FROM jobs WHERE id=?", new String[]{String.valueOf(id)})) {
             return c.moveToFirst() ? s(c, 0) : "";
@@ -216,6 +266,11 @@ public final class Store extends SQLiteOpenHelper {
 
         public boolean match(Job j) {
             return part(specs, j.specs, "other", null) && part(govs, j.govs, "unknown", "all") && part(sectors, j.sector, "unknown", null);
+        }
+
+        /** مطابقة الاختصاص ونوع الجهة فقط (عند اختيار محافظة سريعة). */
+        public boolean matchNoGov(Job j) {
+            return part(specs, j.specs, "other", null) && part(sectors, j.sector, "unknown", null);
         }
 
         private boolean part(Set<String> mine, String csv, String unknownKey, String wildcard) {

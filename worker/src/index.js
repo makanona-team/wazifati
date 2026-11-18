@@ -1,11 +1,13 @@
 // خادم «وظيفتي» على Cloudflare Workers + Durable Object (قاعدة SQLite مجانية).
+// الدخول بحساب Google فقط. أدوار: admin / user.
 import { classify, dupKeys, LABELS } from './classify.js';
 
-const VERSION = '1.0';
+const VERSION = '1.1';
 const DAY = 864e5;
-const KEEP_DAYS = 60;          // مدة الاحتفاظ بالإعلانات
-const FIRST_DAYS = 30;         // أول مزامنة للهاتف: آخر 30 يوماً
+const KEEP_DAYS = 60;
+const FIRST_DAYS = 30;
 const MAX_TEXT = 3500;
+const FIRST_ADMIN = 'eng.feras8585@gmail.com';
 
 const SEED_SOURCES = [
   ['tg', 'kafaatsyria', 'كفاءات'],
@@ -17,22 +19,15 @@ const SEED_SOURCES = [
   ['site', 'https://www.nsjobs.net/', 'North Syria Jobs'],
   ['site', 'https://sams-usa.net/careers/', 'SAMS'],
   ['site', 'https://untalent.org/jobs/in-anything/contract-all/syria', 'UN Talent'],
-  ['link', 'https://lnkd.in/em7E7KPT', 'HR Reem'],
-  ['link', 'https://lnkd.in/e8XJ_75', 'Job Syria'],
-  ['link', 'https://lnkd.in/epR_QtMK', 'SAMS (رابط)'],
-  ['link', 'https://lnkd.in/eXWSqRxn', 'Good Idea Jobs'],
-  ['link', 'https://lnkd.in/e9hCCShg', 'Qutayba Al Aloush'],
-  ['link', 'https://lnkd.in/eJXhKK-W', 'Nasser Darwich'],
-  ['link', 'https://lnkd.in/eFg-vJss', 'Bilal Al Khatib'],
-  ['link', 'https://lnkd.in/eyam-PUv', 'Wallada Almshhour'],
 ];
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type,X-Key',
+  'Access-Control-Allow-Headers': 'Content-Type,X-Key,Authorization',
 };
 const json = (o, st = 200) => new Response(JSON.stringify(o), { status: st, headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS } });
+class HttpErr extends Error { constructor(st, m) { super(m); this.st = st; } }
 
 export default {
   async fetch(req, env) {
@@ -42,6 +37,18 @@ export default {
   },
 };
 
+/** مفتاح موحّد لكشف تكرار المصادر بأي صيغة كُتبت. */
+export function sourceKey(kind, value) {
+  let v = String(value || '').trim();
+  let m;
+  if (kind === 'tg' || (m = v.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(?:s\/)?([A-Za-z0-9_]{4,})/i)) || (m = v.match(/^@([A-Za-z][A-Za-z0-9_]{3,})$/))) {
+    if (m) v = m[1];
+    return 'tg:' + v.replace(/^@/, '').toLowerCase();
+  }
+  if (kind === 'reliefweb') return 'rw:' + v.toLowerCase();
+  return 'url:' + v.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+}
+
 export class Db {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -50,95 +57,200 @@ export class Db {
     ctx.blockConcurrencyWhile(async () => this.init());
   }
 
+  q(query, ...b) { return this.sql.exec(query, ...b).toArray(); }
+  one(query, ...b) { return this.q(query, ...b)[0]; }
+  run(query, ...b) { this.sql.exec(query, ...b); }
+  tryRun(query) { try { this.sql.exec(query); } catch (e) { /* العمود موجود */ } }
+
   init() {
-    const s = this.sql;
-    s.exec(`CREATE TABLE IF NOT EXISTS jobs (
+    this.run(`CREATE TABLE IF NOT EXISTS jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT, k1 TEXT, k2 TEXT, url TEXT, title TEXT, org TEXT,
       specs TEXT, govs TEXT, sector TEXT, deadline TEXT, posted INTEGER, created INTEGER,
       src TEXT, srcs TEXT, apply TEXT, text TEXT, shared_by TEXT)`);
-    s.exec(`CREATE INDEX IF NOT EXISTS jobs_k1 ON jobs(k1)`);
-    s.exec(`CREATE INDEX IF NOT EXISTS jobs_k2 ON jobs(k2)`);
-    s.exec(`CREATE INDEX IF NOT EXISTS jobs_url ON jobs(url)`);
-    s.exec(`CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created)`);
-    s.exec(`CREATE TABLE IF NOT EXISTS seen (url TEXT PRIMARY KEY, at INTEGER)`);
-    s.exec(`CREATE TABLE IF NOT EXISTS users (uid TEXT PRIMARY KEY, code TEXT UNIQUE, prefs TEXT, created INTEGER, updated INTEGER)`);
-    s.exec(`CREATE TABLE IF NOT EXISTS devices (dev TEXT PRIMARY KEY, uid TEXT, seen INTEGER, ver TEXT, model TEXT)`);
-    s.exec(`CREATE TABLE IF NOT EXISTS sources (
+    this.tryRun(`ALTER TABLE jobs ADD COLUMN updated INTEGER DEFAULT 0`);
+    this.run(`CREATE INDEX IF NOT EXISTS jobs_k1 ON jobs(k1)`);
+    this.run(`CREATE INDEX IF NOT EXISTS jobs_k2 ON jobs(k2)`);
+    this.run(`CREATE INDEX IF NOT EXISTS jobs_url ON jobs(url)`);
+    this.run(`CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created)`);
+    this.run(`CREATE INDEX IF NOT EXISTS jobs_updated ON jobs(updated)`);
+    this.run(`CREATE TABLE IF NOT EXISTS seen (url TEXT PRIMARY KEY, at INTEGER)`);
+    this.run(`CREATE TABLE IF NOT EXISTS sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT UNIQUE, name TEXT, enabled INTEGER DEFAULT 1,
       added_by TEXT, last_try INTEGER, last_ok INTEGER, last_err TEXT, last_count INTEGER DEFAULT 0, total INTEGER DEFAULT 0, orig TEXT)`);
-    s.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
-    const seeded = s.exec(`SELECT v FROM meta WHERE k='seeded'`).toArray()[0];
-    if (!seeded) {
+    this.tryRun(`ALTER TABLE sources ADD COLUMN nkey TEXT`);
+    this.tryRun(`ALTER TABLE sources ADD COLUMN pending INTEGER DEFAULT 0`);
+    this.tryRun(`ALTER TABLE sources ADD COLUMN created INTEGER DEFAULT 0`);
+    this.run(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
+    this.run(`CREATE TABLE IF NOT EXISTS accounts (
+      email TEXT PRIMARY KEY, name TEXT, photo TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
+      prefs TEXT, prefs_updated INTEGER DEFAULT 0, created INTEGER, last_seen INTEGER, model TEXT, ver TEXT)`);
+    this.run(`CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, email TEXT, created INTEGER, dev TEXT)`);
+    this.run(`CREATE TABLE IF NOT EXISTS fixes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, email TEXT, specs TEXT, govs TEXT, sector TEXT, note TEXT,
+      status TEXT DEFAULT 'pending', created INTEGER)`);
+    this.run(`CREATE TABLE IF NOT EXISTS announcements (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, email TEXT, created INTEGER)`);
+
+    if (!this.one(`SELECT v FROM meta WHERE k='seeded'`)) {
       for (const [kind, value, name] of SEED_SOURCES)
-        s.exec(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig) VALUES(?,?,?,?,?)`, kind, value, name, 'seed', value);
-      s.exec(`INSERT OR REPLACE INTO meta(k,v) VALUES('seeded','1')`);
+        this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig) VALUES(?,?,?,?,?)`, kind, value, name, 'seed', value);
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seeded','1')`);
     }
+    // ترحيل 1.1: مفاتيح التكرار، وإزالة المصادر المكررة القديمة
+    if (!this.one(`SELECT v FROM meta WHERE k='mig11'`)) {
+      const seenKeys = new Set();
+      for (const s of this.q(`SELECT id, kind, value FROM sources ORDER BY id`)) {
+        const k = sourceKey(s.kind, s.value);
+        if (seenKeys.has(k)) this.run(`DELETE FROM sources WHERE id=?`, s.id);
+        else { seenKeys.add(k); this.run(`UPDATE sources SET nkey=?, pending=0, created=COALESCE(created,0) WHERE id=?`, k, s.id); }
+      }
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('mig11','1')`);
+    }
+    this.run(`INSERT OR IGNORE INTO accounts(email,role,status,created) VALUES(?,?,?,?)`, FIRST_ADMIN, 'admin', 'active', Date.now());
+    this.run(`UPDATE accounts SET role='admin', status='active' WHERE email=?`, FIRST_ADMIN);
   }
 
   async fetch(req) {
     const url = new URL(req.url);
     const p = url.pathname.replace(/\/+$/, '') || '/';
     try {
+      const b = req.method === 'POST' ? await body(req) : {};
+      // ----- عامة / للجالب -----
+      if (req.method === 'GET' && p === '/') return this.home();
+      if (req.method === 'GET' && p === '/api') return json({ ok: true, app: 'wazifati', v: VERSION, now: Date.now(), login: !!this.env.GOOGLE_CLIENT_ID });
+      if (req.method === 'POST' && p === '/auth') return await this.auth(b);
+      if (this.keyOk(req)) {
+        if (p === '/ingest') return this.ingest(b);
+        if (p === '/known') return this.known(b);
+        if (p === '/report') return this.report(b);
+        if (p === '/sources') return json({ sources: this.q(`SELECT * FROM sources WHERE enabled=1 AND pending=0 ORDER BY id`) });
+      }
+
+      // ----- مستخدم مسجّل -----
+      const me = this.who(req);
       if (req.method === 'GET') {
-        if (p === '/') return this.home();
-        if (p === '/api') return json({ ok: true, app: 'wazifati', v: VERSION, now: Date.now() });
+        if (p === '/me') return this.getMe(me, url.searchParams);
         if (p === '/jobs') return this.jobs(url);
-        if (p === '/user') return this.getUser(url.searchParams.get('dev'), url.searchParams);
-        if (p === '/sources') return this.listSources(url);
+        if (p === '/changes') return this.changes(url);
+        if (p === '/announce') return json({ items: this.q(`SELECT id,text,created FROM announcements WHERE id > ? ORDER BY id DESC LIMIT 20`, +url.searchParams.get('since') || 0) });
         if (p === '/labels') return json(LABELS);
-        if (p === '/stats') return json(this.stats());
       }
       if (req.method === 'POST') {
-        const body = await req.json().catch(() => ({}));
-        if (p === '/ingest') return this.ingest(req, body);
-        if (p === '/known') return this.known(req, body);
-        if (p === '/report') return this.report(req, body);
-        if (p === '/share') return this.share(body);
-        if (p === '/user') return this.saveUser(body);
-        if (p === '/restore') return this.restore(body);
-        if (p === '/sources') return this.addSource(body);
-        if (p === '/sources/toggle') return this.toggleSource(body);
-        if (p === '/sources/delete') return this.deleteSource(body);
+        if (p === '/me') return this.saveMe(me, b);
+        if (p === '/logout') { this.run(`DELETE FROM sessions WHERE token=?`, bearer(req)); return json({ ok: true }); }
+        if (p === '/share') return this.share(me, b);
+        if (p === '/suggest') return this.suggest(me, b);
+        if (p === '/fix') return this.fix(me, b);
+      }
+
+      // ----- أدمن -----
+      if (me.role !== 'admin') throw new HttpErr(403, 'هذه الصفحة للأدمن فقط');
+      if (req.method === 'GET') {
+        if (p === '/admin/sources') return json({ sources: this.q(`SELECT * FROM sources ORDER BY pending DESC, enabled DESC, id`) });
+        if (p === '/admin/users') return json({ users: this.users() });
+        if (p === '/admin/fixes') return json({ fixes: this.q(`SELECT f.*, j.title, j.specs AS j_specs, j.govs AS j_govs, j.sector AS j_sector FROM fixes f LEFT JOIN jobs j ON j.id=f.job_id WHERE f.status='pending' ORDER BY f.id DESC LIMIT 100`) });
+        if (p === '/admin/pending') return json(this.pending(+url.searchParams.get('since') || 0));
+        if (p === '/admin/stats') return json(this.stats());
+      }
+      if (req.method === 'POST') {
+        if (p === '/admin/sources/approve') return this.approve(b);
+        if (p === '/admin/sources/toggle') { this.run(`UPDATE sources SET enabled=? WHERE id=?`, b.enabled ? 1 : 0, +b.id); return json({ ok: true }); }
+        if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
+        if (p === '/admin/users/role') return this.setRole(me, b);
+        if (p === '/admin/users/status') return this.setStatus(me, b);
+        if (p === '/admin/fixes/decide') return this.decideFix(b);
+        if (p === '/admin/announce') return this.announce(me, b);
       }
       return json({ error: 'not found' }, 404);
     } catch (e) {
-      return json({ error: String(e && e.message || e) }, 500);
+      return json({ error: String(e && e.message || e) }, e && e.st || 500);
     }
   }
 
   keyOk(req) {
     const k = this.env.INGEST_KEY;
-    return k && req.headers.get('X-Key') === k;
+    return !!k && req.headers.get('X-Key') === k;
+  }
+
+  // ===== الدخول بحساب Google =====
+  async auth(b) {
+    const cid = this.env.GOOGLE_CLIENT_ID;
+    if (!cid) throw new HttpErr(500, 'تسجيل الدخول غير مهيأ على الخادم');
+    const tok = String(b.idToken || '');
+    if (!tok) throw new HttpErr(400, 'لا يوجد رمز دخول');
+    const r = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(tok));
+    const info = await r.json().catch(() => ({}));
+    if (!r.ok || info.error) throw new HttpErr(401, 'رمز Google غير صالح');
+    if (info.aud !== cid) throw new HttpErr(401, 'الرمز ليس لهذا التطبيق');
+    if (!/accounts\.google\.com$/.test(info.iss || '')) throw new HttpErr(401, 'مصدر الرمز غير صحيح');
+    if (String(info.email_verified) !== 'true') throw new HttpErr(401, 'إيميل غير موثّق');
+    const email = String(info.email).toLowerCase();
+    const now = Date.now();
+    const acc = this.one(`SELECT * FROM accounts WHERE email=?`, email);
+    if (acc && acc.status === 'blocked') throw new HttpErr(403, 'هذا الحساب موقوف. تواصل مع مدير التطبيق.');
+    if (!acc) this.run(`INSERT INTO accounts(email,name,photo,role,status,created,last_seen) VALUES(?,?,?,?,?,?,?)`, email, info.name || '', info.picture || '', 'user', 'active', now, now);
+    else this.run(`UPDATE accounts SET name=COALESCE(NULLIF(?,''),name), photo=COALESCE(NULLIF(?,''),photo), last_seen=? WHERE email=?`, info.name || '', info.picture || '', now, email);
+    const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+    this.run(`INSERT INTO sessions(token,email,created,dev) VALUES(?,?,?,?)`, token, email, now, String(b.dev || '').slice(0, 80));
+    return json({ token, me: this.meJson(this.one(`SELECT * FROM accounts WHERE email=?`, email)) });
+  }
+
+  who(req) {
+    const t = bearer(req);
+    if (!t) throw new HttpErr(401, 'سجّل الدخول أولاً');
+    const s = this.one(`SELECT email FROM sessions WHERE token=?`, t);
+    if (!s) throw new HttpErr(401, 'انتهت الجلسة، سجّل الدخول من جديد');
+    const a = this.one(`SELECT * FROM accounts WHERE email=?`, s.email);
+    if (!a) throw new HttpErr(401, 'الحساب غير موجود');
+    if (a.status === 'blocked') throw new HttpErr(403, 'هذا الحساب موقوف. تواصل مع مدير التطبيق.');
+    if (!a.last_seen || Date.now() - a.last_seen > 600e3) this.run(`UPDATE accounts SET last_seen=? WHERE email=?`, Date.now(), a.email);
+    return a;
+  }
+
+  meJson(a) {
+    return { email: a.email, name: a.name || '', photo: a.photo || '', role: a.role, prefs: a.prefs ? JSON.parse(a.prefs) : null, updated: a.prefs_updated || 0 };
+  }
+
+  getMe(me, sp) {
+    if (sp.get('ver')) this.run(`UPDATE accounts SET ver=?, model=? WHERE email=?`, sp.get('ver'), sp.get('model') || '', me.email);
+    return json(this.meJson(me));
+  }
+
+  saveMe(me, b) {
+    const t = Date.now();
+    this.run(`UPDATE accounts SET prefs=?, prefs_updated=? WHERE email=?`, JSON.stringify(b.prefs || {}).slice(0, 200000), t, me.email);
+    return json({ ok: true, updated: t });
   }
 
   // ===== الوظائف =====
+  jobRow(r) {
+    return {
+      id: r.id, t: r.title, o: r.org, s: r.specs, g: r.govs, c: r.sector, d: r.deadline,
+      p: r.posted, src: r.src, n: (r.srcs || '').split('\n').filter(Boolean).length, u: r.url, a: r.apply, x: r.text, sh: r.shared_by ? 1 : 0,
+    };
+  }
+
   jobs(url) {
     const since = +url.searchParams.get('since') || 0;
     const limit = Math.min(+url.searchParams.get('limit') || 800, 2000);
-    let rows;
-    if (since > 0) {
-      rows = this.sql.exec(`SELECT * FROM jobs WHERE id > ? ORDER BY id ASC LIMIT ?`, since, limit).toArray();
-    } else {
-      rows = this.sql.exec(`SELECT * FROM jobs WHERE created > ? ORDER BY id DESC LIMIT ?`, Date.now() - FIRST_DAYS * DAY, limit).toArray().reverse();
-    }
-    const maxRow = this.sql.exec(`SELECT MAX(id) AS m FROM jobs`).toArray()[0];
-    return json({
-      now: Date.now(),
-      last: rows.length ? rows[rows.length - 1].id : since,
-      max: (maxRow && maxRow.m) || 0,
-      more: rows.length === limit,
-      jobs: rows.map(r => ({
-        id: r.id, t: r.title, o: r.org, s: r.specs, g: r.govs, c: r.sector, d: r.deadline,
-        p: r.posted, src: r.src, n: (r.srcs || '').split('\n').filter(Boolean).length, u: r.url, a: r.apply, x: r.text, sh: r.shared_by ? 1 : 0,
-      })),
-    });
+    const rows = since > 0
+      ? this.q(`SELECT * FROM jobs WHERE id > ? ORDER BY id ASC LIMIT ?`, since, limit)
+      : this.q(`SELECT * FROM jobs WHERE created > ? ORDER BY id DESC LIMIT ?`, Date.now() - FIRST_DAYS * DAY, limit).reverse();
+    const mx = this.one(`SELECT MAX(id) AS m FROM jobs`);
+    return json({ now: Date.now(), last: rows.length ? rows[rows.length - 1].id : since, max: (mx && mx.m) || 0, more: rows.length === limit, jobs: rows.map(r => this.jobRow(r)) });
+  }
+
+  // تصحيحات التصنيف التي حدثت بعد وقت معيّن
+  changes(url) {
+    const since = +url.searchParams.get('since') || 0;
+    const rows = this.q(`SELECT id, specs, govs, sector FROM jobs WHERE updated > ? ORDER BY updated LIMIT 500`, since);
+    return json({ now: Date.now(), items: rows.map(r => ({ id: r.id, s: r.specs, g: r.govs, c: r.sector })) });
   }
 
   addJob(post, opts = {}) {
     const text = String(post.text || '').trim();
     if (text.length < 20) return 'short';
     const url = String(post.url || '').slice(0, 500);
-    if (url && this.sql.exec(`SELECT 1 FROM seen WHERE url=?`, url).toArray().length) return 'seen';
+    if (url && this.q(`SELECT 1 FROM seen WHERE url=?`, url).length) return 'seen';
     const now = Date.now();
     const posted = +post.date || now;
     if (posted < now - FIRST_DAYS * DAY && !opts.force) { this.markSeen(url); return 'old'; }
@@ -149,191 +261,208 @@ export class Db {
     if (c.deadline && Date.parse(c.deadline) < now - 2 * DAY) { this.markSeen(url); return 'expired'; }
     const { k1, k2 } = dupKeys(c, text);
     const src = String(post.srcName || post.src || '').slice(0, 60);
-    const dup = this.sql.exec(`SELECT id, srcs FROM jobs WHERE k1=? OR (?<>'' AND k2=?) LIMIT 1`, k1, k2, k2).toArray()[0];
+    const dup = this.one(`SELECT id, srcs FROM jobs WHERE k1=? OR (?<>'' AND k2=?) LIMIT 1`, k1, k2, k2);
     this.markSeen(url);
     if (dup) {
       const srcs = (dup.srcs || '').split('\n');
-      if (src && !srcs.includes(src)) this.sql.exec(`UPDATE jobs SET srcs=? WHERE id=?`, [...srcs, src].filter(Boolean).join('\n'), dup.id);
+      if (src && !srcs.includes(src)) this.run(`UPDATE jobs SET srcs=? WHERE id=?`, [...srcs, src].filter(Boolean).join('\n'), dup.id);
       return 'dup';
     }
-    this.sql.exec(
-      `INSERT INTO jobs(k1,k2,url,title,org,specs,govs,sector,deadline,posted,created,src,srcs,apply,text,shared_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    this.run(
+      `INSERT INTO jobs(k1,k2,url,title,org,specs,govs,sector,deadline,posted,created,src,srcs,apply,text,shared_by,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
       k1, k2, url, c.title, c.org, c.specs.join(','), c.govs.join(','), c.sector, c.deadline, posted, now, src, src,
       c.apply, text.slice(0, MAX_TEXT), opts.sharedBy || null);
     return 'added';
   }
 
-  markSeen(url) {
-    if (url) this.sql.exec(`INSERT OR REPLACE INTO seen(url,at) VALUES(?,?)`, url, Date.now());
-  }
+  markSeen(url) { if (url) this.run(`INSERT OR REPLACE INTO seen(url,at) VALUES(?,?)`, url, Date.now()); }
 
-  ingest(req, body) {
-    if (!this.keyOk(req)) return json({ error: 'key' }, 403);
+  ingest(b) {
     const out = { added: 0, dup: 0, seen: 0, notjob: 0, old: 0, expired: 0, short: 0 };
-    for (const post of (body.posts || []).slice(0, 60)) {
-      const r = this.addJob(post);
-      out[r] = (out[r] || 0) + 1;
-    }
-    if (body.sourceId && out.added) this.sql.exec(`UPDATE sources SET total = total + ? WHERE id=?`, out.added, body.sourceId);
+    for (const post of (b.posts || []).slice(0, 60)) { const r = this.addJob(post); out[r] = (out[r] || 0) + 1; }
+    if (b.sourceId && out.added) this.run(`UPDATE sources SET total = total + ? WHERE id=?`, out.added, b.sourceId);
     this.cleanup();
     return json(out);
   }
 
-  known(req, body) {
-    if (!this.keyOk(req)) return json({ error: 'key' }, 403);
-    const urls = (body.urls || []).slice(0, 300);
-    const known = urls.filter(u => this.sql.exec(`SELECT 1 FROM seen WHERE url=?`, u).toArray().length);
-    return json({ known });
+  known(b) {
+    const urls = (b.urls || []).slice(0, 300);
+    return json({ known: urls.filter(u => this.q(`SELECT 1 FROM seen WHERE url=?`, u).length) });
   }
 
   cleanup() {
-    const last = +((this.sql.exec(`SELECT v FROM meta WHERE k='cleanup'`).toArray()[0] || {}).v || 0);
+    const last = +((this.one(`SELECT v FROM meta WHERE k='cleanup'`) || {}).v || 0);
     if (Date.now() - last < 6 * 3600e3) return;
-    const cut = Date.now() - KEEP_DAYS * DAY;
-    this.sql.exec(`DELETE FROM jobs WHERE created < ?`, cut);
-    this.sql.exec(`DELETE FROM seen WHERE at < ?`, Date.now() - 120 * DAY);
-    this.sql.exec(`INSERT OR REPLACE INTO meta(k,v) VALUES('cleanup',?)`, String(Date.now()));
+    this.run(`DELETE FROM jobs WHERE created < ?`, Date.now() - KEEP_DAYS * DAY);
+    this.run(`DELETE FROM seen WHERE at < ?`, Date.now() - 120 * DAY);
+    this.run(`DELETE FROM fixes WHERE status<>'pending' AND created < ?`, Date.now() - 30 * DAY);
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('cleanup',?)`, String(Date.now()));
   }
 
-  share(body) {
-    const dev = String(body.dev || '').slice(0, 80);
-    if (!dev) return json({ error: 'dev' }, 400);
-    let text = String(body.text || '').trim();
-    const link = String(body.url || '').trim();
+  share(me, b) {
+    let text = String(b.text || '').trim();
+    const link = String(b.url || '').trim();
     if (link && !text.includes(link)) text += '\n' + link;
-    if (text.length < 10) return json({ error: 'empty' }, 400);
+    if (text.length < 10) throw new HttpErr(400, 'النص قصير');
     const found = text.match(/https?:\/\/\S+/);
-    const url = link || (found ? found[0] : '') || 'share:' + dev + ':' + Date.now();
-    const who = String(body.name || '').slice(0, 40);
-    const r = this.addJob({ text, url, srcName: 'مشاركة' + (who ? ' من ' + who : ''), date: Date.now() }, { force: true, sharedBy: dev });
-    return json({ result: r });
+    const url = link || (found ? found[0] : '') || 'share:' + me.email + ':' + Date.now();
+    const who = (me.name || me.email.split('@')[0]).slice(0, 40);
+    return json({ result: this.addJob({ text, url, srcName: 'مشاركة من ' + who, date: Date.now() }, { force: true, sharedBy: me.email }) });
   }
 
-  // ===== المستخدمون (بدون تسجيل دخول: معرّف الهاتف + رمز استرجاع) =====
-  newCode() {
-    for (let i = 0; i < 50; i++) {
-      const c = String(100000 + Math.floor(Math.random() * 900000));
-      if (!this.sql.exec(`SELECT 1 FROM users WHERE code=?`, c).toArray().length) return c;
+  // ===== تصحيح التصنيف =====
+  fix(me, b) {
+    const id = +b.id;
+    const job = this.one(`SELECT id FROM jobs WHERE id=?`, id);
+    if (!job) throw new HttpErr(404, 'الإعلان غير موجود');
+    const specs = cleanCsv(b.specs, LABELS.specs), govs = cleanCsv(b.govs, LABELS.govs);
+    const sector = LABELS.sectors[b.sector] ? b.sector : '';
+    if (me.role === 'admin') {
+      this.applyFix(id, specs, govs, sector);
+      return json({ ok: true, applied: true });
     }
-    return String(Date.now()).slice(-6);
+    this.run(`INSERT INTO fixes(job_id,email,specs,govs,sector,note,status,created) VALUES(?,?,?,?,?,?,?,?)`, id, me.email, specs, govs, sector, String(b.note || '').slice(0, 300), 'pending', Date.now());
+    return json({ ok: true, applied: false });
   }
 
-  userOf(dev, create, meta = {}) {
-    const d = this.sql.exec(`SELECT uid FROM devices WHERE dev=?`, dev).toArray()[0];
-    if (d) {
-      this.sql.exec(`UPDATE devices SET seen=?, ver=COALESCE(?,ver), model=COALESCE(?,model) WHERE dev=?`, Date.now(), meta.ver || null, meta.model || null, dev);
-      return this.sql.exec(`SELECT * FROM users WHERE uid=?`, d.uid).toArray()[0];
+  applyFix(id, specs, govs, sector) {
+    const j = this.one(`SELECT specs, govs, sector FROM jobs WHERE id=?`, id);
+    if (!j) return;
+    this.run(`UPDATE jobs SET specs=?, govs=?, sector=?, updated=? WHERE id=?`, specs || j.specs, govs || j.govs, sector || j.sector, Date.now(), id);
+  }
+
+  decideFix(b) {
+    const f = this.one(`SELECT * FROM fixes WHERE id=?`, +b.id);
+    if (!f) throw new HttpErr(404, 'غير موجود');
+    if (b.ok) {
+      this.applyFix(f.job_id, b.specs != null ? cleanCsv(b.specs, LABELS.specs) : f.specs, b.govs != null ? cleanCsv(b.govs, LABELS.govs) : f.govs, f.sector);
     }
-    if (!create) return null;
-    const uid = crypto.randomUUID();
-    const code = this.newCode();
-    this.sql.exec(`INSERT INTO users(uid,code,prefs,created,updated) VALUES(?,?,?,?,?)`, uid, code, '', Date.now(), 0);
-    this.sql.exec(`INSERT OR REPLACE INTO devices(dev,uid,seen,ver,model) VALUES(?,?,?,?,?)`, dev, uid, Date.now(), meta.ver || '', meta.model || '');
-    return { uid, code, prefs: '', updated: 0, created: Date.now() };
-  }
-
-  getUser(dev, sp) {
-    if (!dev) return json({ error: 'dev' }, 400);
-    const u = this.userOf(dev, true, { ver: sp.get('ver'), model: sp.get('model') });
-    return json({ code: u.code, prefs: u.prefs ? JSON.parse(u.prefs) : null, updated: u.updated });
-  }
-
-  saveUser(body) {
-    const dev = String(body.dev || '');
-    if (!dev) return json({ error: 'dev' }, 400);
-    const u = this.userOf(dev, true);
-    const prefs = JSON.stringify(body.prefs || {}).slice(0, 200000);
-    const t = Date.now();
-    this.sql.exec(`UPDATE users SET prefs=?, updated=? WHERE uid=?`, prefs, t, u.uid);
-    return json({ ok: true, code: u.code, updated: t });
-  }
-
-  restore(body) {
-    const dev = String(body.dev || ''), code = String(body.code || '').replace(/\D/g, '');
-    if (!dev || code.length !== 6) return json({ error: 'رمز غير صحيح' }, 400);
-    const u = this.sql.exec(`SELECT * FROM users WHERE code=?`, code).toArray()[0];
-    if (!u) return json({ error: 'لا يوجد حساب بهذا الرمز' }, 404);
-    this.sql.exec(`INSERT OR REPLACE INTO devices(dev,uid,seen) VALUES(?,?,?)`, dev, u.uid, Date.now());
-    return json({ ok: true, code: u.code, prefs: u.prefs ? JSON.parse(u.prefs) : null, updated: u.updated });
+    this.run(`UPDATE fixes SET status=? WHERE id=?`, b.ok ? 'done' : 'rejected', f.id);
+    return json({ ok: true });
   }
 
   // ===== المصادر =====
-  listSources(url) {
-    const all = url.searchParams.get('all') === '1';
-    const rows = this.sql.exec(`SELECT * FROM sources ${all ? '' : 'WHERE enabled=1'} ORDER BY id`).toArray();
-    return json({ sources: rows });
+  parseSource(raw) {
+    let v = String(raw || '').trim(), kind = 'site', m;
+    if ((m = v.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(?:s\/)?([A-Za-z0-9_]{4,})/i)) || (m = v.match(/^@?([A-Za-z][A-Za-z0-9_]{3,})$/))) { kind = 'tg'; v = m[1]; }
+    else if (/lnkd\.in|bit\.ly|tinyurl|t\.co\//i.test(v)) kind = 'link';
+    else if (/facebook\.com|fb\.com|fb\.me|linkedin\.com|instagram\.com/i.test(v)) kind = 'manual';
+    else if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+    return { kind, value: v, nkey: sourceKey(kind, v) };
   }
 
-  addSource(body) {
-    let v = String(body.value || '').trim();
-    if (!v) return json({ error: 'empty' }, 400);
-    let kind = 'site', name = String(body.name || '').trim();
-    let m;
-    if ((m = v.match(/^(?:https?:\/\/)?(?:t\.me|telegram\.me)\/(?:s\/)?([A-Za-z0-9_]{4,})/i)) || (m = v.match(/^@?([A-Za-z][A-Za-z0-9_]{3,})$/))) {
-      kind = 'tg'; v = m[1];
-    } else if (/lnkd\.in|bit\.ly|tinyurl|t\.co\//i.test(v)) {
-      kind = 'link';
-    } else if (/facebook\.com|fb\.com|fb\.me|linkedin\.com|instagram\.com/i.test(v)) {
-      kind = 'manual';
-    } else if (!/^https?:\/\//i.test(v)) {
-      v = 'https://' + v;
+  suggest(me, b) {
+    const raw = String(b.value || '').trim();
+    if (raw.length < 4) throw new HttpErr(400, 'أدخل رابطاً صحيحاً');
+    const s = this.parseSource(raw);
+    const isAdmin = me.role === 'admin';
+    const ex = this.one(`SELECT id, name, value, pending, enabled FROM sources WHERE nkey=? OR lower(value)=lower(?) OR lower(orig)=lower(?)`, s.nkey, s.value, raw);
+    if (ex) {
+      if (isAdmin && !ex.enabled && !ex.pending) this.run(`UPDATE sources SET enabled=1 WHERE id=?`, ex.id);
+      return json({ dup: true, name: isAdmin ? (ex.name || ex.value) : null, pending: !!ex.pending });
     }
-    const exists = this.sql.exec(`SELECT id FROM sources WHERE lower(value)=lower(?)`, v).toArray()[0];
-    if (exists) { this.sql.exec(`UPDATE sources SET enabled=1 WHERE id=?`, exists.id); return json({ ok: true, id: exists.id, existed: true }); }
-    this.sql.exec(`INSERT INTO sources(kind,value,name,added_by,orig) VALUES(?,?,?,?,?)`, kind, v, name || v, String(body.dev || ''), v);
-    const id = this.sql.exec(`SELECT last_insert_rowid() AS id`).toArray()[0].id;
-    return json({ ok: true, id, kind });
+    const name = String(b.name || '').trim() || s.value;
+    this.run(`INSERT INTO sources(kind,value,name,added_by,orig,nkey,pending,enabled,created) VALUES(?,?,?,?,?,?,?,?,?)`,
+      s.kind, s.value, name, me.email, raw, s.nkey, isAdmin ? 0 : 1, isAdmin ? 1 : 0, Date.now());
+    return json({ ok: true, pending: !isAdmin, kind: s.kind });
   }
 
-  toggleSource(body) {
-    this.sql.exec(`UPDATE sources SET enabled=? WHERE id=?`, body.enabled ? 1 : 0, +body.id);
+  approve(b) {
+    if (b.ok) this.run(`UPDATE sources SET pending=0, enabled=1 WHERE id=?`, +b.id);
+    else this.run(`DELETE FROM sources WHERE id=?`, +b.id);
     return json({ ok: true });
   }
 
-  deleteSource(body) {
-    this.sql.exec(`DELETE FROM sources WHERE id=?`, +body.id);
-    return json({ ok: true });
-  }
-
-  report(req, b) {
-    if (!this.keyOk(req)) return json({ error: 'key' }, 403);
+  report(b) {
     const id = +b.id;
     if (b.resolved && b.resolved.kind) {
       const { kind, value } = b.resolved;
-      const clash = this.sql.exec(`SELECT id FROM sources WHERE lower(value)=lower(?) AND id<>?`, value, id).toArray()[0];
-      if (clash) this.sql.exec(`UPDATE sources SET enabled=0, kind=?, last_err=? WHERE id=?`, kind, 'مكرر مع مصدر آخر', id);
-      else this.sql.exec(`UPDATE sources SET kind=?, value=? WHERE id=?`, kind, value, id);
+      const nk = sourceKey(kind, value);
+      const clash = this.one(`SELECT id FROM sources WHERE (nkey=? OR lower(value)=lower(?)) AND id<>?`, nk, value, id);
+      if (clash) this.run(`UPDATE sources SET enabled=0, kind=?, last_err=? WHERE id=?`, kind, 'مكرر مع مصدر آخر', id);
+      else this.run(`UPDATE sources SET kind=?, value=?, nkey=? WHERE id=?`, kind, value, nk, id);
     }
-    if (b.name) this.sql.exec(`UPDATE sources SET name=? WHERE id=? AND (name=value OR name='' OR name IS NULL)`, String(b.name).slice(0, 60), id);
-    if (b.ok) this.sql.exec(`UPDATE sources SET last_try=?, last_ok=?, last_err=NULL, last_count=? WHERE id=?`, Date.now(), Date.now(), +b.count || 0, id);
-    else this.sql.exec(`UPDATE sources SET last_try=?, last_err=? WHERE id=?`, Date.now(), String(b.err || 'خطأ').slice(0, 200), id);
-    if (b.final) this.sql.exec(`INSERT OR REPLACE INTO meta(k,v) VALUES('last_run',?)`, String(Date.now()));
+    if (b.name) this.run(`UPDATE sources SET name=? WHERE id=? AND (name=value OR name=orig OR name='' OR name IS NULL)`, String(b.name).slice(0, 60), id);
+    if (b.ok) this.run(`UPDATE sources SET last_try=?, last_ok=?, last_err=NULL, last_count=? WHERE id=?`, Date.now(), Date.now(), +b.count || 0, id);
+    else this.run(`UPDATE sources SET last_try=?, last_err=? WHERE id=?`, Date.now(), String(b.err || 'خطأ').slice(0, 200), id);
+    if (b.final) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('last_run',?)`, String(Date.now()));
     return json({ ok: true });
   }
 
-  stats() {
-    const one = q => this.sql.exec(q).toArray()[0];
+  // ===== المستخدمون =====
+  users() {
+    return this.q(`SELECT a.email, a.name, a.photo, a.role, a.status, a.created, a.last_seen, a.model, a.ver,
+      (SELECT COUNT(*) FROM sources s WHERE s.added_by=a.email) AS contrib,
+      (SELECT COUNT(*) FROM jobs j WHERE j.shared_by=a.email) AS shares
+      FROM accounts a ORDER BY a.last_seen DESC`);
+  }
+
+  setRole(me, b) {
+    const email = String(b.email || '').toLowerCase();
+    if (email === FIRST_ADMIN) throw new HttpErr(400, 'لا يمكن تغيير صلاحية المدير الأول');
+    this.run(`UPDATE accounts SET role=? WHERE email=?`, b.role === 'admin' ? 'admin' : 'user', email);
+    return json({ ok: true });
+  }
+
+  setStatus(me, b) {
+    const email = String(b.email || '').toLowerCase();
+    if (email === FIRST_ADMIN || email === me.email) throw new HttpErr(400, 'لا يمكن إيقاف هذا الحساب');
+    const st = b.status === 'blocked' ? 'blocked' : 'active';
+    this.run(`UPDATE accounts SET status=? WHERE email=?`, st, email);
+    if (st === 'blocked') this.run(`DELETE FROM sessions WHERE email=?`, email);
+    return json({ ok: true });
+  }
+
+  announce(me, b) {
+    const t = String(b.text || '').trim();
+    if (t.length < 2) throw new HttpErr(400, 'النص فارغ');
+    this.run(`INSERT INTO announcements(text,email,created) VALUES(?,?,?)`, t.slice(0, 1000), me.email, Date.now());
+    return json({ ok: true });
+  }
+
+  pending(since) {
     return {
-      jobs: one(`SELECT COUNT(*) AS n FROM jobs`).n,
-      today: this.sql.exec(`SELECT COUNT(*) AS n FROM jobs WHERE created > ?`, Date.now() - DAY).toArray()[0].n,
-      users: one(`SELECT COUNT(*) AS n FROM users`).n,
-      devices: one(`SELECT COUNT(*) AS n FROM devices`).n,
-      lastRun: +((one(`SELECT v FROM meta WHERE k='last_run'`) || {}).v || 0),
+      sources: this.q(`SELECT id, name, value, added_by, created FROM sources WHERE pending=1 ORDER BY id`),
+      fixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending'`).n,
+      newFixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending' AND created > ?`, since).n,
+      newUsers: this.q(`SELECT email, name FROM accounts WHERE created > ? AND ? > 0 ORDER BY created DESC LIMIT 10`, since, since),
+    };
+  }
+
+  stats() {
+    const now = Date.now();
+    const days = [];
+    for (let i = 13; i >= 0; i--) {
+      const start = new Date(new Date(now - i * DAY).toISOString().slice(0, 10)).getTime();
+      days.push({ day: new Date(start).toISOString().slice(0, 10), n: this.one(`SELECT COUNT(*) AS n FROM jobs WHERE created >= ? AND created < ?`, start, start + DAY).n });
+    }
+    return {
+      jobs: this.one(`SELECT COUNT(*) AS n FROM jobs`).n,
+      today: this.one(`SELECT COUNT(*) AS n FROM jobs WHERE created > ?`, now - DAY).n,
+      users: this.one(`SELECT COUNT(*) AS n FROM accounts`).n,
+      active7: this.one(`SELECT COUNT(*) AS n FROM accounts WHERE last_seen > ?`, now - 7 * DAY).n,
+      lastRun: +((this.one(`SELECT v FROM meta WHERE k='last_run'`) || {}).v || 0),
+      days,
+      topSources: this.q(`SELECT name, total, last_count FROM sources WHERE pending=0 ORDER BY total DESC LIMIT 10`),
+      broken: this.q(`SELECT name, last_err FROM sources WHERE enabled=1 AND pending=0 AND last_err IS NOT NULL AND kind<>'manual'`),
     };
   }
 
   home() {
-    const st = this.stats();
-    const src = this.sql.exec(`SELECT * FROM sources ORDER BY enabled DESC, id`).toArray();
-    const ago = t => !t ? '—' : (Date.now() - t < 3600e3 ? Math.round((Date.now() - t) / 60e3) + ' د' : Math.round((Date.now() - t) / 3600e3) + ' س');
-    const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    const kinds = { tg: 'تيليغرام', site: 'موقع', reliefweb: 'ReliefWeb', link: 'رابط مختصر', manual: 'بالمشاركة فقط' };
-    const rows = src.map(s => `<tr class="${s.enabled ? '' : 'off'}"><td>${esc(s.name)}<br><small>${esc(s.value)}</small></td><td>${kinds[s.kind] || s.kind}</td><td>${s.last_err ? '❌ ' + esc(s.last_err) : (s.last_ok ? '✅' : '⏳')}</td><td>${ago(s.last_ok)}</td><td>${s.last_count || 0} / ${s.total || 0}</td></tr>`).join('');
-    const html = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>وظيفتي — حالة الخادم</title>
-<style>body{font-family:system-ui,sans-serif;margin:12px;background:#f4f6fb;color:#1c2333}h1{font-size:20px}.c{display:flex;gap:8px;flex-wrap:wrap}.c div{background:#fff;border-radius:12px;padding:10px 14px;box-shadow:0 1px 3px #0001}.c b{display:block;font-size:22px;color:#1a73e8}table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;margin-top:12px;font-size:13px}td{padding:8px;border-bottom:1px solid #eee;vertical-align:top}small{color:#888;word-break:break-all}.off{opacity:.45}</style>
-<h1>💼 وظيفتي — حالة الخادم (v${VERSION})</h1>
-<div class="c"><div><b>${st.jobs}</b>إعلان محفوظ</div><div><b>${st.today}</b>جديد آخر 24 ساعة</div><div><b>${st.users}</b>مستخدم</div><div><b>${ago(st.lastRun)}</b>آخر جلب</div></div>
-<table><tr><td><b>المصدر</b></td><td><b>النوع</b></td><td><b>الحالة</b></td><td><b>آخر نجاح</b></td><td><b>آخر جلب / المضاف</b></td></tr>${rows}</table></html>`;
+    const n = this.one(`SELECT COUNT(*) AS n FROM jobs`).n;
+    const lastRun = +((this.one(`SELECT v FROM meta WHERE k='last_run'`) || {}).v || 0);
+    const ago = !lastRun ? '—' : Math.round((Date.now() - lastRun) / 60e3) + ' دقيقة';
+    const html = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>وظيفتي</title>
+<style>body{font-family:system-ui,sans-serif;margin:24px;background:#f4f6fb;color:#1c2333;text-align:center}b{color:#1565C0;font-size:28px}</style>
+<h1>💼 وظيفتي</h1><p>الخادم يعمل (v${VERSION})</p><p><b>${n}</b><br>فرصة محفوظة</p><p>آخر جلب منذ ${ago}</p>
+<p><a href="https://github.com/makanona-team/wazifati/releases/latest">تحميل التطبيق</a></p></html>`;
     return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
   }
+}
+
+async function body(req) { return req.json().catch(() => ({})); }
+function bearer(req) { const h = req.headers.get('Authorization') || ''; return h.startsWith('Bearer ') ? h.slice(7).trim() : ''; }
+function cleanCsv(v, dict) {
+  const arr = Array.isArray(v) ? v : String(v || '').split(',');
+  return [...new Set(arr.map(x => String(x).trim()).filter(x => dict[x]))].join(',');
 }

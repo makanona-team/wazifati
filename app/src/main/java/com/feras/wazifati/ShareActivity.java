@@ -22,6 +22,13 @@ public class ShareActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Sync.init(this);
+        if (!Sync.loggedIn(this)) {
+            Toast.makeText(this, "افتح وظيفتي وسجّل الدخول أولاً", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            finish();
+            return;
+        }
         Intent in = getIntent();
         String subject = in.getStringExtra(Intent.EXTRA_SUBJECT);
         CharSequence cs = in.getCharSequenceExtra(Intent.EXTRA_TEXT);
@@ -64,11 +71,11 @@ public class ShareActivity extends Activity {
             new Thread(() -> {
                 String msg;
                 try {
-                    JSONObject body = new JSONObject().put("dev", Store.dev(app)).put("text", t).put("name", Store.p(app).getString("name", ""));
+                    JSONObject body = new JSONObject().put("text", t);
                     JSONObject res = Api.post("/share", body);
                     String rr = res.optString("result");
                     msg = "dup".equals(rr) || "seen".equals(rr) ? "هذه الفرصة موجودة مسبقاً في التطبيق 👍" : "تمت المشاركة مع أصدقائك ✅";
-                    try { Sync.syncJobs(app, false); } catch (Throwable ignored) { }
+                    try { Sync.syncJobs(app); } catch (Throwable ignored) { }
                 } catch (Throwable e) {
                     msg = "تعذّرت المشاركة: " + e.getMessage();
                 }

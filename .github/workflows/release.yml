@@ -4,7 +4,7 @@ name: بناء ونشر التطبيق
 # نتيجة كل بناء تُحفظ في الفرع build-logs (ملف last.txt) لمراجعة الأخطاء.
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
     paths-ignore: [ 'README.md', 'worker/**', 'scraper/**', '.github/workflows/deploy.yml', '.github/workflows/scrape.yml' ]
   workflow_dispatch:
   workflow_run:
@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event_name == 'workflow_run' && 'main' || github.ref }}
 
       - name: الفحص (check)
         id: check
@@ -41,6 +41,8 @@ jobs:
           echo "api=$WZ_API"
           SIGNED=false
           if [ -n "$SIGN_PASS" ] && [ -n "$WZ_API" ]; then SIGNED=true; fi
+          # فرع dev: فحص البناء فقط، بدون نشر
+          if [ "$GITHUB_REF_NAME" = "dev" ]; then PUBLISHED=true; fi
           if [ -z "$WZ_API" ]; then echo "::warning::الخادم لم يُنشر بعد — بناء تجريبي فقط بدون نشر"; fi
           echo "published=$PUBLISHED" >> "$GITHUB_OUTPUT"
           echo "signed=$SIGNED" >> "$GITHUB_OUTPUT"
