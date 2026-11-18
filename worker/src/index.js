@@ -1,6 +1,7 @@
 // خادم «وظيفتي» على Cloudflare Workers + Durable Object (قاعدة SQLite مجانية).
 // الدخول بحساب Google فقط. أدوار: admin / user.
 import { classify, dupKeys, LABELS } from './classify.js';
+import { PRIVACY, TERMS } from './pages.js';
 
 const VERSION = '1.1';
 const DAY = 864e5;
@@ -116,6 +117,8 @@ export class Db {
       const b = req.method === 'POST' ? await body(req) : {};
       // ----- عامة / للجالب -----
       if (req.method === 'GET' && p === '/') return this.home();
+      if (req.method === 'GET' && p === '/privacy') return new Response(PRIVACY, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      if (req.method === 'GET' && p === '/terms') return new Response(TERMS, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       if (req.method === 'GET' && p === '/api') return json({ ok: true, app: 'wazifati', v: VERSION, now: Date.now(), login: !!this.env.GOOGLE_CLIENT_ID });
       if (req.method === 'POST' && p === '/auth') return await this.auth(b);
       if (this.keyOk(req)) {
