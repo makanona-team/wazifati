@@ -27,6 +27,7 @@ public final class Store extends SQLiteOpenHelper {
         public long id, posted;
         public String title = "", org = "", specs = "", govs = "", sector = "", deadline = "", src = "", url = "", apply = "", text = "";
         public int nSrc, shared, seen;
+        public String hay;   // نص البحث المطبَّع (يُحسب عند الحاجة)
     }
 
     private static Store inst;
@@ -210,7 +211,7 @@ public final class Store extends SQLiteOpenHelper {
     /** كل الإعلانات بدون النص الكامل (للقوائم)، الأحدث أولاً. */
     public List<Job> all() {
         ArrayList<Job> l = new ArrayList<>();
-        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,t,o,s,g,c,d,p,src,n,u,a,sh,seen,substr(x,1,400) FROM jobs ORDER BY p DESC, id DESC", null)) {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,t,o,s,g,c,d,p,src,n,u,a,sh,seen,x FROM jobs ORDER BY p DESC, id DESC", null)) {
             while (c.moveToNext()) {
                 Job j = new Job();
                 j.id = c.getLong(0); j.title = s(c, 1); j.org = s(c, 2); j.specs = s(c, 3); j.govs = s(c, 4); j.sector = s(c, 5);

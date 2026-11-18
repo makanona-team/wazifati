@@ -344,10 +344,17 @@ public class MainActivity extends Activity {
             l.addView(banner, lpm(this, -1, -2, 0, 8));
         }
 
-        EditText search = input("🔍 ابحث: مهندس، محاسب، UNICEF، الرقة…");
+        LinearLayout sr = row(this);
+        EditText search = input("🔍 ابحث بأي كلمة: مهندس، محاسب، UNICEF، الرقة…");
         search.setText(query);
         search.setSingleLine(true);
-        l.addView(search, lp(-1, -2));
+        sr.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView clr = text(this, "✕", 20, MUTED, true);
+        clr.setPadding(dp(this, 12), dp(this, 6), dp(this, 6), dp(this, 6));
+        clr.setVisibility(query.isEmpty() ? View.GONE : View.VISIBLE);
+        clr.setOnClickListener(v -> { search.setText(""); hideKeyboard(); });
+        sr.addView(clr);
+        l.addView(sr, lp(-1, -2));
 
         HorizontalScrollView gs = new HorizontalScrollView(this);
         gs.setHorizontalScrollBarEnabled(false);
@@ -426,7 +433,7 @@ public class MainActivity extends Activity {
         search.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
             public void onTextChanged(CharSequence s, int a, int b, int c) { }
-            public void afterTextChanged(Editable s) { query = s.toString().trim(); applyList(); }
+            public void afterTextChanged(Editable s) { query = s.toString().trim(); clr.setVisibility(query.isEmpty() ? View.GONE : View.VISIBLE); applyList(); }
         });
         applyList();
         return l;
@@ -450,8 +457,7 @@ public class MainActivity extends Activity {
         boolean useF = useFilter && !f.isEmpty();
         boolean hideExp = Store.bool(this, "hide_expired");
         Set<String> hidden = Store.set(this, "hidden");
-        String q = norm(query);
-        String[] words = q.isEmpty() ? new String[0] : q.split("\\s+");
+        Search.Query sq = Search.parse(query);
         ArrayList<Store.Job> out = new ArrayList<>();
         for (Store.Job j : all) {
             if (hidden.contains(String.valueOf(j.id))) continue;
@@ -463,16 +469,16 @@ public class MainActivity extends Activity {
             if (hideExp && Store.expired(j)) continue;
             if (onlyNew && j.seen != 0) continue;
             if (onlyShared && j.shared == 0) continue;
-            if (words.length > 0) {
-                String hay = norm(j.title + " " + j.org + " " + j.src + " " + Labels.names(Labels.GOVS, j.govs) + " " + Labels.names(Labels.SPECS, j.specs) + " " + j.text);
-                boolean ok = true;
-                for (String w : words) if (!hay.contains(w)) { ok = false; break; }
-                if (!ok) continue;
+            if (!sq.isEmpty()) {
+                if (j.hay == null) j.hay = Search.hay(j);
+                if (!sq.matches(j.hay)) continue;
             }
             out.add(j);
         }
+        adapter.q = sq;
         adapter.set(out);
-        countLabel.setText(out.size() + " فرصة" + (useF ? " حسب فلترك" : "") + (quickGov != null ? " في " + Labels.GOVS.get(quickGov) : "") + (all.size() != out.size() ? " من أصل " + all.size() : ""));
+        if (!sq.isEmpty()) countLabel.setText("🔎 " + out.size() + " نتيجة لـ «" + query + "»" + (useF ? " حسب فلترك" : "") + (quickGov != null ? " في " + Labels.GOVS.get(quickGov) : "") + " • من أصل " + all.size() + " فرصة");
+        else countLabel.setText(out.size() + " فرصة" + (useF ? " حسب فلترك" : "") + (quickGov != null ? " في " + Labels.GOVS.get(quickGov) : "") + (all.size() != out.size() ? " من أصل " + all.size() : ""));
     }
 
     static String norm(String s) {
@@ -487,6 +493,7 @@ public class MainActivity extends Activity {
     private class JobAdapter extends BaseAdapter {
         List<Store.Job> items = new ArrayList<>();
         Set<String> favs = new HashSet<>(), applied = new HashSet<>();
+        Search.Query q = null;
 
         void set(List<Store.Job> l) {
             items = l;
@@ -523,6 +530,10 @@ public class MainActivity extends Activity {
                 card.addView(r1);
                 h.org = oneLine(text(c, "", 13, MUTED, false));
                 card.addView(h.org);
+                h.snip = text(c, "", 12, TEXT, false);
+                h.snip.setMaxLines(3);
+                h.snip.setPadding(0, dp(c, 4), 0, 0);
+                card.addView(h.snip);
                 h.tags = text(c, "", 12, PRIMARY, false);
                 h.tags.setMaxLines(2);
                 h.tags.setPadding(0, dp(c, 4), 0, 0);
@@ -540,7 +551,15 @@ public class MainActivity extends Activity {
 
             Store.Job j = items.get(pos);
             h.badge.setVisibility(j.seen == 0 ? View.VISIBLE : View.GONE);
-            h.title.setText(j.title);
+            boolean searching = q != null && !q.isEmpty();
+            h.title.setText(searching ? Search.highlight(j.title, q, Search.HL_BG(), Search.HL_FG()) : j.title);
+            String sn = "";
+            if (searching) {
+                CharSequence ht = Search.highlight(j.title + " " + j.org, q, 0, 0);
+                if (!(ht instanceof android.text.Spanned)) sn = Search.snippet(j.text, q);
+            }
+            h.snip.setVisibility(sn.isEmpty() ? View.GONE : View.VISIBLE);
+            if (!sn.isEmpty()) h.snip.setText(Search.highlight(sn, q, Search.HL_BG(), Search.HL_FG()));
             String sec = Labels.SECTORS.get(j.sector);
             String org = j.org;
             if (sec != null && !"unknown".equals(j.sector)) org = org.isEmpty() ? sec : org + " • " + sec;
@@ -557,7 +576,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static class Holder { TextView badge, title, marks, org, tags, deadline, meta; }
+    private static class Holder { TextView badge, title, marks, org, snip, tags, deadline, meta; }
 
     private void deadlineText(TextView t, Store.Job j) {
         int d = Store.daysLeft(j);
@@ -608,7 +627,8 @@ public class MainActivity extends Activity {
         Dialog d = dh[0];
 
         LinearLayout c = card(this);
-        TextView title = text(this, j.title, 19, TEXT, true);
+        TextView title = text(this, "", 19, TEXT, true);
+        title.setText(Search.highlight(j.title, Search.parse(query), Search.HL_BG(), Search.HL_FG()));
         title.setTextIsSelectable(true);
         c.addView(title);
         if (!j.org.isEmpty()) c.addView(text(this, j.org, 15, MUTED, false));
@@ -682,7 +702,9 @@ public class MainActivity extends Activity {
 
         LinearLayout tc = card(this);
         tc.addView(text(this, "نص الإعلان", 14, MUTED, true));
-        TextView body = text(this, Store.get(this).fullText(j.id), 15, TEXT, false);
+        Search.Query dq = Search.parse(query);
+        TextView body = text(this, "", 15, TEXT, false);
+        body.setText(Search.highlight(Store.get(this).fullText(j.id), dq, Search.HL_BG(), Search.HL_FG()));
         body.setLineSpacing(0, 1.25f);
         body.setTextIsSelectable(true);
         body.setAutoLinkMask(Linkify.WEB_URLS | Linkify.EMAIL_ADDRESSES | Linkify.PHONE_NUMBERS);
@@ -1172,7 +1194,11 @@ public class MainActivity extends Activity {
                 if (!email.equals("eng.feras8585@gmail.com") && !email.equals(meEmail)) {
                     LinearLayout r2 = row(this);
                     Button role = button(this, isAdmin ? "إزالة صلاحية الأدمن" : "اجعله أدمن", false);
-                    role.setOnClickListener(v -> post("/admin/users/role", jo("email", email, "role", isAdmin ? "user" : "admin"), x -> { dh[0].dismiss(); adminUsers(); }));
+                    String who = name.isEmpty() ? email : name;
+                    role.setOnClickListener(v -> new AlertDialog.Builder(this)
+                            .setMessage(isAdmin ? "إزالة صلاحية الأدمن من " + who + "؟" : "هل تريد جعل " + who + " أدمن؟\nسيرى المصادر والمستخدمين ويستطيع الموافقة والإيقاف.")
+                            .setPositiveButton("نعم", (x, w) -> post("/admin/users/role", jo("email", email, "role", isAdmin ? "user" : "admin"), y -> { dh[0].dismiss(); adminUsers(); }))
+                            .setNegativeButton("إلغاء", null).show());
                     Button blk = button(this, blocked ? "✅ تفعيل" : "⛔ إيقاف", false);
                     blk.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage((blocked ? "تفعيل " : "إيقاف ") + email + "؟")
                             .setPositiveButton("نعم", (x, w) -> post("/admin/users/status", jo("email", email, "status", blocked ? "active" : "blocked"), y -> { dh[0].dismiss(); adminUsers(); }))
