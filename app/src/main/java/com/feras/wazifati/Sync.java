@@ -92,6 +92,8 @@ public final class Sync {
             boolean first = last == 0 || st.count() == 0;
             if (first) last = 0;
             Store.Filter f = Store.Filter.of(c);
+            Match.Profile prof = Store.bool(c, "cv_notify") ? Match.profile(c) : null;
+            int thr = Store.intv(c, "cv_threshold");
             ArrayList<Store.Job> matched = new ArrayList<>();
             for (int round = 0; round < 10; round++) {
                 JSONObject r = Api.get("/jobs?since=" + last + "&limit=800");
@@ -112,7 +114,7 @@ public final class Sync {
                     j.src = o.optString("src"); j.nSrc = o.optInt("n", 1); j.url = o.optString("u"); j.apply = o.optString("a");
                     j.text = o.optString("x"); j.shared = o.optInt("sh"); j.seen = first ? 1 : 0;
                     l.add(j);
-                    if (!first && f.match(j) && !Store.expired(j)) matched.add(j);
+                    if (!first && !Store.expired(j) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) matched.add(j);
                 }
                 st.insert(l);
                 last = Math.max(last, r.optLong("last", last));
@@ -182,6 +184,7 @@ public final class Sync {
         try { syncAdmin(c, background); } catch (Throwable ignored) { }
         deliver(c, matched);
         remindDeadlines(c);
+        remindCv(c);
         JobsWidget.update(c);
         Updater.autoCheck(c);
         return matched.size();
@@ -229,8 +232,10 @@ public final class Sync {
         }
         List<Store.Job> jobs = Store.get(c).byIds(queue);
         Store.Filter f = Store.Filter.of(c);
+        Match.Profile prof = Store.bool(c, "cv_notify") ? Match.profile(c) : null;
+        int thr = Store.intv(c, "cv_threshold");
         ArrayList<Store.Job> ok = new ArrayList<>();
-        for (Store.Job j : jobs) if (f.match(j) && !Store.expired(j)) ok.add(j);
+        for (Store.Job j : jobs) if (!Store.expired(j) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) ok.add(j);
         sp.edit().putString("queue", "").apply();
         if (!ok.isEmpty()) notifyJobs(c, ok, daily);
     }
@@ -283,6 +288,19 @@ public final class Sync {
             }
         }
         if (newDone.size() != done.size()) Store.p(c).edit().putString("reminded", String.join(",", newDone)).apply();
+    }
+
+    /** تذكير بتحديث السيرة الذاتية كل 3 أو 6 أشهر. */
+    static void remindCv(Context c) {
+        SharedPreferences sp = Store.p(c);
+        int months = Store.intv(c, "cv_remind");
+        long upd = sp.getLong("cv_updated", 0);
+        if (months <= 0 || upd == 0 || quietNow(c)) return;
+        long now = System.currentTimeMillis();
+        if (now - upd < months * 30L * Store.DAY) return;
+        if (now - sp.getLong("cv_reminded", 0) < 30L * Store.DAY) return;
+        sp.edit().putLong("cv_reminded", now).apply();
+        post(c, CH_REMIND, 60, "📄 حان وقت تحديث سيرتك الذاتية؟", "مرّ أكثر من " + months + " أشهر على آخر تحديث. ارفع النسخة الجديدة لتحصل على اقتراحات أدق.", 3);
     }
 
     static void post(Context c, String ch, int id, String title, String text, int tab) {

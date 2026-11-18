@@ -2,8 +2,9 @@
 // الدخول بحساب Google فقط. أدوار: admin / user.
 import { classify, dupKeys, LABELS } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
+import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '1.1';
+const VERSION = '1.4';
 const DAY = 864e5;
 const KEEP_DAYS = 60;
 const FIRST_DAYS = 30;
@@ -85,6 +86,7 @@ export class Db {
     this.run(`CREATE TABLE IF NOT EXISTS accounts (
       email TEXT PRIMARY KEY, name TEXT, photo TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
       prefs TEXT, prefs_updated INTEGER DEFAULT 0, created INTEGER, last_seen INTEGER, model TEXT, ver TEXT)`);
+    for (const col of ['cv_text TEXT', 'cv_profile TEXT', 'cv_name TEXT', 'cv_updated INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE accounts ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, email TEXT, created INTEGER, dev TEXT)`);
     this.run(`CREATE TABLE IF NOT EXISTS fixes (
       id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, email TEXT, specs TEXT, govs TEXT, sector TEXT, note TEXT,
@@ -143,6 +145,8 @@ export class Db {
         if (p === '/share') return this.share(me, b);
         if (p === '/suggest') return this.suggest(me, b);
         if (p === '/fix') return this.fix(me, b);
+        if (p === '/cv') return this.saveCV(me, b);
+        if (p === '/cv/delete') { this.run(`UPDATE accounts SET cv_text=NULL, cv_profile=NULL, cv_name=NULL, cv_updated=0 WHERE email=?`, me.email); return json({ ok: true }); }
       }
 
       // ----- أدمن -----
@@ -210,7 +214,10 @@ export class Db {
   }
 
   meJson(a) {
-    return { email: a.email, name: a.name || '', photo: a.photo || '', role: a.role, prefs: a.prefs ? JSON.parse(a.prefs) : null, updated: a.prefs_updated || 0 };
+    return {
+      email: a.email, name: a.name || '', photo: a.photo || '', role: a.role, prefs: a.prefs ? JSON.parse(a.prefs) : null, updated: a.prefs_updated || 0,
+      cv: a.cv_profile ? { profile: JSON.parse(a.cv_profile), name: a.cv_name || '', updated: a.cv_updated || 0 } : null,
+    };
   }
 
   getMe(me, sp) {
@@ -222,6 +229,17 @@ export class Db {
     const t = Date.now();
     this.run(`UPDATE accounts SET prefs=?, prefs_updated=? WHERE email=?`, JSON.stringify(b.prefs || {}).slice(0, 200000), t, me.email);
     return json({ ok: true, updated: t });
+  }
+
+  // ===== السيرة الذاتية =====
+  saveCV(me, b) {
+    const text = String(b.text || '').replace(/\u0000/g, '').trim();
+    if (text.replace(/\s+/g, '').length < 150) throw new HttpErr(400, 'لم أستطع قراءة نص كافٍ من الملف. إن كان PDF ممسوحاً كصورة، ارفع نسخة Word أو PDF نصية.');
+    const profile = analyzeCV(text);
+    const old = me.cv_profile ? JSON.parse(me.cv_profile) : null;
+    const t = Date.now();
+    this.run(`UPDATE accounts SET cv_text=?, cv_profile=?, cv_name=?, cv_updated=? WHERE email=?`, text.slice(0, 60000), JSON.stringify(profile), String(b.name || '').slice(0, 120), t, me.email);
+    return json({ profile, diff: diffProfiles(old, profile), updated: t, name: String(b.name || '') });
   }
 
   // ===== الوظائف =====

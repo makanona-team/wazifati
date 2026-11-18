@@ -64,6 +64,8 @@ public class MainActivity extends Activity {
     private String quickGov = null;
     private boolean useFilter = true, onlyNew = false, onlyShared = false;
     private int savedMode = 0;
+    private boolean sortMatch = false;
+    private static final int PICK_CV = 77;
     private JobAdapter adapter;
     private TextView countLabel;
 
@@ -392,7 +394,11 @@ public class MainActivity extends Activity {
         TextView cExp = chip(this, "⏳ إخفاء المنتهي", Store.bool(this, "hide_expired"));
         TextView cShared = chip(this, "🤝 مشاركات الأصدقاء", onlyShared);
         TextView cRead = chip(this, "✔ تعليم الكل كمقروء", false);
-        for (TextView t : new TextView[]{cFilter, cNew, cExp, cShared, cRead}) {
+        boolean canMatch = Match.enabled(this);
+        TextView cSort = chip(this, sortMatch ? "🎯 الأنسب لي" : "🕒 الأحدث", sortMatch);
+        cSort.setOnClickListener(v -> { sortMatch = !sortMatch; cSort.setText(sortMatch ? "🎯 الأنسب لي" : "🕒 الأحدث"); setChip(this, cSort, sortMatch); applyList(); });
+        if (!canMatch) cSort.setVisibility(View.GONE);
+        for (TextView t : new TextView[]{cSort, cFilter, cNew, cExp, cShared, cRead}) {
             LinearLayout.LayoutParams p = lp(-2, -2);
             p.leftMargin = dp(this, 6);
             chips.addView(t, p);
@@ -458,6 +464,7 @@ public class MainActivity extends Activity {
         boolean hideExp = Store.bool(this, "hide_expired");
         Set<String> hidden = Store.set(this, "hidden");
         Search.Query sq = Search.parse(query);
+        Match.Profile prof = Match.enabled(this) ? Match.profile(this) : null;
         ArrayList<Store.Job> out = new ArrayList<>();
         for (Store.Job j : all) {
             if (hidden.contains(String.valueOf(j.id))) continue;
@@ -473,8 +480,10 @@ public class MainActivity extends Activity {
                 if (j.hay == null) j.hay = Search.hay(j);
                 if (!sq.matches(j.hay)) continue;
             }
+            if (prof != null && j.match < 0) j.match = Match.score(this, j, prof).pct;
             out.add(j);
         }
+        if (prof != null && sortMatch) out.sort((x, y) -> y.match != x.match ? y.match - x.match : Long.compare(y.posted, x.posted));
         adapter.q = sq;
         adapter.set(out);
         if (!sq.isEmpty()) countLabel.setText("🔎 " + out.size() + " نتيجة لـ «" + query + "»" + (useF ? " حسب فلترك" : "") + (quickGov != null ? " في " + Labels.GOVS.get(quickGov) : "") + " • من أصل " + all.size() + " فرصة");
@@ -494,11 +503,13 @@ public class MainActivity extends Activity {
         List<Store.Job> items = new ArrayList<>();
         Set<String> favs = new HashSet<>(), applied = new HashSet<>();
         Search.Query q = null;
+        boolean showMatch;
 
         void set(List<Store.Job> l) {
             items = l;
             favs = Store.set(MainActivity.this, "favs");
             applied = Store.set(MainActivity.this, "applied");
+            showMatch = Match.enabled(MainActivity.this);
             notifyDataSetChanged();
         }
 
@@ -527,6 +538,11 @@ public class MainActivity extends Activity {
                 r1.addView(h.title, new LinearLayout.LayoutParams(0, -2, 1));
                 h.marks = text(c, "", 14, TEXT, false);
                 r1.addView(h.marks);
+                h.match = text(c, "", 12, Color.WHITE, true);
+                h.match.setPadding(dp(c, 7), dp(c, 2), dp(c, 7), dp(c, 2));
+                LinearLayout.LayoutParams mp = lp(-2, -2);
+                mp.rightMargin = dp(c, 6);
+                r1.addView(h.match, mp);
                 card.addView(r1);
                 h.org = oneLine(text(c, "", 13, MUTED, false));
                 card.addView(h.org);
@@ -571,12 +587,18 @@ public class MainActivity extends Activity {
             h.meta.setText(ago(j.posted) + " • " + j.src + (j.nSrc > 1 ? " +" + (j.nSrc - 1) : ""));
             String id = String.valueOf(j.id);
             h.marks.setText((favs.contains(id) ? "⭐" : "") + (applied.contains(id) ? "✅" : "") + (j.shared != 0 ? "🤝" : ""));
+            if (showMatch && j.match < 0) { Match.Profile pf = Match.profile(c); if (pf != null) j.match = Match.score(c, j, pf).pct; }
+            if (showMatch && j.match >= 45) {
+                h.match.setVisibility(View.VISIBLE);
+                h.match.setText("🎯 " + j.match + "%");
+                h.match.setBackground(round(c, Match.color(j.match), 10));
+            } else h.match.setVisibility(View.GONE);
             cv.setAlpha(Store.expired(j) ? 0.55f : 1f);
             return cv;
         }
     }
 
-    private static class Holder { TextView badge, title, marks, org, snip, tags, deadline, meta; }
+    private static class Holder { TextView badge, title, marks, match, org, snip, tags, deadline, meta; }
 
     private void deadlineText(TextView t, Store.Job j) {
         int d = Store.daysLeft(j);
@@ -638,6 +660,12 @@ public class MainActivity extends Activity {
         TextView dl = text(this, "", 14, GREEN, true);
         deadlineText(dl, j);
         if (dl.getText().length() > 0) { dl.setPadding(0, dp(this, 6), 0, 0); c.addView(dl); }
+        if (Match.enabled(this)) {
+            Match.Result mr = Match.score(this, j, Match.profile(this));
+            TextView mt = text(this, "🎯 مناسبة لك " + mr.pct + "%" + (mr.why.isEmpty() ? "" : "\nيطابق: " + String.join("، ", mr.why)), 14, Match.color(mr.pct), true);
+            mt.setPadding(0, dp(this, 8), 0, 0);
+            c.addView(mt);
+        }
         addInfo(c, "🕒 نُشر", ago(j.posted));
         addInfo(c, "📡 المصدر", j.src + (j.nSrc > 1 ? " (ونُشر في " + (j.nSrc - 1) + " مصدر آخر)" : ""));
         l.addView(c, lpm(this, -1, -2, 0, 10));
@@ -933,6 +961,8 @@ public class MainActivity extends Activity {
         ac.addView(out, lpm(this, -1, -2, 8, 0));
         l.addView(ac, lpm(this, -1, -2, 0, 12));
 
+        l.addView(cvCard(), lpm(this, -1, -2, 0, 12));
+
         if (admin) {
             LinearLayout ad = card(this);
             ad.addView(text(this, "🛠 لوحة الأدمن", 16, TEXT, true));
@@ -999,6 +1029,193 @@ public class MainActivity extends Activity {
         uc.addView(about);
         l.addView(uc, lp(-1, -2));
         return sv;
+    }
+
+    // =====================================================================
+    // السيرة الذاتية
+    // =====================================================================
+    private View cvCard() {
+        LinearLayout c = card(this);
+        c.addView(text(this, "📄 سيرتي الذاتية", 16, TEXT, true));
+        Match.Profile p = Match.profile(this);
+        if (p == null) {
+            c.addView(text(this, "ارفع سيرتك (PDF أو Word) فيقترح التطبيق الاختصاصات المناسبة لك، ويُظهر نسبة تطابق كل فرصة مع خبرتك، ويُشعرك بالفرص الأنسب.", 13, MUTED, false));
+            Button up = button(this, "📎 اختر ملف السيرة (PDF أو Word)", true);
+            up.setOnClickListener(v -> pickCv());
+            c.addView(up, lpm(this, -1, -2, 8, 0));
+            return c;
+        }
+        long upd = Store.p(this).getLong("cv_updated", 0);
+        c.addView(oneLine(text(this, "📎 " + Store.p(this).getString("cv_name", "") + " • آخر تحديث " + ago(upd), 12, MUTED, false)));
+
+        c.addView(text(this, "الاختصاصات المناسبة لك:", 14, TEXT, true));
+        JSONArray specs = p.raw.optJSONArray("specs");
+        if (specs != null) for (int i = 0; i < specs.length(); i++) {
+            JSONObject s = specs.optJSONObject(i);
+            LinearLayout rr = row(this);
+            rr.setPadding(0, dp(this, 3), 0, dp(this, 3));
+            rr.addView(oneLine(text(this, s.optString("name"), 13, TEXT, false)), new LinearLayout.LayoutParams(0, -2, 1));
+            View bar = new View(this);
+            bar.setBackground(round(this, Match.color(Math.max(45, s.optInt("pct"))), 4));
+            rr.addView(bar, new LinearLayout.LayoutParams(Math.max(dp(this, 4), dp(this, 90) * s.optInt("pct") / 100), dp(this, 10)));
+            TextView pc = text(this, " " + s.optInt("pct") + "%", 12, MUTED, false);
+            rr.addView(pc, new LinearLayout.LayoutParams(dp(this, 42), -2));
+            c.addView(rr);
+        }
+        if (!p.titles.isEmpty()) c.addView(info2("💼 المسميات", String.join("، ", p.titles)));
+        if (p.years > 0) c.addView(info2("⏳ الخبرة", "حوالي " + p.years + " سنة"));
+        if (!p.langs.isEmpty()) c.addView(info2("🗣 اللغات", String.join("، ", p.langs)));
+        if (!p.skills.isEmpty()) c.addView(info2("🛠 المهارات", String.join(" • ", p.skills)));
+
+        LinearLayout b1 = row(this);
+        Button apply = button(this, "✅ طبّق على فلتري", true);
+        apply.setOnClickListener(v -> applyCvToFilter(p));
+        Button upd2 = button(this, "🔄 تحديث السيرة", false);
+        upd2.setOnClickListener(v -> pickCv());
+        b1.addView(apply, weight());
+        b1.addView(upd2, weight());
+        c.addView(b1, lpm(this, -1, -2, 10, 6));
+
+        c.addView(switchRow("🎯 أظهر نسبة التطابق على الفرص", "show_match"));
+        c.addView(switchRow("🔔 أشعرني بالفرص المطابقة لسيرتي (حتى خارج فلتري)", "cv_notify"));
+        c.addView(text(this, "أقل نسبة تطابق للإشعار:", 13, TEXT, false));
+        c.addView(choiceRow("cv_threshold", new int[]{50, 60, 70, 80}, new String[]{"50%", "60%", "70%", "80%"}));
+        c.addView(text(this, "تذكير بتحديث السيرة:", 13, TEXT, false));
+        c.addView(choiceRow("cv_remind", new int[]{0, 3, 6}, new String[]{"بدون", "كل 3 أشهر", "كل 6 أشهر"}));
+
+        Button del = button(this, "🗑 حذف سيرتي", false);
+        del.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("حذف سيرتك الذاتية وتحليلها من حسابك نهائياً؟")
+                .setPositiveButton("حذف", (d, w) -> post("/cv/delete", new JSONObject(), r -> {
+                    Store.applyCv(this, null);
+                    all = Store.get(this).all();
+                    Toast.makeText(this, "تم حذف السيرة", Toast.LENGTH_SHORT).show();
+                    show(3);
+                })).setNegativeButton("إلغاء", null).show());
+        c.addView(del, lpm(this, -1, -2, 10, 0));
+        return c;
+    }
+
+    private TextView info2(String k, String v) {
+        TextView t = text(this, k + ":  " + v, 13, TEXT, false);
+        t.setPadding(0, dp(this, 6), 0, 0);
+        return t;
+    }
+
+    private View choiceRow(String key, int[] vals, String[] labels) {
+        LinearLayout r = row(this);
+        r.setPadding(0, dp(this, 4), 0, dp(this, 6));
+        ArrayList<TextView> chips = new ArrayList<>();
+        int cur = Store.intv(this, key);
+        for (int i = 0; i < vals.length; i++) {
+            final int v = vals[i];
+            TextView t = chip(this, labels[i], cur == v);
+            chips.add(t);
+            t.setOnClickListener(x -> {
+                Store.putInt(this, key, v);
+                Sync.pushPrefs(this);
+                for (int k = 0; k < chips.size(); k++) setChip(this, chips.get(k), vals[k] == v);
+            });
+            r.addView(t, weight());
+        }
+        return r;
+    }
+
+    private void pickCv() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+                .putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword", "text/plain"});
+        try { startActivityForResult(i, PICK_CV); }
+        catch (Exception e) { Toast.makeText(this, "لا يوجد مدير ملفات على الهاتف", Toast.LENGTH_LONG).show(); }
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != PICK_CV || res != RESULT_OK || data == null || data.getData() == null) return;
+        Uri u = data.getData();
+        ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("جارٍ قراءة السيرة وتحليلها…");
+        pd.setCancelable(false);
+        pd.show();
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            String err = null;
+            JSONObject r = null;
+            try {
+                String name = CvText.name(app, u);
+                String text = CvText.extract(app, u, name);
+                r = Api.post("/cv", new JSONObject().put("text", text).put("name", name));
+                Store.applyCv(app, r);
+            } catch (Throwable e) { err = e.getMessage(); }
+            final String fe = err;
+            final JSONObject fr = r;
+            ui.post(() -> {
+                pd.dismiss();
+                if (fe != null) { new AlertDialog.Builder(this).setTitle("تعذّرت قراءة السيرة").setMessage(fe).setPositiveButton("حسناً", null).show(); return; }
+                all = Store.get(this).all();
+                show(3);
+                cvResult(fr);
+            });
+        }).start();
+    }
+
+    private void cvResult(JSONObject r) {
+        Match.Profile p = Match.profile(this);
+        if (p == null) return;
+        StringBuilder sb = new StringBuilder();
+        sb.append("🏷 الاختصاصات المناسبة لك:\n");
+        JSONArray specs = p.raw.optJSONArray("specs");
+        if (specs != null) for (int i = 0; i < specs.length(); i++) {
+            JSONObject s = specs.optJSONObject(i);
+            sb.append("• ").append(s.optString("name")).append(" — ").append(s.optInt("pct")).append("%\n");
+        }
+        if (!p.titles.isEmpty()) sb.append("\n💼 ").append(String.join("، ", p.titles)).append("\n");
+        if (p.years > 0) sb.append("⏳ خبرة حوالي ").append(p.years).append(" سنة\n");
+        JSONObject d = r == null ? null : r.optJSONObject("diff");
+        if (d != null) {
+            sb.append("\n🔄 ماذا تغيّر عن النسخة السابقة:\n");
+            boolean any = false;
+            JSONArray ns = d.optJSONArray("newSkills"), nsp = d.optJSONArray("newSpecs"), lost = d.optJSONArray("lostSkills");
+            if (nsp != null && nsp.length() > 0) { sb.append("➕ اختصاصات جديدة: ").append(join(nsp)).append("\n"); any = true; }
+            if (ns != null && ns.length() > 0) { sb.append("➕ مهارات جديدة: ").append(join(ns)).append("\n"); any = true; }
+            if (lost != null && lost.length() > 0) { sb.append("➖ لم تعد مذكورة: ").append(join(lost)).append("\n"); any = true; }
+            JSONArray y = d.optJSONArray("years");
+            if (y != null && y.optInt(1) != y.optInt(0)) { sb.append("⏳ الخبرة: ").append(y.optInt(0)).append(" ← ").append(y.optInt(1)).append(" سنة\n"); any = true; }
+            if (!any) sb.append("لا تغييرات تُذكر\n");
+        }
+        new AlertDialog.Builder(this).setTitle("✅ تم تحليل سيرتك").setMessage(sb.toString().trim())
+                .setPositiveButton("طبّق على فلتري", (x, w) -> applyCvToFilter(p))
+                .setNegativeButton("لاحقاً", null).show();
+    }
+
+    private static String join(JSONArray a) {
+        ArrayList<String> l = new ArrayList<>();
+        for (int i = 0; i < a.length(); i++) l.add(a.optString(i));
+        return String.join("، ", l);
+    }
+
+    private void applyCvToFilter(Match.Profile p) {
+        LinkedHashSet<String> specs = new LinkedHashSet<>();
+        for (String id : p.specOrder) { Integer v = p.specs.get(id); if (v != null && v >= 40) specs.add(id); }
+        if (specs.isEmpty() && !p.specOrder.isEmpty()) specs.add(p.specOrder.get(0));
+        StringBuilder msg = new StringBuilder("سيُضبط فلتر الاختصاصات على:\n");
+        for (String id : specs) msg.append("• ").append(Labels.SPECS.get(id)).append("\n");
+        boolean setGov = Store.set(this, "govs").isEmpty() && !p.govs.isEmpty();
+        if (setGov) {
+            msg.append("\nوالمحافظات المذكورة في سيرتك:\n");
+            for (String g : p.govs) msg.append("• ").append(Labels.GOVS.get(g)).append("\n");
+        }
+        msg.append("\nيمكنك تعديله لاحقاً من «فلتري».");
+        new AlertDialog.Builder(this).setTitle("تطبيق على فلتري").setMessage(msg.toString())
+                .setPositiveButton("تطبيق", (d, w) -> {
+                    Store.putSet(this, "specs", specs);
+                    if (setGov) Store.putSet(this, "govs", new LinkedHashSet<>(p.govs));
+                    Store.p(this).edit().putBoolean("setup_done", true).apply();
+                    Sync.pushPrefs(this);
+                    Toast.makeText(this, "✅ تم ضبط فلترك حسب سيرتك", Toast.LENGTH_SHORT).show();
+                    sortMatch = true;
+                    show(0);
+                }).setNegativeButton("إلغاء", null).show();
     }
 
     private View notifyCard() {

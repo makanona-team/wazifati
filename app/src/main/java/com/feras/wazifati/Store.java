@@ -28,6 +28,7 @@ public final class Store extends SQLiteOpenHelper {
         public String title = "", org = "", specs = "", govs = "", sector = "", deadline = "", src = "", url = "", apply = "", text = "";
         public int nSrc, shared, seen;
         public String hay;   // نص البحث المطبَّع (يُحسب عند الحاجة)
+        public int match = -1;   // نسبة التطابق مع السيرة (مخزّنة مؤقتاً)
     }
 
     private static Store inst;
@@ -97,8 +98,8 @@ public final class Store extends SQLiteOpenHelper {
 
     /** الإعدادات التي تُحفظ على الخادم (تعود بعد حذف التطبيق وإعادة تثبيته). */
     static final String[] SYNC_SETS = {"specs", "govs", "sectors", "favs", "applied", "hidden"};
-    static final String[] SYNC_BOOLS = {"unk", "notify", "hide_expired", "remind", "quiet"};
-    static final String[] SYNC_INTS = {"digest_hour", "quiet_from", "quiet_to"};
+    static final String[] SYNC_BOOLS = {"unk", "notify", "hide_expired", "remind", "quiet", "show_match", "cv_notify"};
+    static final String[] SYNC_INTS = {"digest_hour", "quiet_from", "quiet_to", "cv_threshold", "cv_remind"};
 
     public static JSONObject prefsJson(Context c) throws Exception {
         JSONObject j = new JSONObject();
@@ -128,7 +129,7 @@ public final class Store extends SQLiteOpenHelper {
     }
 
     public static boolean defBool(String k) {
-        return k.equals("unk") || k.equals("notify") || k.equals("hide_expired") || k.equals("remind");
+        return k.equals("unk") || k.equals("notify") || k.equals("hide_expired") || k.equals("remind") || k.equals("show_match") || k.equals("cv_notify");
     }
 
     public static int defInt(String k) {
@@ -136,6 +137,8 @@ public final class Store extends SQLiteOpenHelper {
             case "digest_hour": return 20;
             case "quiet_from": return 23;
             case "quiet_to": return 7;
+            case "cv_threshold": return 60;
+            case "cv_remind": return 6;
             default: return 0;
         }
     }
@@ -155,6 +158,15 @@ public final class Store extends SQLiteOpenHelper {
     public static void applyMe(Context c, JSONObject me) {
         p(c).edit().putString("email", me.optString("email")).putString("uname", me.optString("name"))
                 .putString("photo", me.optString("photo")).putString("role", me.optString("role", "user")).apply();
+        if (me.has("cv")) applyCv(c, me.optJSONObject("cv"));
+    }
+
+    /** السيرة الذاتية المحللة (من الخادم). */
+    public static void applyCv(Context c, JSONObject cv) {
+        SharedPreferences.Editor e = p(c).edit();
+        if (cv == null || cv.optJSONObject("profile") == null) e.remove("cv_profile").remove("cv_name").remove("cv_updated");
+        else e.putString("cv_profile", cv.optJSONObject("profile").toString()).putString("cv_name", cv.optString("name")).putLong("cv_updated", cv.optLong("updated"));
+        e.apply();
     }
 
     public static void logout(Context c) {
