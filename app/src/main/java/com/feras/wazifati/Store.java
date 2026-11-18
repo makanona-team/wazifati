@@ -166,6 +166,8 @@ public final class Store extends SQLiteOpenHelper {
 
     // ===== الحساب =====
     public static String token(Context c) { return p(c).getString("token", ""); }
+    /** تصفّح كضيف: بلا حساب، قراءة فقط. */
+    public static boolean guest(Context c) { return p(c).getBoolean("guest", false) && token(c).isEmpty(); }
     public static boolean admin(Context c) { return "admin".equals(p(c).getString("role", "")); }
 
     public static void applyMe(Context c, JSONObject me) {

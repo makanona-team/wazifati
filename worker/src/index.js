@@ -4,7 +4,9 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '1.6';
+const VERSION = '1.7';
+const RELEASE = 'https://github.com/makanona-team/wazifati/releases/latest';
+const FAIL_DAYS = 3;
 const DAY = 864e5;
 const KEEP_DAYS = 60;
 const FIRST_DAYS = 30;
@@ -85,6 +87,8 @@ export class Db {
     this.tryRun(`ALTER TABLE sources ADD COLUMN pending INTEGER DEFAULT 0`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN created INTEGER DEFAULT 0`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN rejected INTEGER DEFAULT 0`);
+    this.tryRun(`ALTER TABLE sources ADD COLUMN fail_since INTEGER`);
+    this.tryRun(`ALTER TABLE sources ADD COLUMN auto_off INTEGER DEFAULT 0`);
     this.run(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
     this.run(`CREATE TABLE IF NOT EXISTS accounts (
       email TEXT PRIMARY KEY, name TEXT, photo TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
@@ -156,14 +160,20 @@ export class Db {
         if (p === '/sources') return json({ sources: this.q(`SELECT * FROM sources WHERE enabled=1 AND pending=0 ORDER BY id`) });
       }
 
-      // ----- مستخدم مسجّل -----
-      const me = this.who(req);
+      // ----- قراءة عامة (تصفّح كضيف + صفحات المشاركة) -----
       if (req.method === 'GET') {
-        if (p === '/me') return this.getMe(me, url.searchParams);
+        let m;
+        if ((m = p.match(/^\/j\/(\d+)$/))) return this.jobPage(+m[1]);
         if (p === '/jobs') return this.jobs(url);
         if (p === '/changes') return this.changes(url);
         if (p === '/announce') return json({ items: this.q(`SELECT id,text,created FROM announcements WHERE id > ? ORDER BY id DESC LIMIT 20`, +url.searchParams.get('since') || 0) });
         if (p === '/labels') return json(LABELS);
+      }
+
+      // ----- مستخدم مسجّل -----
+      const me = this.who(req);
+      if (req.method === 'GET') {
+        if (p === '/me') return this.getMe(me, url.searchParams);
       }
       if (req.method === 'POST') {
         if (p === '/me') return this.saveMe(me, b);
@@ -189,7 +199,7 @@ export class Db {
       }
       if (req.method === 'POST') {
         if (p === '/admin/sources/approve') return this.approve(b);
-        if (p === '/admin/sources/toggle') { this.run(`UPDATE sources SET enabled=? WHERE id=?`, b.enabled ? 1 : 0, +b.id); return json({ ok: true }); }
+        if (p === '/admin/sources/toggle') { this.run(`UPDATE sources SET enabled=?, fail_since=NULL, auto_off=0 WHERE id=?`, b.enabled ? 1 : 0, +b.id); return json({ ok: true }); }
         if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/users/role') return this.setRole(me, b);
         if (p === '/admin/users/status') return this.setStatus(me, b);
@@ -282,6 +292,11 @@ export class Db {
   }
 
   jobs(url) {
+    const one = +url.searchParams.get('id') || 0;
+    if (one) {
+      const r = this.one(`SELECT * FROM jobs WHERE id=? AND hidden=0`, one);
+      return json({ now: Date.now(), last: one, max: one, more: false, jobs: r ? [this.jobRow(r)] : [] });
+    }
     const since = +url.searchParams.get('since') || 0;
     const limit = Math.min(+url.searchParams.get('limit') || 800, 2000);
     const rows = since > 0
@@ -447,10 +462,29 @@ export class Db {
       else this.run(`UPDATE sources SET kind=?, value=?, nkey=? WHERE id=?`, kind, value, nk, id);
     }
     if (b.name) this.run(`UPDATE sources SET name=? WHERE id=? AND (name=value OR name=orig OR name='' OR name IS NULL)`, String(b.name).slice(0, 60), id);
-    if (b.ok) this.run(`UPDATE sources SET last_try=?, last_ok=?, last_err=NULL, last_count=? WHERE id=?`, Date.now(), Date.now(), +b.count || 0, id);
-    else this.run(`UPDATE sources SET last_try=?, last_err=? WHERE id=?`, Date.now(), String(b.err || 'خطأ').slice(0, 200), id);
-    if (b.final) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('last_run',?)`, String(Date.now()));
+    if (b.ok) this.run(`UPDATE sources SET last_try=?, last_ok=?, last_err=NULL, last_count=?, fail_since=NULL WHERE id=?`, Date.now(), Date.now(), +b.count || 0, id);
+    else this.run(`UPDATE sources SET last_try=?, last_err=?, fail_since=COALESCE(fail_since, ?) WHERE id=?`, Date.now(), String(b.err || 'خطأ').slice(0, 200), Date.now(), id);
+    if (b.final) {
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('last_run',?)`, String(Date.now()));
+      this.autoDisable();
+    }
     return json({ ok: true });
+  }
+
+  /** يوقف تلقائياً المصدر الذي فشل FAIL_DAYS أيام متتالية، إلا عند عطل عام (أغلب المصادر تفشل معاً). */
+  autoDisable() {
+    const now = Date.now();
+    const base = `enabled=1 AND pending=0 AND kind<>'manual'`;
+    const total = this.one(`SELECT COUNT(*) AS n FROM sources WHERE ${base}`).n;
+    const failing = this.q(`SELECT id, name, last_err, fail_since FROM sources WHERE ${base} AND fail_since IS NOT NULL`);
+    if (total >= 4 && failing.length / total > 0.5) {
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('systemic',?)`, JSON.stringify({ at: now, failing: failing.length, total }));
+      return;
+    }
+    for (const s of failing) {
+      if (now - s.fail_since >= FAIL_DAYS * DAY)
+        this.run(`UPDATE sources SET enabled=0, auto_off=?, last_err=? WHERE id=?`, now, ('أُوقف تلقائياً بعد ' + FAIL_DAYS + ' أيام من الفشل: ' + (s.last_err || '')).slice(0, 200), s.id);
+    }
   }
 
   // ===== البلاغات =====
@@ -514,6 +548,8 @@ export class Db {
       flags: this.one(`SELECT COUNT(DISTINCT f.job_id) AS n FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2`).n,
       newFlags: this.one(`SELECT COUNT(*) AS n FROM flags WHERE created > ?`, since).n,
       newFixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending' AND created > ?`, since).n,
+      autoOff: this.q(`SELECT name FROM sources WHERE auto_off > ? AND ? > 0 ORDER BY auto_off DESC LIMIT 10`, since, since).map(r => r.name),
+      systemic: (() => { const m = JSON.parse((this.one(`SELECT v FROM meta WHERE k='systemic'`) || {}).v || 'null'); return m && m.at > since && since > 0 ? m : null; })(),
       newUsers: this.q(`SELECT email, name FROM accounts WHERE created > ? AND ? > 0 ORDER BY created DESC LIMIT 10`, since, since),
     };
   }
@@ -535,8 +571,39 @@ export class Db {
       topSources: this.q(`SELECT name, total, last_count, COALESCE(rejected,0) AS rejected FROM sources WHERE pending=0 ORDER BY total DESC LIMIT 10`),
       noisy: this.q(`SELECT name, total, rejected FROM sources WHERE pending=0 AND COALESCE(rejected,0) >= 5 ORDER BY 1.0*rejected/(total+rejected) DESC LIMIT 10`),
       cleanup: JSON.parse((this.one(`SELECT v FROM meta WHERE k='mig15'`) || {}).v || 'null'),
-      broken: this.q(`SELECT name, last_err FROM sources WHERE enabled=1 AND pending=0 AND last_err IS NOT NULL AND kind<>'manual'`),
+      broken: this.q(`SELECT name, last_err FROM sources WHERE pending=0 AND last_err IS NOT NULL AND kind<>'manual' AND (enabled=1 OR auto_off>0)`),
     };
+  }
+
+  // ===== صفحة ويب لكل وظيفة (للمشاركة على واتساب/تيليغرام) =====
+  jobPage(id) {
+    const esc = x => String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const safe = u => /^(https?:|mailto:)/i.test(String(u || '')) ? esc(u) : '';
+    const r = this.one(`SELECT * FROM jobs WHERE id=? AND hidden=0`, id);
+    const head = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`;
+    const css = `<style>body{font-family:system-ui,sans-serif;max-width:680px;margin:auto;padding:16px;line-height:1.8;color:#1c2333;background:#f4f6fb}.c{background:#fff;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 1px 4px #0001}h1{font-size:21px;margin:0 0 4px}.m{color:#5a6477;font-size:14px}.b{display:block;text-align:center;padding:13px;border-radius:12px;margin:8px 0;font-weight:700;text-decoration:none}.p{background:#1565C0;color:#fff}.s{background:#e8effb;color:#1565C0}.x{white-space:normal;word-break:break-word}img{max-width:100%;border-radius:10px}small{color:#8a93a5}</style>`;
+    if (!r) return new Response(`${head}<title>وظيفتي</title>${css}<div class="c"><h1>هذه الفرصة لم تعد متاحة</h1><p class="m">قد تكون انتهت أو أُزيلت.</p></div><a class="b p" href="${RELEASE}">حمّل وظيفتي لتصلك فرص جديدة</a></html>`, { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+    const names = (csv, dict) => String(csv || '').split(',').filter(Boolean).map(k => dict[k]).filter(Boolean).join('، ');
+    const tender = r.kind === 'tender';
+    const govs = names(r.govs, LABELS.govs);
+    const kind = tender ? 'مناقصة — ' + (LABELS.tcats[r.tcat] || 'أخرى') : names(r.specs, LABELS.specs);
+    const sector = LABELS.sectors[r.sector] || '';
+    const desc = [r.org, govs, r.deadline ? 'آخر موعد: ' + r.deadline : ''].filter(Boolean).join(' • ');
+    const body = esc(String(r.text || '').slice(0, 2500)).replace(/\n/g, '<br>');
+    const intent = `intent://job/${id}#Intent;scheme=wazifati;package=com.feras.wazifati;S.browser_fallback_url=${encodeURIComponent(RELEASE)};end`;
+    const apply = safe(r.apply), orig = /^https?:/i.test(r.url || '') ? safe(r.url) : '';
+    const img = /^https:/i.test(r.image || '') ? `<img src="${esc(r.image)}" alt="">` : '';
+    const html = `${head}<title>${esc(r.title)} — وظيفتي</title>
+<meta property="og:title" content="${esc(r.title)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:type" content="article">${img ? `<meta property="og:image" content="${esc(r.image)}">` : ''}
+<meta name="description" content="${esc(desc)}">${css}
+<div class="c"><h1>${esc(r.title)}</h1><div class="m">${esc(r.org || '')}</div>
+<p class="m">${govs ? '📍 ' + esc(govs) + '<br>' : ''}${kind ? '🏷 ' + esc(kind) + '<br>' : ''}${sector ? '🏢 ' + esc(sector) + '<br>' : ''}${r.deadline ? '⏳ آخر موعد: ' + esc(r.deadline) + '<br>' : ''}${r.bond ? '💰 التأمين: ' + esc(r.bond) + '<br>' : ''}${r.src ? '📡 المصدر: ' + esc(r.src) : ''}</p></div>
+${apply ? `<a class="b p" href="${apply}">${tender ? '📝 وثائق المناقصة' : '📝 رابط التقديم'}</a>` : ''}${orig ? `<a class="b s" href="${orig}">📄 الإعلان الأصلي</a>` : ''}
+<a class="b s" href="${intent}">📲 افتحها في تطبيق وظيفتي</a>
+${img ? `<div class="c">${img}</div>` : ''}<div class="c x">${body}</div>
+<div class="c"><b>💼 وظيفتي</b><p class="m">تطبيق مجاني يجمع فرص العمل والمناقصات في سوريا ويرسل لك ما يناسب اختصاصك ومحافظتك.</p><a class="b p" href="${RELEASE}">⬇ حمّل التطبيق</a></div>
+<p><small>تحقّق من الجهة المعلنة قبل التقديم، ولا تدفع أي مبلغ مقابل وظيفة. <a href="/privacy">الخصوصية</a></small></p></html>`;
+    return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300' } });
   }
 
   home() {

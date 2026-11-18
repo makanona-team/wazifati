@@ -86,25 +86,63 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
         Sync.init(this);
         Sync.channels(this);
-        if (!Sync.loggedIn(this)) { setContentView(loginScreen()); return; }
-        Sync.schedule(this);
-        if (Build.VERSION.SDK_INT >= 33 && !Sync.canPost(this)) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+        if (!Sync.loggedIn(this) && !Store.guest(this)) {
+            Uri link = getIntent().getData();
+            if (link != null && "wazifati".equals(link.getScheme())) Store.p(this).edit().putBoolean("guest", true).apply();   // رابط مشاركة: ادخل كضيف مباشرة
+            else { setContentView(loginScreen()); return; }
+        }
+        if (!guest()) {
+            Sync.schedule(this);
+            if (Build.VERSION.SDK_INT >= 33 && !Sync.canPost(this)) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1);
+        }
         buildMain();
         all = Store.get(this).all();
-        boolean setup = Store.p(this).getBoolean("setup_done", false);
+        boolean setup = guest() || Store.p(this).getBoolean("setup_done", false);
         int reopen = Store.p(this).getInt("reopen_tab", -1);
         Store.p(this).edit().remove("reopen_tab").apply();
         show(!setup ? T_FILTER : reopen >= 0 ? reopen : getIntent().getIntExtra("tab", 0));
         if (getIntent().getBooleanExtra("new", false)) { onlyNew = true; show(0); }
         refresh(false);
         if (getIntent().getBooleanExtra("update", false)) checkUpdate(true);
+        handleLink(getIntent());
+    }
+
+    /** ضيف = لا حساب (قراءة فقط). */
+    private boolean guest() { return !Sync.loggedIn(this); }
+
+    private void goLogin() {
+        Store.p(this).edit().putBoolean("guest", false).apply();
+        recreate();
+    }
+
+    /** رابط مشاركة: wazifati://job/<id> */
+    private void handleLink(Intent i) {
+        Uri d = i == null ? null : i.getData();
+        if (d == null || !"wazifati".equals(d.getScheme())) return;
+        i.setData(null);
+        long id;
+        try { id = Long.parseLong(d.getLastPathSegment()); } catch (Exception e) { return; }
+        final long fid = id;
+        List<Store.Job> l = Store.get(this).byIds(new HashSet<>(Arrays.asList(String.valueOf(fid))));
+        if (!l.isEmpty()) { openJob(l.get(0)); return; }
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            Store.Job j = null;
+            try { j = Sync.fetchOne(app, fid); } catch (Throwable ignored) { }
+            final Store.Job fj = j;
+            ui.post(() -> {
+                if (fj != null) openJob(fj);
+                else Toast.makeText(this, "هذه الفرصة لم تعد متاحة", Toast.LENGTH_LONG).show();
+            });
+        }).start();
     }
 
     @Override
     protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
         setIntent(i);
-        if (!Sync.loggedIn(this) || content == null) return;
+        if (content == null) return;
+        handleLink(i);
         if (i.getBooleanExtra("new", false)) { onlyNew = true; show(0); refresh(false); }
         else if (i.hasExtra("tab")) show(i.getIntExtra("tab", 0));
         if (i.getBooleanExtra("update", false)) checkUpdate(true);
@@ -137,7 +175,7 @@ public class MainActivity extends Activity {
         TextView t = text(this, "وظيفتي", 30, PRIMARY, true);
         t.setGravity(Gravity.CENTER);
         l.addView(t);
-        TextView s = text(this, "مساعدك للبحث عن الوظائف في سوريا\nفرص من تيليغرام ومواقع الوظائف تصلك حسب اختصاصك ومحافظتك", 15, MUTED, false);
+        TextView s = text(this, "فرص العمل والمناقصات في سوريا من تيليغرام ومواقع التوظيف، في مكان واحد.\nنصنّفها حسب اختصاصك ومحافظتك وننبّهك بالجديد.\nتصفّح الآن بلا حساب، أو سجّل الدخول لتحفظ فرصك وتفعّل الإشعارات.", 15, MUTED, false);
         s.setGravity(Gravity.CENTER);
         s.setPadding(0, dp(this, 8), 0, dp(this, 28));
         l.addView(s);
@@ -145,6 +183,10 @@ public class MainActivity extends Activity {
         g.setTextSize(17);
         g.setMinHeight(dp(this, 54));
         l.addView(g, lp(-1, -2));
+        Button gu = button(this, "👀  تصفّح كضيف بدون حساب", false);
+        gu.setMinHeight(dp(this, 50));
+        gu.setOnClickListener(v -> { Store.p(this).edit().putBoolean("guest", true).apply(); recreate(); });
+        l.addView(gu, lpm(this, -1, -2, 10, 0));
         TextView note = text(this, "بدون كلمة سر — اختر حسابك بضغطة واحدة.\nإعداداتك ومحفوظاتك تُحفظ على حسابك وتعود على أي هاتف.", 13, MUTED, false);
         note.setGravity(Gravity.CENTER);
         note.setPadding(0, dp(this, 16), 0, 0);
@@ -220,6 +262,11 @@ public class MainActivity extends Activity {
         ht.addView(status);
         head.addView(ht, new LinearLayout.LayoutParams(0, -2, 1));
 
+        if (guest()) {
+            TextView in = headBtn("🔑", "دخول");
+            in.setOnClickListener(v -> goLogin());
+            head.addView(in);
+        }
         TextView theme = headBtn("🌓", "المظهر");
         theme.setOnClickListener(v -> {
             String cur = Store.p(this).getString("theme", "auto");
@@ -320,9 +367,36 @@ public class MainActivity extends Activity {
         setStatus();
         if (k == T_JOBS) content.addView(jobsScreen(false));
         else if (k == T_TENDERS) content.addView(jobsScreen(true));
-        else if (k == T_SAVED) content.addView(savedScreen());
-        else if (k == T_FILTER) content.addView(filterScreen());
-        else content.addView(moreScreen());
+        else if (k == T_SAVED) content.addView(guest() ? gateScreen("⭐ الفرص المحفوظة", "احفظ الفرص التي تهمك، وسنذكّرك قبل يوم من إغلاق التقديم، وتتابع ما قدّمت عليه.", false) : savedScreen());
+        else if (k == T_FILTER) content.addView(guest() ? gateScreen("🎯 فلتري والإشعارات", "اختر اختصاصك ومحافظتك ليصلك إشعار بكل فرصة تناسبك، وارفع سيرتك الذاتية لتعرف نسبة مناسبتك لكل وظيفة.", false) : filterScreen());
+        else content.addView(guest() ? gateScreen("☰ المزيد", "سجّل الدخول لتفعيل الإشعارات والسيرة الذاتية واقتراح المصادر. إعداداتك تعود إليك على أي هاتف.", true) : moreScreen());
+    }
+
+    /** شاشة «للمسجّلين فقط» في وضع الضيف. */
+    private View gateScreen(String title, String msg, boolean withUpdate) {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setGravity(Gravity.CENTER);
+        l.setPadding(dp(this, 28), dp(this, 20), dp(this, 28), dp(this, 20));
+        TextView lock = text(this, "🔒", 48, TEXT, false);
+        lock.setGravity(Gravity.CENTER);
+        l.addView(lock);
+        TextView t = text(this, title, 19, TEXT, true);
+        t.setGravity(Gravity.CENTER);
+        l.addView(t);
+        TextView m = text(this, msg, 14, MUTED, false);
+        m.setGravity(Gravity.CENTER);
+        m.setPadding(0, dp(this, 8), 0, dp(this, 18));
+        l.addView(m);
+        Button in = button(this, "G   الدخول بحساب Google", true);
+        in.setOnClickListener(v -> goLogin());
+        l.addView(in, lp(-1, -2));
+        if (withUpdate) {
+            Button up = button(this, "🔄 البحث عن تحديث للتطبيق", false);
+            up.setOnClickListener(v -> checkUpdate(false));
+            l.addView(up, lpm(this, -1, -2, 10, 0));
+        }
+        return l;
     }
 
     private void hideKeyboard() {
@@ -447,6 +521,7 @@ public class MainActivity extends Activity {
             applyList();
         });
         if (tenders) cShared.setVisibility(View.GONE);
+        if (guest()) cFilter.setVisibility(View.GONE);
         for (TextView t : new TextView[]{cSort, cFilter, cNew, cExp, cShared, cRead}) {
             LinearLayout.LayoutParams p = lp(-2, -2);
             p.leftMargin = dp(this, 6);
@@ -800,42 +875,43 @@ public class MainActivity extends Activity {
             String body = j.title + (j.org.isEmpty() ? "" : "\n" + j.org) + "\n📍 " + Labels.names(Labels.GOVS, j.govs)
                     + (j.deadline.isEmpty() ? "" : "\n⏳ آخر موعد: " + j.deadline)
                     + (j.apply.isEmpty() ? "" : "\nللتقديم: " + j.apply.replace("mailto:", ""))
-                    + (j.url.startsWith("http") ? "\nالإعلان: " + j.url : "") + "\n\n— عبر تطبيق وظيفتي";
+                    + (j.url.startsWith("http") ? "\nالإعلان: " + j.url : "") + "\n\n🔗 " + Api.base() + "/j/" + j.id + "\n— عبر تطبيق وظيفتي";
             startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, body), "مشاركة الفرصة"));
         });
-        r2.addView(fav, weight());
-        r2.addView(app, weight());
+        if (!guest()) { r2.addView(fav, weight()); r2.addView(app, weight()); }
         r2.addView(share, weight());
         l.addView(r2, lpm(this, -1, -2, 0, 8));
 
-        LinearLayout r3 = row(this);
-        Button fix = button(this, "🏷 تصنيف خاطئ؟", false);
-        fix.setOnClickListener(v -> fixDialog(j, d));
-        boolean isHidden = Store.set(this, "hidden").contains(id);
-        Button hide = button(this, isHidden ? "👁 إظهار مجدداً" : "🚫 إخفاء (لا يهمني)", false);
-        hide.setOnClickListener(v -> {
-            Store.toggle(this, "hidden", id);
-            Sync.pushPrefs(this);
-            d.dismiss();
-            applyList();
-            if (tab == T_SAVED) show(T_SAVED);
-        });
-        r3.addView(fix, weight());
-        r3.addView(hide, weight());
-        l.addView(r3, lpm(this, -1, -2, 0, 8));
-        Button flag = button(this, Store.admin(this) ? "🚩 إعلان غير مفيد (حذف للجميع)" : "🚩 ليس إعلاناً مفيداً", false);
-        flag.setTextColor(RED);
-        flag.setOnClickListener(v -> new AlertDialog.Builder(this)
-                .setMessage(Store.admin(this) ? "حذف هذا الإعلان لكل المستخدمين؟" : "الإبلاغ أن هذا ليس إعلان وظيفة؟ سيختفي عندك فوراً، وإذا أبلغ عنه شخص آخر يختفي عن الجميع.")
-                .setPositiveButton("نعم", (x, w) -> post("/flag", jo("id", j.id), r -> {
-                    Store.toggle(this, "hidden", id);
-                    if (Store.admin(this)) { Store.get(this).delete(j.id); all.remove(j); }
-                    Sync.pushPrefs(this);
-                    Toast.makeText(this, "✅ شكراً، تم الإبلاغ", Toast.LENGTH_SHORT).show();
-                    d.dismiss();
-                    applyList();
-                })).setNegativeButton("إلغاء", null).show());
-        l.addView(flag, lpm(this, -1, -2, 0, 10));
+        if (!guest()) {
+            LinearLayout r3 = row(this);
+            Button fix = button(this, "🏷 تصنيف خاطئ؟", false);
+            fix.setOnClickListener(v -> fixDialog(j, d));
+            boolean isHidden = Store.set(this, "hidden").contains(id);
+            Button hide = button(this, isHidden ? "👁 إظهار مجدداً" : "🚫 إخفاء (لا يهمني)", false);
+            hide.setOnClickListener(v -> {
+                Store.toggle(this, "hidden", id);
+                Sync.pushPrefs(this);
+                d.dismiss();
+                applyList();
+                if (tab == T_SAVED) show(T_SAVED);
+            });
+            r3.addView(fix, weight());
+            r3.addView(hide, weight());
+            l.addView(r3, lpm(this, -1, -2, 0, 8));
+            Button flag = button(this, Store.admin(this) ? "🚩 إعلان غير مفيد (حذف للجميع)" : "🚩 ليس إعلاناً مفيداً", false);
+            flag.setTextColor(RED);
+            flag.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setMessage(Store.admin(this) ? "حذف هذا الإعلان لكل المستخدمين؟" : "الإبلاغ أن هذا ليس إعلان وظيفة؟ سيختفي عندك فوراً، وإذا أبلغ عنه شخص آخر يختفي عن الجميع.")
+                    .setPositiveButton("نعم", (x, w) -> post("/flag", jo("id", j.id), r -> {
+                        Store.toggle(this, "hidden", id);
+                        if (Store.admin(this)) { Store.get(this).delete(j.id); all.remove(j); }
+                        Sync.pushPrefs(this);
+                        Toast.makeText(this, "✅ شكراً، تم الإبلاغ", Toast.LENGTH_SHORT).show();
+                        d.dismiss();
+                        applyList();
+                    })).setNegativeButton("إلغاء", null).show());
+            l.addView(flag, lpm(this, -1, -2, 0, 10));
+        }
 
         LinearLayout tc = card(this);
         tc.addView(text(this, "نص الإعلان", 14, MUTED, true));
@@ -982,6 +1058,9 @@ public class MainActivity extends Activity {
             String nm = Store.p(this).getString("uname", "");
             w.addView(text(this, "أهلاً " + nm + " 👋", 18, PRIMARY, true));
             w.addView(text(this, "اختر اختصاصاتك ومحافظاتك ثم اضغط «تطبيق الفلتر» في الأسفل، وسيصلك إشعار بكل فرصة جديدة تناسبك. يمكنك دائماً تصفّح كل الفرص من تبويب «الفرص».", 14, TEXT, false));
+            Button skip = button(this, "تخطّي الآن — أتصفّح كل الفرص", false);
+            skip.setOnClickListener(v -> { Store.p(this).edit().putBoolean("setup_done", true).apply(); draft = null; draftDirty = false; show(T_JOBS); });
+            w.addView(skip, lpm(this, -1, -2, 8, 0));
             l.addView(w, lpm(this, -1, -2, 0, 12));
         }
 

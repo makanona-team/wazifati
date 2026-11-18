@@ -92,7 +92,7 @@ public final class Sync {
             boolean first = last == 0 || st.count() == 0;
             if (first) last = 0;
             Store.Filter f = Store.Filter.of(c);
-            Match.Profile prof = Store.bool(c, "cv_notify") ? Match.profile(c) : null;
+            Match.Profile prof = Store.bool(c, "cv_notify") && loggedIn(c) ? Match.profile(c) : null;
             int thr = Store.intv(c, "cv_threshold");
             ArrayList<Store.Job> matched = new ArrayList<>();
             ArrayList<Store.Job> tenders = new ArrayList<>();
@@ -109,14 +109,7 @@ public final class Sync {
                 JSONArray arr = r.optJSONArray("jobs");
                 List<Store.Job> l = new ArrayList<>();
                 if (arr != null) for (int i = 0; i < arr.length(); i++) {
-                    JSONObject o = arr.getJSONObject(i);
-                    Store.Job j = new Store.Job();
-                    j.id = o.optLong("id"); j.title = o.optString("t"); j.org = o.optString("o"); j.specs = o.optString("s");
-                    j.govs = o.optString("g"); j.sector = o.optString("c"); j.deadline = o.optString("d"); j.posted = o.optLong("p");
-                    j.src = o.optString("src"); j.nSrc = o.optInt("n", 1); j.url = o.optString("u"); j.apply = o.optString("a");
-                    j.text = o.optString("x"); j.shared = o.optInt("sh"); j.seen = first ? 1 : 0;
-                    j.image = o.optString("im"); j.doubt = o.optInt("dt");
-                    j.kind = o.optString("k", "job"); j.tcat = o.optString("tc"); j.bond = o.optString("bd");
+                    Store.Job j = parseJob(arr.getJSONObject(i), first);
                     l.add(j);
                     if (j.tender()) { if (!first && tf != null && tf.match(j) && !Store.expired(j)) tenders.add(j); continue; }
                     if (!first && !Store.expired(j) && !(j.doubt == 1 && Store.bool(c, "hide_doubt")) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) matched.add(j);
@@ -131,6 +124,29 @@ public final class Sync {
             if (!tenders.isEmpty() && !quietNow(c)) notifyTenders(c, tenders);
             return matched;
         }
+    }
+
+    static Store.Job parseJob(JSONObject o, boolean seen) {
+        Store.Job j = new Store.Job();
+        j.id = o.optLong("id"); j.title = o.optString("t"); j.org = o.optString("o"); j.specs = o.optString("s");
+        j.govs = o.optString("g"); j.sector = o.optString("c"); j.deadline = o.optString("d"); j.posted = o.optLong("p");
+        j.src = o.optString("src"); j.nSrc = o.optInt("n", 1); j.url = o.optString("u"); j.apply = o.optString("a");
+        j.text = o.optString("x"); j.shared = o.optInt("sh"); j.seen = seen ? 1 : 0;
+        j.image = o.optString("im"); j.doubt = o.optInt("dt");
+        j.kind = o.optString("k", "job"); j.tcat = o.optString("tc"); j.bond = o.optString("bd");
+        return j;
+    }
+
+    /** يجلب فرصة واحدة (رابط مشاركة) ويحفظها محلياً. */
+    static Store.Job fetchOne(Context c, long id) throws Exception {
+        init(c);
+        JSONArray a = Api.get("/jobs?id=" + id).optJSONArray("jobs");
+        if (a == null || a.length() == 0) return null;
+        Store.Job j = parseJob(a.getJSONObject(0), true);
+        ArrayList<Store.Job> l = new ArrayList<>();
+        l.add(j);
+        Store.get(c).insert(l);
+        return j;
     }
 
     /** تصحيحات التصنيف التي اعتمدها الأدمن. */
@@ -181,13 +197,29 @@ public final class Sync {
         if (!notify || since == 0) return;
         if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 4);
         if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 4);
+        JSONArray off = r.optJSONArray("autoOff");
+        if (off != null && off.length() > 0) {
+            StringBuilder nm = new StringBuilder();
+            for (int i = 0; i < off.length(); i++) nm.append(i > 0 ? "، " : "").append(off.optString(i));
+            post(c, CH_ADMIN, 43, "⛔ أُوقف مصدر تلقائياً", nm + " — فشل 3 أيام متتالية. راجع صفحة المصادر.", 4);
+        }
+        if (r.optJSONObject("systemic") != null) post(c, CH_ADMIN, 44, "⚠️ عطل عام في الجلب", "أغلب المصادر فشلت معاً (غالباً حجب أو عطل شبكة). لم يُوقف شيء تلقائياً.", 4);
         if (newFlags > 0) post(c, CH_ADMIN, 42, "🚩 بلاغات جديدة", newFlags + " بلاغ «ليس إعلان وظيفة» بانتظار مراجعتك", 4);
     }
 
     /** مزامنة كاملة (من الخلفية ومن زر المزامنة). يعيد عدد الفرص الجديدة المطابقة. */
     public static int run(Context c, boolean background) throws Exception {
         init(c);
-        if (!loggedIn(c)) return 0;
+        if (!loggedIn(c)) {
+            // ضيف: قراءة فقط، بلا إشعارات ولا مزامنة إعدادات
+            if (!Store.guest(c) || background) return 0;
+            syncJobs(c);
+            try { syncChanges(c); } catch (Throwable ignored) { }
+            try { syncAnnouncements(c, false); } catch (Throwable ignored) { }
+            JobsWidget.update(c);
+            Updater.autoCheck(c);
+            return 0;
+        }
         try { ensureUser(c); } catch (Api.AuthException e) { throw e; } catch (Throwable ignored) { }
         List<Store.Job> matched = syncJobs(c);
         try { syncChanges(c); } catch (Throwable ignored) { }

@@ -35,10 +35,20 @@ def http(url, data=None, headers=None, timeout=30):
         body = json.dumps(data).encode() if not isinstance(data, (bytes, str)) else (data.encode() if isinstance(data, str) else data)
         h.setdefault("Content-Type", "application/json")
     req = urllib.request.Request(url, data=body, headers=h, method="POST" if body is not None else "GET")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
-        cs = r.headers.get_content_charset() or "utf-8"
-        return r.geturl(), raw.decode(cs, "replace")
+    # المواقع البطيئة (مثل SAMS): محاولة ثانية بمهلة أطول عند انتهاء المهلة فقط (طلبات GET)
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout * attempt) as r:
+                raw = r.read()
+                cs = r.headers.get_content_charset() or "utf-8"
+                return r.geturl(), raw.decode(cs, "replace")
+        except urllib.error.HTTPError:
+            raise
+        except Exception as e:  # noqa
+            slow = isinstance(e, TimeoutError) or "timed out" in str(e).lower()
+            if attempt == 2 or body is not None or not slow:
+                raise
+            log(f"⏱ مهلة منتهية، إعادة المحاولة بمهلة أطول: {url}")
 
 
 def api(path, data=None):
