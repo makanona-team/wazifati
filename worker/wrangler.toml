@@ -1,0 +1,12 @@
+name = "wazifati"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+workers_dev = true
+
+[[durable_objects.bindings]]
+name = "DB"
+class_name = "Db"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Db"]

@@ -1,0 +1,252 @@
+package com.feras.wazifati;
+
+import android.annotation.SuppressLint;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
+import android.provider.Settings;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
+/** التخزين المحلي: الإعلانات في SQLite، والإعدادات في SharedPreferences. */
+public final class Store extends SQLiteOpenHelper {
+
+    public static final class Job {
+        public long id, posted;
+        public String title = "", org = "", specs = "", govs = "", sector = "", deadline = "", src = "", url = "", apply = "", text = "";
+        public int nSrc, shared, seen;
+    }
+
+    private static Store inst;
+    public static final long DAY = 86_400_000L;
+
+    public static synchronized Store get(Context c) {
+        if (inst == null) inst = new Store(c.getApplicationContext());
+        return inst;
+    }
+
+    private final Context ctx;
+
+    private Store(Context c) {
+        super(c, "wazifati.db", null, 1);
+        ctx = c;
+    }
+
+    @Override
+    public void onCreate(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE jobs (id INTEGER PRIMARY KEY, t TEXT, o TEXT, s TEXT, g TEXT, c TEXT, d TEXT, p INTEGER, src TEXT, n INTEGER, u TEXT, a TEXT, x TEXT, sh INTEGER, seen INTEGER DEFAULT 0)");
+        db.execSQL("CREATE INDEX jobs_p ON jobs(p)");
+    }
+
+    @Override
+    public void onUpgrade(SQLiteDatabase db, int o, int n) { }
+
+    // ===== الإعدادات =====
+    public static SharedPreferences p(Context c) {
+        return c.getSharedPreferences("w", Context.MODE_PRIVATE);
+    }
+
+    @SuppressLint("HardwareIds")
+    public static String dev(Context c) {
+        String id = Settings.Secure.getString(c.getContentResolver(), Settings.Secure.ANDROID_ID);
+        return id == null || id.isEmpty() ? "x" + p(c).getString("rnd", newRnd(c)) : id;
+    }
+
+    private static String newRnd(Context c) {
+        String r = Long.toHexString(Double.doubleToLongBits(Math.random())) + Long.toHexString(System.nanoTime());
+        p(c).edit().putString("rnd", r).apply();
+        return r;
+    }
+
+    public static Set<String> set(Context c, String key) {
+        String v = p(c).getString(key, "");
+        LinkedHashSet<String> s = new LinkedHashSet<>();
+        if (v.isEmpty()) return s;
+        for (String x : v.split(",")) if (!x.trim().isEmpty()) s.add(x.trim());
+        return s;
+    }
+
+    public static void putSet(Context c, String key, Set<String> s) {
+        p(c).edit().putString(key, String.join(",", s)).putLong("prefs_updated", System.currentTimeMillis()).apply();
+    }
+
+    public static boolean toggle(Context c, String key, String v) {
+        Set<String> s = set(c, key);
+        boolean on;
+        if (s.contains(v)) { s.remove(v); on = false; } else { s.add(v); on = true; }
+        putSet(c, key, s);
+        return on;
+    }
+
+    public static void putBool(Context c, String key, boolean v) {
+        p(c).edit().putBoolean(key, v).putLong("prefs_updated", System.currentTimeMillis()).apply();
+    }
+
+    /** الإعدادات التي تُحفظ على الخادم (تعود بعد حذف التطبيق وإعادة تثبيته). */
+    static final String[] SYNC_SETS = {"specs", "govs", "sectors", "favs", "applied", "hidden"};
+    static final String[] SYNC_BOOLS = {"unk", "notify", "hide_expired"};
+
+    public static JSONObject prefsJson(Context c) throws Exception {
+        JSONObject j = new JSONObject();
+        for (String k : SYNC_SETS) j.put(k, new JSONArray(new ArrayList<>(set(c, k))));
+        SharedPreferences sp = p(c);
+        for (String k : SYNC_BOOLS) j.put(k, sp.getBoolean(k, defBool(k)));
+        j.put("name", sp.getString("name", ""));
+        return j;
+    }
+
+    public static void applyPrefs(Context c, JSONObject j, long updated) {
+        SharedPreferences.Editor e = p(c).edit();
+        for (String k : SYNC_SETS) {
+            JSONArray a = j.optJSONArray(k);
+            if (a == null) continue;
+            ArrayList<String> l = new ArrayList<>();
+            for (int i = 0; i < a.length(); i++) l.add(a.optString(i));
+            e.putString(k, String.join(",", l));
+        }
+        for (String k : SYNC_BOOLS) if (j.has(k)) e.putBoolean(k, j.optBoolean(k));
+        if (j.has("name")) e.putString("name", j.optString("name"));
+        e.putLong("prefs_updated", updated).putLong("prefs_pushed", updated).putBoolean("setup_done", true);
+        e.apply();
+    }
+
+    public static boolean defBool(String k) {
+        return k.equals("unk") || k.equals("notify") || k.equals("hide_expired");
+    }
+
+    public static boolean bool(Context c, String k) {
+        return p(c).getBoolean(k, defBool(k));
+    }
+
+    // ===== الإعلانات =====
+    public void insert(List<Job> jobs) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (Job j : jobs) {
+                ContentValues v = new ContentValues();
+                v.put("id", j.id); v.put("t", j.title); v.put("o", j.org); v.put("s", j.specs); v.put("g", j.govs);
+                v.put("c", j.sector); v.put("d", j.deadline); v.put("p", j.posted); v.put("src", j.src); v.put("n", j.nSrc);
+                v.put("u", j.url); v.put("a", j.apply); v.put("x", j.text); v.put("sh", j.shared); v.put("seen", j.seen);
+                db.insertWithOnConflict("jobs", null, v, SQLiteDatabase.CONFLICT_IGNORE);
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public void purge() {
+        getWritableDatabase().delete("jobs", "p < ?", new String[]{String.valueOf(System.currentTimeMillis() - 60 * DAY)});
+    }
+
+    public void markSeen(long id) {
+        ContentValues v = new ContentValues();
+        v.put("seen", 1);
+        getWritableDatabase().update("jobs", v, "id=?", new String[]{String.valueOf(id)});
+    }
+
+    public void markAllSeen() {
+        ContentValues v = new ContentValues();
+        v.put("seen", 1);
+        getWritableDatabase().update("jobs", v, "seen=0", null);
+    }
+
+    public int count() {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM jobs", null)) {
+            return c.moveToFirst() ? c.getInt(0) : 0;
+        }
+    }
+
+    /** كل الإعلانات بدون النص الكامل (للقوائم)، الأحدث أولاً. */
+    public List<Job> all() {
+        ArrayList<Job> l = new ArrayList<>();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,t,o,s,g,c,d,p,src,n,u,a,sh,seen,substr(x,1,400) FROM jobs ORDER BY p DESC, id DESC", null)) {
+            while (c.moveToNext()) {
+                Job j = new Job();
+                j.id = c.getLong(0); j.title = s(c, 1); j.org = s(c, 2); j.specs = s(c, 3); j.govs = s(c, 4); j.sector = s(c, 5);
+                j.deadline = s(c, 6); j.posted = c.getLong(7); j.src = s(c, 8); j.nSrc = c.getInt(9); j.url = s(c, 10); j.apply = s(c, 11);
+                j.shared = c.getInt(12); j.seen = c.getInt(13); j.text = s(c, 14);
+                l.add(j);
+            }
+        }
+        return l;
+    }
+
+    public String fullText(long id) {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT x FROM jobs WHERE id=?", new String[]{String.valueOf(id)})) {
+            return c.moveToFirst() ? s(c, 0) : "";
+        }
+    }
+
+    private static String s(Cursor c, int i) {
+        String v = c.getString(i);
+        return v == null ? "" : v;
+    }
+
+    // ===== المطابقة مع فلتر المستخدم =====
+    public static final class Filter {
+        Set<String> specs, govs, sectors;
+        boolean unk;
+
+        public static Filter of(Context c) {
+            Filter f = new Filter();
+            f.specs = set(c, "specs");
+            f.govs = set(c, "govs");
+            f.sectors = set(c, "sectors");
+            f.unk = bool(c, "unk");
+            return f;
+        }
+
+        public boolean isEmpty() {
+            return specs.isEmpty() && govs.isEmpty() && sectors.isEmpty();
+        }
+
+        public boolean match(Job j) {
+            return part(specs, j.specs, "other", null) && part(govs, j.govs, "unknown", "all") && part(sectors, j.sector, "unknown", null);
+        }
+
+        private boolean part(Set<String> mine, String csv, String unknownKey, String wildcard) {
+            if (mine.isEmpty()) return true;
+            Set<String> js = new HashSet<>(Arrays.asList((csv == null ? "" : csv).split(",")));
+            for (String x : js) if (mine.contains(x)) return true;
+            if (wildcard != null && js.contains(wildcard)) return true;
+            return unk && (js.contains(unknownKey) || js.isEmpty() || js.equals(Collections.singleton("")));
+        }
+    }
+
+    public static boolean expired(Job j) {
+        if (j.deadline == null || j.deadline.length() < 10) return false;
+        return j.deadline.compareTo(today()) < 0;
+    }
+
+    public static String today() {
+        java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
+        return f.format(new java.util.Date());
+    }
+
+    /** الأيام المتبقية حتى الإغلاق، أو Integer.MIN_VALUE إن لم يُعرف. */
+    public static int daysLeft(Job j) {
+        if (j.deadline == null || j.deadline.length() < 10) return Integer.MIN_VALUE;
+        try {
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
+            long d = f.parse(j.deadline).getTime();
+            long t = f.parse(today()).getTime();
+            return (int) Math.round((d - t) / (double) DAY);
+        } catch (Exception e) {
+            return Integer.MIN_VALUE;
+        }
+    }
+}

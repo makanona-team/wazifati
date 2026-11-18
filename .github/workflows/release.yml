@@ -1,0 +1,118 @@
+name: بناء ونشر التطبيق
+
+# يبني التطبيق عند كل دفع. إذا وُجد السر SIGN_PASS ولم يُنشر الإصدار الحالي بعد: يوقّعه وينشره في Releases.
+# نتيجة كل بناء تُحفظ في الفرع build-logs (ملف last.txt) لمراجعة الأخطاء.
+on:
+  push:
+    branches: [ main ]
+    paths-ignore: [ 'README.md', 'worker/**', 'scraper/**', '.github/workflows/deploy.yml', '.github/workflows/scrape.yml' ]
+  workflow_dispatch:
+  workflow_run:
+    workflows: [ 'نشر الخادم (Cloudflare)' ]
+    types: [ completed ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: الفحص (check)
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGN_PASS: ${{ secrets.SIGN_PASS }}
+        run: |
+          VN=$(grep -oP "versionName '\K[^']+" app/build.gradle)
+          echo "VERSION=$VN" >> "$GITHUB_ENV"
+          PUBLISHED=false
+          if gh release view "v$VN" >/dev/null 2>&1; then PUBLISHED=true; fi
+          git fetch -q origin config 2>/dev/null && WZ_API=$(git show origin/config:api-url.txt | tr -d '\r\n ') || WZ_API=""
+          echo "WZ_API=$WZ_API" >> "$GITHUB_ENV"
+          echo "api=$WZ_API"
+          SIGNED=false
+          if [ -n "$SIGN_PASS" ] && [ -n "$WZ_API" ]; then SIGNED=true; fi
+          if [ -z "$WZ_API" ]; then echo "::warning::الخادم لم يُنشر بعد — بناء تجريبي فقط بدون نشر"; fi
+          echo "published=$PUBLISHED" >> "$GITHUB_OUTPUT"
+          echo "signed=$SIGNED" >> "$GITHUB_OUTPUT"
+          SKIP=false
+          if [ "${{ github.event_name }}" = "workflow_run" ] && { [ "$PUBLISHED" = true ] || [ "$SIGNED" = false ]; }; then SKIP=true; fi
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        if: steps.check.outputs.skip != 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.check.outputs.skip != 'true'
+
+      - name: فك تشفير مفتاح التوقيع (decrypt key)
+        if: steps.check.outputs.skip != 'true' && steps.check.outputs.signed == 'true'
+        env:
+          SIGN_PASS: ${{ secrets.SIGN_PASS }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in .github/signing/wazifati.jks.enc -out "$RUNNER_TEMP/k.jks" -pass env:SIGN_PASS
+          echo "WZ_KEYSTORE=$RUNNER_TEMP/k.jks" >> "$GITHUB_ENV"
+
+      - name: البناء (build)
+        if: steps.check.outputs.skip != 'true'
+        env:
+          WZ_PASS: ${{ secrets.SIGN_PASS }}
+        run: |
+          chmod +x gradlew
+          if [ -n "$WZ_KEYSTORE" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
+          ./gradlew --no-daemon $TASK 2>&1 | tee build.log
+
+      - name: حفظ نتيجة البناء (report)
+        if: always() && steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/r"
+          {
+            echo "run: ${{ github.run_id }}  sha: ${{ github.sha }}  status: ${{ job.status }}  signed: ${{ steps.check.outputs.signed }}"
+            echo "===== errors ====="
+            grep -nE "error:|e: |FAILED|What went wrong|Exception|AAPT|resource .* not found" build.log 2>/dev/null | head -150
+            echo "===== tail ====="
+            tail -n 120 build.log 2>/dev/null
+          } > "$RUNNER_TEMP/r/last.txt"
+          cd "$RUNNER_TEMP/r"
+          git init -q
+          git checkout -q -b build-logs
+          git add last.txt
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "build log ${{ github.run_id }}"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" build-logs
+
+      - name: ملاحظات الإصدار (notes)
+        if: success() && steps.check.outputs.skip != 'true' && steps.check.outputs.signed == 'true' && steps.check.outputs.published == 'false'
+        run: |
+          F="changelogs/$VERSION.md"
+          if [ -f "$F" ]; then cp "$F" "$RUNNER_TEMP/notes.md"; else echo "تحسينات وإصلاحات." > "$RUNNER_TEMP/notes.md"; fi
+          {
+            echo ""
+            echo "---"
+            echo "**التثبيت:** حمّل \`Wazifati-$VERSION.apk\` من الأسفل وافتحه على الهاتف. التحديثات التالية من داخل التطبيق: المزيد ← البحث عن تحديث."
+          } >> "$RUNNER_TEMP/notes.md"
+
+      - name: نشر الإصدار (release)
+        if: success() && steps.check.outputs.skip != 'true' && steps.check.outputs.signed == 'true' && steps.check.outputs.published == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: وظيفتي ${{ env.VERSION }}
+          body_path: ${{ runner.temp }}/notes.md
+          files: app/build/outputs/apk/release/Wazifati-*.apk
+          make_latest: true
+          prerelease: false

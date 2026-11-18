@@ -1,0 +1,8 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.jks
+node_modules/
+.wrangler/
+__pycache__/

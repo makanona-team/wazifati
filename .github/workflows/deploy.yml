@@ -1,0 +1,79 @@
+name: نشر الخادم (Cloudflare)
+
+# ينشر خادم وظيفتي على Cloudflare عند تغيير مجلد worker، ثم يشغّل أول جلب للفرص.
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'worker/**', '.github/workflows/deploy.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: النشر (deploy)
+        id: dep
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SIGN_PASS: ${{ secrets.SIGN_PASS }}
+        run: |
+          set -o pipefail
+          for s in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID SIGN_PASS; do
+            if [ -z "${!s}" ]; then echo "::error::السر $s غير مضاف في إعدادات المستودع"; echo "missing secret $s" > deploy.log; exit 1; fi
+          done
+          cd worker
+          npx --yes wrangler@4 deploy 2>&1 | tee ../deploy.log
+          URL=$(grep -oE 'https://wazifati\.[a-zA-Z0-9-]+\.workers\.dev' ../deploy.log | head -1)
+          if [ -z "$URL" ]; then
+            SUB=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" | python3 -c "import sys,json;print((json.load(sys.stdin).get('result') or {}).get('subdomain',''))")
+            [ -n "$SUB" ] && URL="https://wazifati.$SUB.workers.dev"
+          fi
+          echo "URL=$URL" | tee -a ../deploy.log
+          if [ -z "$URL" ]; then echo "::error::لم أجد عنوان workers.dev — فعّل النطاق الفرعي workers.dev في Cloudflare"; exit 1; fi
+          KEY=$(printf '%s' "$SIGN_PASS:wazifati-ingest" | sha256sum | cut -c1-40)
+          printf '%s' "$KEY" | npx --yes wrangler@4 secret put INGEST_KEY 2>&1 | tee -a ../deploy.log
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: حفظ عنوان الخادم (config)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.dep.outputs.url }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/c" && cd "$RUNNER_TEMP/c"
+          printf '%s\n' "$URL" > api-url.txt
+          git init -q && git checkout -q -b config && git add api-url.txt
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "api url"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" config
+
+      - name: تشغيل أول جلب (scrape)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run scrape.yml -R "$GITHUB_REPOSITORY" || true
+
+      - name: حفظ السجل (log)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/r" && cp deploy.log "$RUNNER_TEMP/r/last.txt" 2>/dev/null || echo "no log" > "$RUNNER_TEMP/r/last.txt"
+          cd "$RUNNER_TEMP/r" && sed -i '1i status: ${{ job.status }} run: ${{ github.run_id }}' last.txt
+          git init -q && git checkout -q -b deploy-logs && git add last.txt
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "deploy log"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" deploy-logs

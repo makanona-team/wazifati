@@ -1,0 +1,66 @@
+plugins {
+    id 'com.android.application'
+}
+
+// مفتاح التوقيع يأتي من GitHub Actions (السر SIGN_PASS). بدونه يُبنى إصدار تجريبي فقط.
+def ksPath = System.getenv('WZ_KEYSTORE')
+// عنوان الخادم يُمرَّر من خطوة نشر Cloudflare في نفس سير العمل.
+def apiUrl = System.getenv('WZ_API') ?: ''
+
+android {
+    namespace 'com.feras.wazifati'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.feras.wazifati'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+        buildConfigField 'String', 'API_URL', "\"${apiUrl}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        if (ksPath) {
+            release {
+                storeFile file(ksPath)
+                storePassword System.getenv('WZ_PASS')
+                keyAlias 'wazifati'
+                keyPassword System.getenv('WZ_PASS')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (ksPath) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            assets.srcDir '../changelogs'
+        }
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    applicationVariants.configureEach { variant ->
+        variant.outputs.configureEach {
+            outputFileName = "Wazifati-${variant.versionName}.apk"
+        }
+    }
+}

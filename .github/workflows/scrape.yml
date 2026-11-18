@@ -1,0 +1,49 @@
+name: جلب الفرص
+
+# كل ساعة: يجلب الإعلانات الجديدة من تيليغرام والمواقع ويرسلها للخادم.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: الجلب (scrape)
+        env:
+          SIGN_PASS: ${{ secrets.SIGN_PASS }}
+        run: |
+          set -o pipefail
+          git fetch -q origin config && WZ_API=$(git show origin/config:api-url.txt | tr -d '\r\n ')
+          export WZ_API
+          export WZ_KEY=$(printf '%s' "$SIGN_PASS:wazifati-ingest" | sha256sum | cut -c1-40)
+          python3 scraper/scrape.py 2>&1 | tee scrape.log
+
+      - name: إبقاء الجدولة فعّالة (keepalive)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/scrape.yml/enable" || true
+
+      - name: حفظ السجل (log)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/r" && cp scrape.log "$RUNNER_TEMP/r/last.txt" 2>/dev/null || echo "no log" > "$RUNNER_TEMP/r/last.txt"
+          cd "$RUNNER_TEMP/r" && sed -i '1i status: ${{ job.status }} run: ${{ github.run_id }}' last.txt
+          git init -q && git checkout -q -b scrape-logs && git add last.txt
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "scrape log"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" scrape-logs
