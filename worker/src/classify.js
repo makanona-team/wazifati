@@ -350,3 +350,33 @@ export function jobScore(text, c, opts = {}) {
   if ((promo || sale) && s < 5) verdict = 'reject';
   return { score: s, verdict, why };
 }
+
+// ===== المناقصات =====
+const TENDER_STRONG = rx(['مناقصه', 'مناقصات', 'استدراج عروض', 'طلب عروض', 'عروض اسعار', 'طلب عرض سعر', 'دعوه لتقديم العروض', 'دعوه للمناقصه', 'tender', 'tenders', 'rfq', 'rfp', 'itb', 'request for quotation', 'request for proposal', 'invitation to bid', 'invitation for bid', 'call for proposals', 'expression of interest', 'eoi', 'bidding', 'procurement notice', 'مزايده', 'تلزيم']);
+export const TCATS = [
+  ['works', 'أعمال إنشائية وتأهيل', ['اعمال', 'انشاء', 'بناء', 'ترميم', 'تاهيل', 'اعاده تاهيل', 'تعبيد', 'صب', 'حفر', 'تمديد', 'شبكه مياه', 'شبكه صرف', 'construction', 'rehabilitation', 'civil works', 'works', 'building', 'renovation', 'paving', 'drilling', 'installation']],
+  ['supply', 'توريد مواد ومعدات', ['توريد', 'تزويد', 'شراء', 'مواد', 'معدات', 'اجهزه', 'قرطاسيه', 'اثاث', 'سلل', 'مولدات', 'الواح', 'supply', 'supplies', 'procurement of', 'purchase', 'equipment', 'materials', 'items', 'furniture', 'stationery', 'kits', 'nfi', 'generators', 'solar panels']],
+  ['services', 'خدمات وصيانة', ['خدمات', 'خدمه', 'صيانه', 'تنظيف', 'حراسه', 'تشغيل', 'اطعام', 'طباعه', 'services', 'service', 'maintenance', 'cleaning', 'catering', 'security services', 'printing', 'operation']],
+  ['consult', 'استشارات ودراسات', ['استشار', 'دراسه', 'دراسات', 'تقييم', 'تصميم', 'اشراف', 'تدقيق', 'تدريب', 'consult', 'consultancy', 'consultant', 'study', 'assessment', 'evaluation', 'design', 'audit', 'supervision', 'training', 'research']],
+  ['transport', 'نقل ولوجستيك', ['نقل', 'شحن', 'تخزين', 'تاجير سيارات', 'تاجير اليات', 'سيارات', 'شاحنات', 'transport', 'transportation', 'logistics', 'freight', 'shipping', 'vehicle rental', 'car rental', 'trucks', 'storage', 'warehousing']],
+].map(([id, name, kw]) => ({ id, name, re: rx(kw) }));
+LABELS.tcats = Object.fromEntries([...TCATS.map(t => [t.id, t.name]), ['other', 'أخرى']]);
+
+const BOND = /(?:التامين(?:ات)? الاولي(?:ه)?|تامين اولي|كفاله دخول|bid bond|bid security|tender guarantee|tender security)[^\d\n]{0,25}([\d.,٬]+\s*(?:مليون|الف|ل\.?\s?س|ليره(?: سوريه)?|\$|usd|دولار|syp|sp)?[^\n]{0,15})/i;
+
+/** هل المنشور مناقصة؟ وما تصنيفها وقيمة التأمين؟ */
+export function tenderInfo(text, c) {
+  const raw = String(text || '');
+  const head = ' ' + norm(raw.slice(0, 900)).replace(/\s+/g, ' ') + ' ';
+  const title = ' ' + norm(c ? c.title : '') + ' ';
+  const isTender = TENDER_STRONG.test(title) || TENDER_STRONG.test(head) || (c && c.specs.includes('tender'));
+  if (!isTender) return null;
+  let best = 'other', bestN = 0;
+  for (const t of TCATS) {
+    const re = new RegExp(t.re.source, 'gi');
+    const n = (title.match(re) || []).length * 3 + (head.match(re) || []).length;
+    if (n > bestN) { bestN = n; best = t.id; }
+  }
+  const m = norm(raw).match(BOND);
+  return { tcat: best, bond: m ? m[1].trim().slice(0, 40) : '' };
+}

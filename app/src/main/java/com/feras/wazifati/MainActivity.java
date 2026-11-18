@@ -55,7 +55,14 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private FrameLayout content;
     private TextView status, syncIcon;
-    private final TextView[] tabs = new TextView[4];
+    static final int T_JOBS = 0, T_TENDERS = 1, T_SAVED = 2, T_FILTER = 3, T_MORE = 4;
+    private final TextView[] tabs = new TextView[5];
+    private boolean tenderMode = false;
+    private String quickCat = null;
+    // مسودة الفلتر (لا تُطبّق إلا بزر التأكيد)
+    private java.util.HashMap<String, Set<String>> draft = null;
+    private boolean draftDirty = false;
+    private TextView applyBtnLabel;
     private int tab = 0;
     private List<Store.Job> all = new ArrayList<>();
     private boolean syncing;
@@ -87,7 +94,7 @@ public class MainActivity extends Activity {
         boolean setup = Store.p(this).getBoolean("setup_done", false);
         int reopen = Store.p(this).getInt("reopen_tab", -1);
         Store.p(this).edit().remove("reopen_tab").apply();
-        show(!setup ? 2 : reopen >= 0 ? reopen : getIntent().getIntExtra("tab", 0));
+        show(!setup ? T_FILTER : reopen >= 0 ? reopen : getIntent().getIntExtra("tab", 0));
         if (getIntent().getBooleanExtra("new", false)) { onlyNew = true; show(0); }
         refresh(false);
         if (getIntent().getBooleanExtra("update", false)) checkUpdate(true);
@@ -233,8 +240,8 @@ public class MainActivity extends Activity {
         LinearLayout nav = row(this);
         nav.setBackgroundColor(CARD);
         nav.setElevation(dp(this, 8));
-        String[] names = {"🔎\nالفرص", "⭐\nالمحفوظة", "🎯\nفلتري", "☰\nالمزيد"};
-        for (int i = 0; i < 4; i++) {
+        String[] names = {"🔎\nالفرص", "📑\nالمناقصات", "⭐\nالمحفوظة", "🎯\nفلتري", "☰\nالمزيد"};
+        for (int i = 0; i < 5; i++) {
             final int k = i;
             TextView t = text(this, names[i], 12, MUTED, false);
             t.setGravity(Gravity.CENTER);
@@ -259,7 +266,7 @@ public class MainActivity extends Activity {
         long ls = Store.p(this).getLong("last_sync", 0);
         status.setText(syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls))));
         int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) : 0;
-        tabs[3].setText(pend > 0 ? "☰ " + pend + "🔴\nالمزيد" : "☰\nالمزيد");
+        tabs[T_MORE].setText(pend > 0 ? "☰ " + pend + "🔴\nالمزيد" : "☰\nالمزيد");
     }
 
     private void refresh(boolean manual) {
@@ -288,24 +295,33 @@ public class MainActivity extends Activity {
                 setStatus();
                 if (fe != null && manual) Toast.makeText(this, "تعذّرت المزامنة: " + fe, Toast.LENGTH_LONG).show();
                 else if (manual) Toast.makeText(this, fn > 0 ? "✅ " + fn + " فرصة جديدة تناسبك" : "✅ تمت المزامنة — لا جديد الآن", Toast.LENGTH_SHORT).show();
-                if (!wasSetup && Store.p(this).getBoolean("setup_done", false) && tab == 2) show(0);
-                else if (tab == 0 || tab == 1 || tab == 3) show(tab);
+                if (!wasSetup && Store.p(this).getBoolean("setup_done", false) && tab == T_FILTER) show(T_JOBS);
+                else if (tab != T_FILTER) show(tab);
             });
         }).start();
     }
 
     private void show(int k) {
+        if (tab == T_FILTER && k != T_FILTER && draftDirty && content != null && content.getChildCount() > 0) {
+            new AlertDialog.Builder(this).setMessage("لديك تغييرات على الفلتر لم تُطبّق. تطبيقها؟")
+                    .setPositiveButton("تطبيق", (d, w) -> { applyDraft(); show(k); })
+                    .setNegativeButton("تجاهل", (d, w) -> { draft = null; draftDirty = false; show(k); })
+                    .setNeutralButton("رجوع", null).show();
+            return;
+        }
+        if (k != T_FILTER) { draft = null; draftDirty = false; }
         tab = k;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             tabs[i].setTextColor(i == k ? PRIMARY : MUTED);
             tabs[i].setTypeface(i == k ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
         }
         content.removeAllViews();
         hideKeyboard();
         setStatus();
-        if (k == 0) content.addView(jobsScreen());
-        else if (k == 1) content.addView(savedScreen());
-        else if (k == 2) content.addView(filterScreen());
+        if (k == T_JOBS) content.addView(jobsScreen(false));
+        else if (k == T_TENDERS) content.addView(jobsScreen(true));
+        else if (k == T_SAVED) content.addView(savedScreen());
+        else if (k == T_FILTER) content.addView(filterScreen());
         else content.addView(moreScreen());
     }
 
@@ -328,7 +344,9 @@ public class MainActivity extends Activity {
     // =====================================================================
     // شاشة الفرص
     // =====================================================================
-    private View jobsScreen() {
+    private View jobsScreen(boolean tenders) {
+        if (tenderMode != tenders) { quickGov = null; quickCat = null; }
+        tenderMode = tenders;
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.VERTICAL);
         l.setPadding(dp(this, 10), dp(this, 8), dp(this, 10), 0);
@@ -347,7 +365,7 @@ public class MainActivity extends Activity {
         }
 
         LinearLayout sr = row(this);
-        EditText search = input("🔍 ابحث بأي كلمة: مهندس، محاسب، UNICEF، الرقة…");
+        EditText search = input(tenders ? "🔍 ابحث في المناقصات: توريد، ترميم، مولدات، الحسكة…" : "🔍 ابحث بأي كلمة: مهندس، محاسب، UNICEF، الرقة…");
         search.setText(query);
         search.setSingleLine(true);
         sr.addView(search, new LinearLayout.LayoutParams(0, -2, 1));
@@ -384,7 +402,32 @@ public class MainActivity extends Activity {
         gs.addView(gr);
         l.addView(gs);
 
-        boolean hasFilter = !Store.Filter.of(this).isEmpty();
+        if (tenders) {   // تصنيفات المناقصات السريعة
+            HorizontalScrollView cs = new HorizontalScrollView(this);
+            cs.setHorizontalScrollBarEnabled(false);
+            LinearLayout cr = row(this);
+            cr.setPadding(0, dp(this, 6), 0, 0);
+            ArrayList<TextView> cchips = new ArrayList<>();
+            ArrayList<String> ckeys = new ArrayList<>();
+            ckeys.add(null);
+            ckeys.addAll(Labels.TCATS.keySet());
+            for (String key : ckeys) {
+                TextView t = chip(this, key == null ? "📑 كل التصنيفات" : Labels.TCATS.get(key), key == null ? quickCat == null : key.equals(quickCat));
+                LinearLayout.LayoutParams p = lp(-2, -2);
+                p.leftMargin = dp(this, 6);
+                cr.addView(t, p);
+                cchips.add(t);
+                t.setOnClickListener(v -> {
+                    quickCat = key;
+                    for (int i = 0; i < cchips.size(); i++) setChip(this, cchips.get(i), ckeys.get(i) == null ? quickCat == null : ckeys.get(i).equals(quickCat));
+                    applyList();
+                });
+            }
+            cs.addView(cr);
+            l.addView(cs);
+        }
+
+        boolean hasFilter = tenders ? !Store.TFilter.of(this).isEmpty() : !Store.Filter.of(this).isEmpty();
         HorizontalScrollView hs = new HorizontalScrollView(this);
         hs.setHorizontalScrollBarEnabled(false);
         LinearLayout chips = row(this);
@@ -394,10 +437,16 @@ public class MainActivity extends Activity {
         TextView cExp = chip(this, "⏳ إخفاء المنتهي", Store.bool(this, "hide_expired"));
         TextView cShared = chip(this, "🤝 مشاركات الأصدقاء", onlyShared);
         TextView cRead = chip(this, "✔ تعليم الكل كمقروء", false);
-        boolean canMatch = Match.enabled(this);
-        TextView cSort = chip(this, sortMatch ? "🎯 الأنسب لي" : "🕒 الأحدث", sortMatch);
-        cSort.setOnClickListener(v -> { sortMatch = !sortMatch; cSort.setText(sortMatch ? "🎯 الأنسب لي" : "🕒 الأحدث"); setChip(this, cSort, sortMatch); applyList(); });
-        if (!canMatch) cSort.setVisibility(View.GONE);
+        TextView cSort = chip(this, sortLabel(), true);
+        cSort.setOnClickListener(v -> {
+            String cur = sortMode();
+            boolean canMatch = !tenderMode && Match.enabled(this);
+            String next = cur.equals("recent") ? "deadline" : cur.equals("deadline") ? (canMatch ? "match" : "recent") : "recent";
+            Store.p(this).edit().putString("sort", next).apply();
+            cSort.setText(sortLabel());
+            applyList();
+        });
+        if (tenders) cShared.setVisibility(View.GONE);
         for (TextView t : new TextView[]{cSort, cFilter, cNew, cExp, cShared, cRead}) {
             LinearLayout.LayoutParams p = lp(-2, -2);
             p.leftMargin = dp(this, 6);
@@ -422,7 +471,7 @@ public class MainActivity extends Activity {
         l.addView(lv, new LinearLayout.LayoutParams(-1, 0, 1));
 
         cFilter.setOnClickListener(v -> {
-            if (!hasFilter) { Toast.makeText(this, "لم تحدد فلتراً بعد — من تبويب «فلتري»", Toast.LENGTH_SHORT).show(); return; }
+            if (!hasFilter) { Toast.makeText(this, tenders ? "لم تحدد فلتر المناقصات بعد — من تبويب «فلتري»" : "لم تحدد فلتراً بعد — من تبويب «فلتري»", Toast.LENGTH_SHORT).show(); return; }
             useFilter = !useFilter; setChip(this, cFilter, useFilter); applyList();
         });
         cNew.setOnClickListener(v -> { onlyNew = !onlyNew; setChip(this, cNew, onlyNew); applyList(); });
@@ -451,7 +500,7 @@ public class MainActivity extends Activity {
         e.setPadding(dp(this, 24), dp(this, 40), dp(this, 24), dp(this, 40));
         e.setText(all.isEmpty()
                 ? (syncing ? "جارٍ جلب الفرص لأول مرة…" : "لا توجد فرص محفوظة بعد.\nاضغط 🔄 مزامنة في الأعلى.")
-                : "لا توجد فرص تطابق البحث أو الفلتر الحالي.");
+                : (tenderMode ? "لا توجد مناقصات تطابق البحث أو الفلتر الحالي." : "لا توجد فرص تطابق البحث أو الفلتر الحالي."));
         parent.addView(e, lp(-1, -2));
         e.setVisibility(View.GONE);
         return e;
@@ -460,16 +509,24 @@ public class MainActivity extends Activity {
     private void applyList() {
         if (adapter == null || countLabel == null) return;
         Store.Filter f = Store.Filter.of(this);
-        boolean useF = useFilter && !f.isEmpty();
+        Store.TFilter tf = Store.TFilter.of(this);
+        boolean useF = useFilter && (tenderMode ? !tf.isEmpty() : !f.isEmpty());
         boolean hideExp = Store.bool(this, "hide_expired");
         boolean hideDoubt = Store.bool(this, "hide_doubt");
         Set<String> hidden = Store.set(this, "hidden");
         Search.Query sq = Search.parse(query);
-        Match.Profile prof = Match.enabled(this) ? Match.profile(this) : null;
+        Match.Profile prof = !tenderMode && Match.enabled(this) ? Match.profile(this) : null;
         ArrayList<Store.Job> out = new ArrayList<>();
         for (Store.Job j : all) {
+            if (j.tender() != tenderMode) continue;
             if (hidden.contains(String.valueOf(j.id))) continue;
-            if (quickGov != null) {
+            if (tenderMode) {
+                if (quickCat != null && !quickCat.equals(j.tcat.isEmpty() ? "other" : j.tcat)) continue;
+                if (quickGov != null) {
+                    Set<String> g = new HashSet<>(Arrays.asList(j.govs.split(",")));
+                    if (!g.contains(quickGov) && !g.contains("all")) continue;
+                } else if (useF && !tf.match(j)) continue;
+            } else if (quickGov != null) {
                 Set<String> g = new HashSet<>(Arrays.asList(j.govs.split(",")));
                 if (!g.contains(quickGov) && !g.contains("all")) continue;
                 if (useF && !f.matchNoGov(j)) continue;
@@ -485,11 +542,35 @@ public class MainActivity extends Activity {
             if (prof != null && j.match < 0) j.match = Match.score(this, j, prof).pct;
             out.add(j);
         }
-        if (prof != null && sortMatch) out.sort((x, y) -> y.match != x.match ? y.match - x.match : Long.compare(y.posted, x.posted));
+        String sm = sortMode();
+        if (sm.equals("match") && prof != null) out.sort((x, y) -> y.match != x.match ? y.match - x.match : Long.compare(y.posted, x.posted));
+        else if (sm.equals("deadline")) out.sort((x, y) -> {
+            int dx = deadlineRank(x), dy = deadlineRank(y);
+            return dx != dy ? Integer.compare(dx, dy) : Long.compare(y.posted, x.posted);
+        });
         adapter.q = sq;
         adapter.set(out);
         if (!sq.isEmpty()) countLabel.setText("🔎 " + out.size() + " نتيجة لـ «" + query + "»" + (useF ? " حسب فلترك" : "") + (quickGov != null ? " في " + Labels.GOVS.get(quickGov) : "") + " • من أصل " + all.size() + " فرصة");
-        else countLabel.setText(out.size() + " فرصة" + (useF ? " حسب فلترك" : "") + (quickGov != null ? " في " + Labels.GOVS.get(quickGov) : "") + (all.size() != out.size() ? " من أصل " + all.size() : ""));
+        else countLabel.setText(out.size() + (tenderMode ? " مناقصة" : " فرصة") + (useF ? " حسب فلترك" : "") + (quickGov != null ? " في " + Labels.GOVS.get(quickGov) : "") + (all.size() != out.size() ? " من أصل " + all.size() : ""));
+    }
+
+    private String sortMode() {
+        String m = Store.p(this).getString("sort", "recent");
+        if (m.equals("match") && (tenderMode || !Match.enabled(this))) return "recent";
+        return m;
+    }
+
+    private String sortLabel() {
+        String m = sortMode();
+        return m.equals("deadline") ? "↕ ⏳ الأقرب إغلاقاً" : m.equals("match") ? "↕ 🎯 الأنسب لي" : "↕ 🕒 الأحدث نشراً";
+    }
+
+    /** للترتيب حسب الإغلاق: الأقرب أولاً، ثم بلا موعد، ثم المنتهي. */
+    private static int deadlineRank(Store.Job j) {
+        int d = Store.daysLeft(j);
+        if (d == Integer.MIN_VALUE) return 100000;
+        if (d < 0) return 200000 - d;
+        return d;
     }
 
     static String norm(String s) {
@@ -584,13 +665,16 @@ public class MainActivity extends Activity {
             h.org.setText(org);
             h.org.setVisibility(org.isEmpty() ? View.GONE : View.VISIBLE);
             String g = Labels.names(Labels.GOVS, j.govs), s = Labels.names(Labels.SPECS, j.specs);
-            h.tags.setText("📍 " + (g.isEmpty() ? "غير محدد" : g) + "   🏷 " + (s.isEmpty() ? "غير مصنف" : s));
+            if (j.tender()) {
+                String tc = Labels.TCATS.get(j.tcat.isEmpty() ? "other" : j.tcat);
+                h.tags.setText(tc + "   📍 " + (g.isEmpty() ? "غير محدد" : g) + (j.bond.isEmpty() ? "" : "   💰 تأمين " + j.bond));
+            } else h.tags.setText("📍 " + (g.isEmpty() ? "غير محدد" : g) + "   🏷 " + (s.isEmpty() ? "غير مصنف" : s));
             deadlineText(h.deadline, j);
             h.meta.setText((j.doubt == 1 ? "⚠️ قد لا يكون وظيفة • " : "") + ago(j.posted) + " • " + j.src + (j.nSrc > 1 ? " +" + (j.nSrc - 1) : ""));
             String id = String.valueOf(j.id);
             h.marks.setText((favs.contains(id) ? "⭐" : "") + (applied.contains(id) ? "✅" : "") + (j.shared != 0 ? "🤝" : "") + (j.image.isEmpty() ? "" : "📷"));
-            if (showMatch && j.match < 0) { Match.Profile pf = Match.profile(c); if (pf != null) j.match = Match.score(c, j, pf).pct; }
-            if (showMatch && j.match >= 45) {
+            if (showMatch && !j.tender() && j.match < 0) { Match.Profile pf = Match.profile(c); if (pf != null) j.match = Match.score(c, j, pf).pct; }
+            if (showMatch && !j.tender() && j.match >= 45) {
                 h.match.setVisibility(View.VISIBLE);
                 h.match.setText("🎯 " + j.match + "%");
                 h.match.setBackground(round(c, Match.color(j.match), 10));
@@ -657,12 +741,16 @@ public class MainActivity extends Activity {
         c.addView(title);
         if (!j.org.isEmpty()) c.addView(text(this, j.org, 15, MUTED, false));
         addInfo(c, "📍 المكان", Labels.names(Labels.GOVS, j.govs));
-        addInfo(c, "🏷 الاختصاص", Labels.names(Labels.SPECS, j.specs));
+        if (j.tender()) {
+            addInfo(c, "📑 النوع", "مناقصة / طلب عروض");
+            addInfo(c, "🗂 التصنيف", Labels.TCATS.get(j.tcat.isEmpty() ? "other" : j.tcat));
+            if (!j.bond.isEmpty()) addInfo(c, "💰 التأمين الأولي", j.bond);
+        } else addInfo(c, "🏷 الاختصاص", Labels.names(Labels.SPECS, j.specs));
         addInfo(c, "🏢 الجهة", Labels.SECTORS.get(j.sector));
         TextView dl = text(this, "", 14, GREEN, true);
         deadlineText(dl, j);
         if (dl.getText().length() > 0) { dl.setPadding(0, dp(this, 6), 0, 0); c.addView(dl); }
-        if (Match.enabled(this)) {
+        if (Match.enabled(this) && !j.tender()) {
             Match.Result mr = Match.score(this, j, Match.profile(this));
             TextView mt = text(this, "🎯 مناسبة لك " + mr.pct + "%" + (mr.why.isEmpty() ? "" : "\nيطابق: " + String.join("، ", mr.why)), 14, Match.color(mr.pct), true);
             mt.setPadding(0, dp(this, 8), 0, 0);
@@ -685,7 +773,7 @@ public class MainActivity extends Activity {
             r1.addView(open, weight());
         }
         if (!j.apply.isEmpty()) {
-            Button ap = button(this, j.apply.startsWith("mailto:") ? "✉️ التقديم بالبريد" : "📝 رابط التقديم", true);
+            Button ap = button(this, j.apply.startsWith("mailto:") ? (j.tender() ? "✉️ طلب الوثائق بالبريد" : "✉️ التقديم بالبريد") : (j.tender() ? "📝 وثائق المناقصة" : "📝 رابط التقديم"), true);
             ap.setOnClickListener(v -> openUrl(j.apply));
             r1.addView(ap, weight());
         }
@@ -730,12 +818,12 @@ public class MainActivity extends Activity {
             Sync.pushPrefs(this);
             d.dismiss();
             applyList();
-            if (tab == 1) show(1);
+            if (tab == T_SAVED) show(T_SAVED);
         });
         r3.addView(fix, weight());
         r3.addView(hide, weight());
         l.addView(r3, lpm(this, -1, -2, 0, 8));
-        Button flag = button(this, Store.admin(this) ? "🚩 ليس إعلان وظيفة (حذف للجميع)" : "🚩 ليس إعلان وظيفة", false);
+        Button flag = button(this, Store.admin(this) ? "🚩 إعلان غير مفيد (حذف للجميع)" : "🚩 ليس إعلاناً مفيداً", false);
         flag.setTextColor(RED);
         flag.setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setMessage(Store.admin(this) ? "حذف هذا الإعلان لكل المستخدمين؟" : "الإبلاغ أن هذا ليس إعلان وظيفة؟ سيختفي عندك فوراً، وإذا أبلغ عنه شخص آخر يختفي عن الجميع.")
@@ -844,7 +932,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < 3; i++) {
             final int k = i;
             TextView t = chip(this, names[i], savedMode == i);
-            t.setOnClickListener(v -> { savedMode = k; show(1); });
+            t.setOnClickListener(v -> { savedMode = k; show(T_SAVED); });
             seg.addView(t, weight());
         }
         l.addView(seg, lpm(this, -1, -2, 0, 8));
@@ -874,25 +962,26 @@ public class MainActivity extends Activity {
     // فلتري
     // =====================================================================
     private View filterScreen() {
+        if (draft == null) {
+            draft = new java.util.HashMap<>();
+            for (String k : new String[]{"specs", "govs", "sectors", "t_cats", "t_govs"}) draft.put(k, new LinkedHashSet<>(Store.set(this, k)));
+            draftDirty = false;
+        }
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
         ScrollView sv = new ScrollView(this);
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.VERTICAL);
-        l.setPadding(dp(this, 12), dp(this, 12), dp(this, 12), dp(this, 30));
+        l.setPadding(dp(this, 12), dp(this, 12), dp(this, 12), dp(this, 20));
         sv.addView(l);
+        outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
 
         if (!Store.p(this).getBoolean("setup_done", false)) {
             LinearLayout w = card(this);
             w.setBackground(round(this, PRIMARY_LIGHT, 14));
             String nm = Store.p(this).getString("uname", "");
             w.addView(text(this, "أهلاً " + nm + " 👋", 18, PRIMARY, true));
-            w.addView(text(this, "اختر اختصاصاتك ومحافظاتك، وسيصلك إشعار بكل فرصة جديدة تناسبك. يمكنك دائماً تصفّح كل الفرص من تبويب «الفرص».", 14, TEXT, false));
-            Button done = button(this, "تم — اعرض الفرص", true);
-            done.setOnClickListener(v -> {
-                Store.p(this).edit().putBoolean("setup_done", true).putLong("prefs_updated", System.currentTimeMillis()).apply();
-                Sync.pushPrefs(this);
-                show(0);
-            });
-            w.addView(done, lpm(this, -1, -2, 10, 0));
+            w.addView(text(this, "اختر اختصاصاتك ومحافظاتك ثم اضغط «تطبيق الفلتر» في الأسفل، وسيصلك إشعار بكل فرصة جديدة تناسبك. يمكنك دائماً تصفّح كل الفرص من تبويب «الفرص».", 14, TEXT, false));
             l.addView(w, lpm(this, -1, -2, 0, 12));
         }
 
@@ -902,10 +991,61 @@ public class MainActivity extends Activity {
         sw.addView(switchRow("⚠️ إخفاء الإعلانات المشكوك أنها ليست وظائف", "hide_doubt"));
         l.addView(sw, lpm(this, -1, -2, 0, 12));
 
+        l.addView(section("🔎 فلتر الوظائف"));
         l.addView(group("🏷 الاختصاصات", "specs", Labels.SPECS, "اترك الكل فارغاً لكل الاختصاصات"), lpm(this, -1, -2, 0, 12));
         l.addView(group("📍 المحافظات", "govs", Labels.GOVS, "اترك الكل فارغاً لكل المحافظات. الإعلانات الموجّهة «لكل سوريا» تظهر دائماً."), lpm(this, -1, -2, 0, 12));
         l.addView(group("🏢 نوع الجهة", "sectors", Labels.SECTORS, "اترك الكل فارغاً لكل الجهات"), lpm(this, -1, -2, 0, 12));
-        return sv;
+
+        l.addView(section("📑 فلتر المناقصات"));
+        l.addView(group("🗂 تصنيف المناقصة", "t_cats", Labels.TCATS, "اترك الكل فارغاً لكل التصنيفات"), lpm(this, -1, -2, 0, 12));
+        l.addView(group("📍 محافظات المناقصات", "t_govs", Labels.GOVS, "اترك الكل فارغاً لكل المحافظات"), lpm(this, -1, -2, 0, 12));
+
+        // الشريط الثابت: تطبيق / إلغاء
+        LinearLayout bar = row(this);
+        bar.setBackgroundColor(CARD);
+        bar.setElevation(dp(this, 10));
+        bar.setPadding(dp(this, 10), dp(this, 8), dp(this, 10), dp(this, 8));
+        Button apply = button(this, "", true);
+        applyBtnLabel = apply;
+        apply.setOnClickListener(v -> {
+            applyDraft();
+            Store.p(this).edit().putBoolean("setup_done", true).apply();
+            Toast.makeText(this, "✅ تم تطبيق الفلتر", Toast.LENGTH_SHORT).show();
+            show(T_JOBS);
+        });
+        Button cancel = button(this, "↩ إلغاء التغييرات", false);
+        cancel.setOnClickListener(v -> { draft = null; draftDirty = false; show(T_FILTER); });
+        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(0, -2, 2);
+        ap.leftMargin = dp(this, 6);
+        bar.addView(apply, ap);
+        bar.addView(cancel, new LinearLayout.LayoutParams(0, -2, 1));
+        outer.addView(bar, lp(-1, -2));
+        updateApplyLabel();
+        return outer;
+    }
+
+    /** عدد الفرص المتوقع مع المسودة الحالية. */
+    private void updateApplyLabel() {
+        if (applyBtnLabel == null || draft == null) return;
+        Store.Filter f = Store.Filter.of(draft.get("specs"), draft.get("govs"), draft.get("sectors"), Store.bool(this, "unk"));
+        Store.TFilter tf = Store.TFilter.of(draft.get("t_cats"), draft.get("t_govs"));
+        Set<String> hidden = Store.set(this, "hidden");
+        boolean hideExp = Store.bool(this, "hide_expired"), hideDoubt = Store.bool(this, "hide_doubt");
+        int nj = 0, nt = 0;
+        for (Store.Job j : all) {
+            if (hidden.contains(String.valueOf(j.id)) || (hideExp && Store.expired(j)) || (hideDoubt && j.doubt == 1)) continue;
+            if (j.tender()) { if (tf.match(j)) nt++; }
+            else if (f.match(j)) nj++;
+        }
+        applyBtnLabel.setText((draftDirty ? "✅ تطبيق الفلتر" : "✅ الفلتر مطبّق") + "\n" + nj + " فرصة • " + nt + " مناقصة");
+        applyBtnLabel.setAlpha(draftDirty ? 1f : 0.75f);
+    }
+
+    private void applyDraft() {
+        if (draft == null) return;
+        for (Map.Entry<String, Set<String>> e : draft.entrySet()) Store.putSet(this, e.getKey(), e.getValue());
+        draftDirty = false;
+        Sync.pushPrefs(this);
     }
 
     private View switchRow(String label, String key) {
@@ -928,19 +1068,19 @@ public class MainActivity extends Activity {
         hr.addView(clear);
         c.addView(hr);
         c.addView(text(this, hint, 12, MUTED, false));
-        Set<String> sel = Store.set(this, key);
+        Set<String> sel = draft != null && draft.containsKey(key) ? draft.get(key) : Store.set(this, key);
         ArrayList<CheckBox> boxes = new ArrayList<>();
         for (Map.Entry<String, String> e : items.entrySet()) {
-            if (key.equals("govs") && e.getKey().equals("all")) continue;
+            if ((key.equals("govs") || key.equals("t_govs")) && e.getKey().equals("all")) continue;
             CheckBox cb = new CheckBox(this);
             cb.setText(e.getValue());
             cb.setTextSize(15);
             cb.setTextColor(TEXT);
             cb.setChecked(sel.contains(e.getKey()));
             cb.setOnCheckedChangeListener((b, on) -> {
-                Set<String> s = Store.set(this, key);
-                if (on) s.add(e.getKey()); else s.remove(e.getKey());
-                Store.putSet(this, key, s);
+                if (on) sel.add(e.getKey()); else sel.remove(e.getKey());
+                draftDirty = true;
+                updateApplyLabel();
             });
             boxes.add(cb);
             c.addView(cb);
@@ -1031,7 +1171,7 @@ public class MainActivity extends Activity {
         String[][] th = {{"auto", "تلقائي"}, {"light", "☀️ نهاري"}, {"dark", "🌙 ليلي"}};
         for (String[] t : th) {
             TextView ch = chip(this, t[1], cur.equals(t[0]));
-            ch.setOnClickListener(v -> { Store.p(this).edit().putString("theme", t[0]).putInt("reopen_tab", 3).apply(); recreate(); });
+            ch.setOnClickListener(v -> { Store.p(this).edit().putString("theme", t[0]).putInt("reopen_tab", T_MORE).apply(); recreate(); });
             tr.addView(ch, weight());
         }
         tc.addView(tr, lpm(this, -1, -2, 8, 0));
@@ -1114,7 +1254,7 @@ public class MainActivity extends Activity {
                     Store.applyCv(this, null);
                     all = Store.get(this).all();
                     Toast.makeText(this, "تم حذف السيرة", Toast.LENGTH_SHORT).show();
-                    show(3);
+                    show(T_MORE);
                 })).setNegativeButton("إلغاء", null).show());
         c.addView(del, lpm(this, -1, -2, 10, 0));
         return c;
@@ -1178,7 +1318,7 @@ public class MainActivity extends Activity {
                 pd.dismiss();
                 if (fe != null) { new AlertDialog.Builder(this).setTitle("تعذّرت قراءة السيرة").setMessage(fe).setPositiveButton("حسناً", null).show(); return; }
                 all = Store.get(this).all();
-                show(3);
+                show(T_MORE);
                 cvResult(fr);
             });
         }).start();
@@ -1238,7 +1378,7 @@ public class MainActivity extends Activity {
                     Store.p(this).edit().putBoolean("setup_done", true).apply();
                     Sync.pushPrefs(this);
                     Toast.makeText(this, "✅ تم ضبط فلترك حسب سيرتك", Toast.LENGTH_SHORT).show();
-                    sortMatch = true;
+                    Store.p(this).edit().putString("sort", "match").apply();
                     show(0);
                 }).setNegativeButton("إلغاء", null).show();
     }
@@ -1248,6 +1388,7 @@ public class MainActivity extends Activity {
         c.addView(text(this, "🔔 الإشعارات", 16, TEXT, true));
         c.addView(switchRow("إشعار بالفرص الجديدة المطابقة لفلتري", "notify"));
         c.addView(switchRow("⏰ تذكير قبل يوم من إغلاق الفرص المحفوظة", "remind"));
+        c.addView(switchRow("📑 إشعار بالمناقصات الجديدة (حسب فلتر المناقصات)", "t_notify"));
 
         c.addView(text(this, "طريقة الإشعار:", 14, TEXT, false));
         LinearLayout mr = row(this);
@@ -1659,7 +1800,7 @@ public class MainActivity extends Activity {
         Context app = getApplicationContext();
         new Thread(() -> {
             try { Sync.syncAdmin(app, false); } catch (Throwable ignored) { }
-            ui.post(() -> { setStatus(); if (tab == 3) show(3); });
+            ui.post(() -> { setStatus(); if (tab == T_MORE) show(T_MORE); });
         }).start();
     }
 

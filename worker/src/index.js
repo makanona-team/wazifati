@@ -1,10 +1,10 @@
 // خادم «وظيفتي» على Cloudflare Workers + Durable Object (قاعدة SQLite مجانية).
 // الدخول بحساب Google فقط. أدوار: admin / user.
-import { classify, dupKeys, LABELS, jobScore } from './classify.js';
+import { classify, dupKeys, LABELS, jobScore, tenderInfo } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '1.5';
+const VERSION = '1.6';
 const DAY = 864e5;
 const KEEP_DAYS = 60;
 const FIRST_DAYS = 30;
@@ -70,7 +70,7 @@ export class Db {
       specs TEXT, govs TEXT, sector TEXT, deadline TEXT, posted INTEGER, created INTEGER,
       src TEXT, srcs TEXT, apply TEXT, text TEXT, shared_by TEXT)`);
     this.tryRun(`ALTER TABLE jobs ADD COLUMN updated INTEGER DEFAULT 0`);
-    for (const col of ['image TEXT', 'doubt INTEGER DEFAULT 0', 'hidden INTEGER DEFAULT 0', 'flag_ok INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE jobs ADD COLUMN ${col}`);
+    for (const col of ['image TEXT', 'doubt INTEGER DEFAULT 0', 'hidden INTEGER DEFAULT 0', 'flag_ok INTEGER DEFAULT 0', "kind TEXT DEFAULT 'job'", 'tcat TEXT', 'bond TEXT']) this.tryRun(`ALTER TABLE jobs ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS flags (job_id INTEGER, email TEXT, created INTEGER, PRIMARY KEY(job_id, email))`);
     this.run(`CREATE INDEX IF NOT EXISTS jobs_k1 ON jobs(k1)`);
     this.run(`CREATE INDEX IF NOT EXISTS jobs_k2 ON jobs(k2)`);
@@ -122,6 +122,17 @@ export class Db {
         else if (v.verdict === 'doubt') { this.run(`UPDATE jobs SET doubt=1, updated=? WHERE id=?`, now, j.id); doubt++; }
       }
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('mig15',?)`, JSON.stringify({ removed, doubt, at: now }));
+    }
+    // ترحيل 1.6: فرز المناقصات من بين الوظائف
+    if (!this.one(`SELECT v FROM meta WHERE k='mig16'`)) {
+      let n = 0;
+      const now = Date.now();
+      for (const j of this.q(`SELECT id, title, specs, text FROM jobs WHERE hidden=0`)) {
+        const c = { title: j.title || '', specs: String(j.specs || '').split(',') };
+        const t = tenderInfo(j.text || '', c);
+        if (t) { this.run(`UPDATE jobs SET kind='tender', tcat=?, bond=?, doubt=0, updated=? WHERE id=?`, t.tcat, t.bond, now, j.id); n++; }
+      }
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('mig16',?)`, String(n));
     }
     this.run(`INSERT OR IGNORE INTO accounts(email,role,status,created) VALUES(?,?,?,?)`, FIRST_ADMIN, 'admin', 'active', Date.now());
     this.run(`UPDATE accounts SET role='admin', status='active' WHERE email=?`, FIRST_ADMIN);
@@ -266,7 +277,7 @@ export class Db {
     return {
       id: r.id, t: r.title, o: r.org, s: r.specs, g: r.govs, c: r.sector, d: r.deadline,
       p: r.posted, src: r.src, n: (r.srcs || '').split('\n').filter(Boolean).length, u: r.url, a: r.apply, x: r.text, sh: r.shared_by ? 1 : 0,
-      im: r.image || '', dt: r.doubt ? 1 : 0,
+      im: r.image || '', dt: r.doubt ? 1 : 0, k: r.kind || 'job', tc: r.tcat || '', bd: r.bond || '',
     };
   }
 
@@ -286,8 +297,8 @@ export class Db {
   // تصحيحات التصنيف التي حدثت بعد وقت معيّن
   changes(url) {
     const since = +url.searchParams.get('since') || 0;
-    const rows = this.q(`SELECT id, specs, govs, sector, hidden, doubt FROM jobs WHERE updated > ? ORDER BY updated LIMIT 1000`, since);
-    return json({ now: Date.now(), items: rows.map(r => ({ id: r.id, s: r.specs, g: r.govs, c: r.sector, h: r.hidden ? 1 : 0, dt: r.doubt ? 1 : 0 })) });
+    const rows = this.q(`SELECT id, specs, govs, sector, hidden, doubt, kind, tcat, bond FROM jobs WHERE updated > ? ORDER BY updated LIMIT 1000`, since);
+    return json({ now: Date.now(), items: rows.map(r => ({ id: r.id, s: r.specs, g: r.govs, c: r.sector, h: r.hidden ? 1 : 0, dt: r.doubt ? 1 : 0, k: r.kind || 'job', tc: r.tcat || '', bd: r.bond || '' })) });
   }
 
   addJob(post, opts = {}) {
@@ -303,7 +314,9 @@ export class Db {
     const c = classify(text, { now: new Date(), links: post.links || [], force: opts.force, deadline: post.deadline || '', sectorHint: post.sector || '', srcName: post.srcName || '' });
     if (post.title && post.title.length > 3) c.title = String(post.title).slice(0, 140);
     if (post.org) c.org = String(post.org).slice(0, 80);
+    const tinfo = tenderInfo(text, c);
     const js = jobScore(text, c, { image: !!image });
+    if (tinfo && js.verdict === 'reject' && js.score > -10 && (c.deadline || c.org)) js.verdict = 'ok';   // المناقصات بنية مختلفة عن الوظائف
     if (opts.force) { if (js.score <= -10) { this.markSeen(url); return 'notjob'; } }
     else if (js.verdict === 'reject' || (!c.isJob && !image)) { this.markSeen(url); return 'notjob'; }
     if (image && text.startsWith('📷')) c.title = '📷 إعلان وظيفة بصورة';
@@ -318,9 +331,10 @@ export class Db {
       return 'dup';
     }
     this.run(
-      `INSERT INTO jobs(k1,k2,url,title,org,specs,govs,sector,deadline,posted,created,src,srcs,apply,text,shared_by,updated,image,doubt) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)`,
+      `INSERT INTO jobs(k1,k2,url,title,org,specs,govs,sector,deadline,posted,created,src,srcs,apply,text,shared_by,updated,image,doubt,kind,tcat,bond) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
       k1, k2, url, c.title, c.org, c.specs.join(','), c.govs.join(','), c.sector, c.deadline, posted, now, src, src,
-      c.apply, text.slice(0, MAX_TEXT), opts.sharedBy || null, image || null, js.verdict === 'doubt' && !opts.force ? 1 : 0);
+      c.apply, text.slice(0, MAX_TEXT), opts.sharedBy || null, image || null, js.verdict === 'doubt' && !opts.force && !tinfo ? 1 : 0,
+      tinfo ? 'tender' : 'job', tinfo ? tinfo.tcat : null, tinfo ? tinfo.bond : null);
     return 'added';
   }
 

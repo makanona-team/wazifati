@@ -30,7 +30,7 @@ public class JobsWidget extends AppWidgetProvider {
             StringBuilder sb = new StringBuilder();
             int shown = 0;
             for (Store.Job j : all) {
-                if (!f.match(j) || Store.expired(j)) continue;
+                if (j.tender() || !f.match(j) || Store.expired(j)) continue;
                 if (j.posted > dayAgo) today++;
                 if (shown < 3) {
                     String g = Labels.names(Labels.GOVS, j.govs);

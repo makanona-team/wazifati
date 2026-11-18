@@ -95,6 +95,8 @@ public final class Sync {
             Match.Profile prof = Store.bool(c, "cv_notify") ? Match.profile(c) : null;
             int thr = Store.intv(c, "cv_threshold");
             ArrayList<Store.Job> matched = new ArrayList<>();
+            ArrayList<Store.Job> tenders = new ArrayList<>();
+            Store.TFilter tf = Store.bool(c, "t_notify") ? Store.TFilter.of(c) : null;
             for (int round = 0; round < 10; round++) {
                 JSONObject r = Api.get("/jobs?since=" + last + "&limit=800");
                 long max = r.optLong("max", 0);
@@ -114,7 +116,9 @@ public final class Sync {
                     j.src = o.optString("src"); j.nSrc = o.optInt("n", 1); j.url = o.optString("u"); j.apply = o.optString("a");
                     j.text = o.optString("x"); j.shared = o.optInt("sh"); j.seen = first ? 1 : 0;
                     j.image = o.optString("im"); j.doubt = o.optInt("dt");
+                    j.kind = o.optString("k", "job"); j.tcat = o.optString("tc"); j.bond = o.optString("bd");
                     l.add(j);
+                    if (j.tender()) { if (!first && tf != null && tf.match(j) && !Store.expired(j)) tenders.add(j); continue; }
                     if (!first && !Store.expired(j) && !(j.doubt == 1 && Store.bool(c, "hide_doubt")) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) matched.add(j);
                 }
                 st.insert(l);
@@ -124,6 +128,7 @@ public final class Sync {
             }
             st.purge();
             if (first) sp.edit().putLong("changes_since", System.currentTimeMillis()).apply();
+            if (!tenders.isEmpty() && !quietNow(c)) notifyTenders(c, tenders);
             return matched;
         }
     }
@@ -140,6 +145,7 @@ public final class Sync {
             if (o.optInt("h") == 1) { Store.get(c).delete(id); continue; }
             if (!o.isNull("s")) Store.get(c).updateClass(id, o.optString("s"), o.optString("g"), o.optString("c"));
             Store.get(c).updateDoubt(id, o.optInt("dt"));
+            if (o.has("k")) Store.get(c).updateKind(id, o.optString("k", "job"), o.optString("tc"), o.optString("bd"));
         }
         sp.edit().putLong("changes_since", r.optLong("now", System.currentTimeMillis())).apply();
     }
@@ -173,9 +179,9 @@ public final class Sync {
         int fixes = r.optInt("fixes"), newFixes = r.optInt("newFixes"), flags = r.optInt("flags"), newFlags = r.optInt("newFlags");
         sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putLong("admin_check", System.currentTimeMillis()).apply();
         if (!notify || since == 0) return;
-        if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 3);
-        if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 3);
-        if (newFlags > 0) post(c, CH_ADMIN, 42, "🚩 بلاغات جديدة", newFlags + " بلاغ «ليس إعلان وظيفة» بانتظار مراجعتك", 3);
+        if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 4);
+        if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 4);
+        if (newFlags > 0) post(c, CH_ADMIN, 42, "🚩 بلاغات جديدة", newFlags + " بلاغ «ليس إعلان وظيفة» بانتظار مراجعتك", 4);
     }
 
     /** مزامنة كاملة (من الخلفية ومن زر المزامنة). يعيد عدد الفرص الجديدة المطابقة. */
@@ -276,6 +282,13 @@ public final class Sync {
         if (nm != null) nm.notify(10, note);
     }
 
+    static void notifyTenders(Context c, List<Store.Job> l) {
+        int n = l.size();
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(5, n); i++) sb.append("• ").append(l.get(i).title).append("\n");
+        post(c, CH_JOBS, 11, n == 1 ? "📑 مناقصة جديدة تناسبك" : "📑 " + n + " مناقصات جديدة تناسبك", sb.toString().trim(), 1);
+    }
+
     /** تذكير قبل يوم من إغلاق التقديم على الفرص المحفوظة. */
     static void remindDeadlines(Context c) {
         if (!Store.bool(c, "remind") || quietNow(c)) return;
@@ -305,7 +318,7 @@ public final class Sync {
         if (now - upd < months * 30L * Store.DAY) return;
         if (now - sp.getLong("cv_reminded", 0) < 30L * Store.DAY) return;
         sp.edit().putLong("cv_reminded", now).apply();
-        post(c, CH_REMIND, 60, "📄 حان وقت تحديث سيرتك الذاتية؟", "مرّ أكثر من " + months + " أشهر على آخر تحديث. ارفع النسخة الجديدة لتحصل على اقتراحات أدق.", 3);
+        post(c, CH_REMIND, 60, "📄 حان وقت تحديث سيرتك الذاتية؟", "مرّ أكثر من " + months + " أشهر على آخر تحديث. ارفع النسخة الجديدة لتحصل على اقتراحات أدق.", 4);
     }
 
     static void post(Context c, String ch, int id, String title, String text, int tab) {

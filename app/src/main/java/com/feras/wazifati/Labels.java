@@ -9,6 +9,7 @@ public final class Labels {
     public static final LinkedHashMap<String, String> SPECS = new LinkedHashMap<>();
     public static final LinkedHashMap<String, String> GOVS = new LinkedHashMap<>();
     public static final LinkedHashMap<String, String> SECTORS = new LinkedHashMap<>();
+    public static final LinkedHashMap<String, String> TCATS = new LinkedHashMap<>();
 
     static {
         String[][] s = {
@@ -46,6 +47,10 @@ public final class Labels {
 
         String[][] c = {{"ngo", "منظمات"}, {"un", "أمم متحدة"}, {"gov", "حكومي"}, {"private", "قطاع خاص"}, {"unknown", "غير محدد"}};
         for (String[] a : c) SECTORS.put(a[0], a[1]);
+
+        String[][] t = {{"works", "🏗 أعمال إنشائية وتأهيل"}, {"supply", "📦 توريد مواد ومعدات"}, {"services", "🛠 خدمات وصيانة"},
+                {"consult", "📐 استشارات ودراسات"}, {"transport", "🚚 نقل ولوجستيك"}, {"other", "📁 أخرى"}};
+        for (String[] a : t) TCATS.put(a[0], a[1]);
     }
 
     public static String names(LinkedHashMap<String, String> map, String csv) {
