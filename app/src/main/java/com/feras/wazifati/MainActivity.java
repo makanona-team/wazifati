@@ -515,6 +515,7 @@ public class MainActivity extends Activity {
                 else if (manual) Toast.makeText(this, fn > 0 ? "✅ " + fn + " فرصة جديدة تناسبك" : "✅ تمت المزامنة — لا جديد الآن", Toast.LENGTH_SHORT).show();
                 if (!wasSetup && Store.p(this).getBoolean("setup_done", false) && tab == T_FILTER) show(T_JOBS);
                 else if (tab != T_FILTER) show(tab);
+                maybeNagPower();
             });
         }).start();
     }
@@ -662,6 +663,20 @@ public class MainActivity extends Activity {
             go.setOnClickListener(v -> goLogin());
             gb.addView(go);
             l.addView(gb, lpm(this, -1, -2, 0, 8));
+        }
+
+        if (!guest() && staleSync()) {
+            LinearLayout sb = row(this);
+            sb.setBackground(round(this, 0xFFFFF3CD, 12));
+            sb.setPadding(dp(this, 12), dp(this, 8), dp(this, 8), dp(this, 8));
+            TextView stx = text(this, "⚠ لم تعمل المزامنة في الخلفية منذ مدة، فقد تتأخر إشعاراتك. اضغط لإصلاح ذلك.", 13, TEXT, false);
+            stx.setOnClickListener(v -> powerDialog());
+            sb.addView(stx, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView sx = text(this, "✕", 18, MUTED, true);
+            sx.setPadding(dp(this, 12), dp(this, 4), dp(this, 8), dp(this, 4));
+            sx.setOnClickListener(v -> { Store.p(this).edit().putLong("pw_stale_hide", System.currentTimeMillis()).apply(); show(tab); });
+            sb.addView(sx);
+            l.addView(sb, lpm(this, -1, -2, 0, 8));
         }
 
         LinearLayout sr = row(this);
@@ -1016,6 +1031,110 @@ public class MainActivity extends Activity {
     // =====================================================================
     // نافذة كاملة (للتفاصيل وصفحات الأدمن)
     // =====================================================================
+    // ===== ضمان وصول الإشعارات (2.1) =====
+    private Dialog powerDlg;
+    private LinearLayout powerBox;
+
+    private int powerScore() {
+        int n = 0;
+        if (Power.notifOk(this)) n++;
+        if (Power.isIgnoring(this)) n++;
+        if (Store.p(this).getBoolean("pw_auto_done", false)) n++;
+        return n;
+    }
+
+    private boolean staleSync() {
+        android.content.SharedPreferences sp = Store.p(this);
+        long bg = sp.getLong("bg_last", 0), now = System.currentTimeMillis();
+        if (bg == 0 || now - bg < 4 * 3600_000L) return false;
+        return now - sp.getLong("pw_stale_hide", 0) > 24 * 3600_000L;
+    }
+
+    /** تذكير مرة بعد أول إعداد ثم حتى 3 مرات بفارق أسبوع إن بقيت الخطوات ناقصة. */
+    private void maybeNagPower() {
+        android.content.SharedPreferences sp = Store.p(this);
+        if (guest() || !sp.getBoolean("setup_done", false) || powerScore() >= 3 || powerDlg != null) return;
+        int n = sp.getInt("pw_nag_n", 0);
+        long last = sp.getLong("pw_nag_t", 0), now = System.currentTimeMillis();
+        if (n >= 4 || (n > 0 && now - last < 7 * 24 * 3600_000L)) return;
+        sp.edit().putInt("pw_nag_n", n + 1).putLong("pw_nag_t", now).apply();
+        powerDialog();
+    }
+
+    private void powerDialog() {
+        Dialog[] dh = new Dialog[1];
+        powerBox = fullDialog("ضمان وصول الإشعارات", dh);
+        powerDlg = dh[0];
+        powerDlg.setOnDismissListener(d -> { powerDlg = null; powerBox = null; if (tab == T_MORE) show(T_MORE); });
+        buildPower();
+        powerDlg.show();
+    }
+
+    private void buildPower() {
+        if (powerBox == null) return;
+        LinearLayout l = powerBox;
+        l.removeAllViews();
+        int sc = powerScore();
+        LinearLayout h = card(this);
+        h.addView(text(this, sc >= 3 ? "✅ كل شيء جاهز — ستصلك الإشعارات" : "بعض الهواتف تُغلق التطبيقات في الخلفية فتتأخر الإشعارات أو لا تصل. أكمل الخطوات (" + sc + "/3):", 14, TEXT, sc < 3));
+        l.addView(h, lpm(this, -1, -2, 0, 10));
+
+        LinearLayout a = card(this);
+        boolean n = Power.notifOk(this);
+        a.addView(text(this, (n ? "✅ " : "❌ ") + "1) السماح بالإشعارات", 15, TEXT, true));
+        if (!n) {
+            Button b = button(this, "السماح", true);
+            b.setOnClickListener(v -> {
+                if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 77);
+                try {
+                    Intent i = new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName());
+                    if (Build.VERSION.SDK_INT < 33) startActivity(i);
+                } catch (Throwable ignored) { }
+            });
+            a.addView(b, lpm(this, -1, -2, 6, 0));
+        }
+        l.addView(a, lpm(this, -1, -2, 0, 10));
+
+        LinearLayout b2 = card(this);
+        boolean ig = Power.isIgnoring(this);
+        b2.addView(text(this, (ig ? "✅ " : "❌ ") + "2) إلغاء توفير البطارية للتطبيق", 15, TEXT, true));
+        if (!ig) {
+            b2.addView(text(this, "اضغط «السماح» في النافذة التي ستظهر.", 13, MUTED, false));
+            Button b = button(this, "إلغاء التقييد", true);
+            b.setOnClickListener(v -> Power.requestIgnore(this));
+            b2.addView(b, lpm(this, -1, -2, 6, 0));
+        }
+        l.addView(b2, lpm(this, -1, -2, 0, 10));
+
+        LinearLayout c3 = card(this);
+        boolean ad = Store.p(this).getBoolean("pw_auto_done", false);
+        c3.addView(text(this, (ad ? "✅ " : "❌ ") + "3) التشغيل التلقائي / الخلفية (" + Power.brandName() + ")", 15, TEXT, true));
+        c3.addView(text(this, Power.autostartHelp(), 13, TEXT, false));
+        Button o = button(this, "فتح الإعدادات", false);
+        o.setOnClickListener(v -> Power.openAutostart(this));
+        c3.addView(o, lpm(this, -1, -2, 6, 0));
+        Button t = button(this, ad ? "تراجع (لم أفعّله)" : "فعّلته ✔", !ad);
+        t.setOnClickListener(v -> { Store.p(this).edit().putBoolean("pw_auto_done", !ad).apply(); buildPower(); });
+        c3.addView(t, lpm(this, -1, -2, 6, 0));
+        l.addView(c3, lpm(this, -1, -2, 0, 10));
+
+        LinearLayout tip = card(this);
+        tip.addView(text(this, "💡 نصيحة: افتح قائمة التطبيقات الأخيرة، واسحب بطاقة وظيفتي للأسفل (أو اضغط عليها مطوّلاً) واختر «قفل»، حتى لا يُغلقها «التنظيف».", 13, TEXT, false));
+        l.addView(tip, lpm(this, -1, -2, 0, 10));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (powerDlg != null) buildPower();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int rc, String[] p, int[] r) {
+        super.onRequestPermissionsResult(rc, p, r);
+        if (powerDlg != null) buildPower();
+    }
+
     private LinearLayout fullDialog(String title, Dialog[] out) {
         Dialog d = new Dialog(this, Ui.themeRes());
         Window w = d.getWindow();
@@ -1554,6 +1673,12 @@ public class MainActivity extends Activity {
 
         l.addView(cvCard(), lpm(this, -1, -2, 0, 12));
 
+        if (!guest()) {
+            Button pw = button(this, (powerScore() < 3 ? "⚠ " : "✅ ") + "ضمان وصول الإشعارات", powerScore() < 3);
+            pw.setOnClickListener(v -> powerDialog());
+            l.addView(pw, lpm(this, -1, -2, 0, 12));
+        }
+
         if (admin) {
             LinearLayout ad = card(this);
             ad.addView(text(this, "🛠 لوحة الأدمن", 16, TEXT, true));
@@ -2010,7 +2135,7 @@ public class MainActivity extends Activity {
                 c.addView(oneLine(text(this, (blocked ? "⛔ " : isAdmin ? "🛠 " : "👤 ") + (name.isEmpty() ? email : name), 15, TEXT, true)));
                 c.addView(oneLine(text(this, email, 12, MUTED, false)));
                 String model = str(u, "model"), ver = str(u, "ver");
-                c.addView(text(this, "آخر ظهور: " + (u.optLong("last_seen") > 0 ? ago(u.optLong("last_seen")) : "—")
+                c.addView(text(this, "🕒 آخر نشاط: " + (u.optLong("last_seen") > 0 ? ago(u.optLong("last_seen")) : "—")
                         + " • مصادر: " + u.optInt("contrib") + " • مشاركات: " + u.optInt("shares")
                         + (model.isEmpty() ? "" : "\n📱 " + model + (ver.isEmpty() ? "" : " • v" + ver)), 12, MUTED, false));
                 if (!email.equals("eng.feras8585@gmail.com") && !email.equals(meEmail)) {

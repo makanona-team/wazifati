@@ -258,6 +258,7 @@ public final class Sync {
             return 0;
         }
         try { ensureUser(c); } catch (Api.AuthException e) { throw e; } catch (Throwable ignored) { }
+        if (background) Store.p(c).edit().putLong("bg_last", System.currentTimeMillis()).apply();
         List<Store.Job> matched = syncJobs(c);
         try { syncChanges(c); } catch (Throwable ignored) { }
         try { syncAnnouncements(c, background); } catch (Throwable ignored) { }
