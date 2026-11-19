@@ -119,6 +119,33 @@ public final class Updater {
     }
 
     /** فحص تلقائي مرة كل 24 ساعة؛ إشعار عند وجود إصدار جديد. */
+    /** يحفظ آخر إصدار منشور ليعرضه التطبيق كشريط. force=false: لا أكثر من مرة كل 3 ساعات. يُستدعى من خيط خلفي. */
+    public static Info refreshLatest(Context c, boolean force) {
+        SharedPreferences p = Store.p(c);
+        long now = System.currentTimeMillis();
+        if (!force && now - p.getLong("upd_chk", 0) < 3 * 3_600_000L) return stored(c);
+        try {
+            Info i = fetch();
+            if (!i.version.isEmpty()) p.edit().putLong("upd_chk", now).putString("upd_ver", i.version).putString("upd_notes", i.notes).putString("upd_apk", i.apkUrl).apply();
+            return stored(c);
+        } catch (Throwable e) { return stored(c); }
+    }
+
+    /** آخر إصدار معروف إن كان أحدث من المثبّت، وإلا null. */
+    public static Info newer(Context c) {
+        Info i = stored(c);
+        return !i.version.isEmpty() && cmp(i.version, current(c)) > 0 ? i : null;
+    }
+
+    static Info stored(Context c) {
+        SharedPreferences p = Store.p(c);
+        Info i = new Info();
+        i.version = p.getString("upd_ver", "");
+        i.notes = p.getString("upd_notes", "");
+        i.apkUrl = p.getString("upd_apk", "");
+        return i;
+    }
+
     public static void autoCheck(Context c) {
         SharedPreferences p = Store.p(c);
         if (!p.getBoolean("auto_update", true)) return;

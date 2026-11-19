@@ -500,6 +500,7 @@ public class MainActivity extends Activity {
             try { n = Sync.run(app, false); }
             catch (Api.AuthException e) { auth = true; err = e.getMessage(); }
             catch (Throwable e) { err = e.getMessage(); }
+            final Updater.Info upd = Updater.refreshLatest(app, manual) == null ? null : Updater.newer(app);
             final String fe = err;
             final boolean fa = auth;
             final int fn = n;
@@ -516,6 +517,7 @@ public class MainActivity extends Activity {
                 if (!wasSetup && Store.p(this).getBoolean("setup_done", false) && tab == T_FILTER) show(T_JOBS);
                 else if (tab != T_FILTER) show(tab);
                 maybeNagPower();
+                if (manual && upd != null) showUpdateDialog(upd);
             });
         }).start();
     }
@@ -651,6 +653,10 @@ public class MainActivity extends Activity {
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.VERTICAL);
         l.setPadding(dp(this, 10), dp(this, 8), dp(this, 10), 0);
+
+        l.addView(welcomeCard(), lpm(this, -1, -2, 0, 8));
+        View ub = updateBar();
+        if (ub != null) l.addView(ub, lpm(this, -1, -2, 0, 8));
 
         if (guest()) {
             LinearLayout gb = row(this);
@@ -2124,6 +2130,18 @@ public class MainActivity extends Activity {
             JSONArray a = r.optJSONArray("users");
             if (a == null) return;
             l.addView(section("👥 " + a.length() + " مستخدم"));
+            java.util.TreeMap<String, Integer> vc = new java.util.TreeMap<>((x, y) -> Updater.cmp(y, x));
+            String latest = Store.p(this).getString("upd_ver", "");
+            for (int k = 0; k < a.length(); k++) {
+                JSONObject uu = a.optJSONObject(k);
+                String vv = uu == null ? "" : str(uu, "ver");
+                vc.merge(vv.isEmpty() ? "?" : vv, 1, Integer::sum);
+            }
+            StringBuilder vs = new StringBuilder("📲 النسخ المنتشرة:");
+            for (java.util.Map.Entry<String, Integer> e : vc.entrySet()) vs.append("\n  ").append(e.getKey()).append(" ← ").append(e.getValue()).append(" مستخدم");
+            LinearLayout vcard = card(this);
+            vcard.addView(text(this, vs.toString(), 13, TEXT, false));
+            l.addView(vcard, lpm(this, -1, -2, 0, 8));
             String meEmail = Store.p(this).getString("email", "");
             for (int i = 0; i < a.length(); i++) {
                 JSONObject u = a.optJSONObject(i);
@@ -2137,7 +2155,7 @@ public class MainActivity extends Activity {
                 String model = str(u, "model"), ver = str(u, "ver");
                 c.addView(text(this, "🕒 آخر نشاط: " + (u.optLong("last_seen") > 0 ? ago(u.optLong("last_seen")) : "—")
                         + " • مصادر: " + u.optInt("contrib") + " • مشاركات: " + u.optInt("shares")
-                        + (model.isEmpty() ? "" : "\n📱 " + model + (ver.isEmpty() ? "" : " • v" + ver)), 12, MUTED, false));
+                        + (model.isEmpty() ? "" : "\n📱 " + model + (ver.isEmpty() ? "" : " • v" + ver + (!latest.isEmpty() && Updater.cmp(latest, ver) > 0 ? " 🟠 قديم" : ""))), 12, MUTED, false));
                 if (!email.equals("eng.feras8585@gmail.com") && !email.equals(meEmail)) {
                     LinearLayout r2 = row(this);
                     Button role = button(this, isAdmin ? "إزالة صلاحية الأدمن" : "اجعله أدمن", false);
@@ -2426,12 +2444,62 @@ public class MainActivity extends Activity {
                     if (!quiet) Toast.makeText(this, "لديك آخر إصدار ✅", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                new AlertDialog.Builder(this).setTitle("إصدار جديد " + fi.version)
-                        .setMessage(Updater.clean(fi.notes))
-                        .setPositiveButton("تحميل وتثبيت", (d, w) -> download(fi))
-                        .setNegativeButton("لاحقاً", null).show();
+                showUpdateDialog(fi);
             });
         }).start();
+    }
+
+    private void showUpdateDialog(Updater.Info fi) {
+        if (isFinishing()) return;
+        new AlertDialog.Builder(this).setTitle("إصدار جديد " + fi.version)
+                .setMessage(Updater.clean(fi.notes))
+                .setPositiveButton("تحميل وتثبيت", (d, w) -> download(fi))
+                .setNegativeButton("لاحقاً", null).show();
+    }
+
+    private String roleLabel() {
+        if (guest()) return "👀 زائر";
+        String em = Store.p(this).getString("email", "");
+        if ("eng.feras8585@gmail.com".equalsIgnoreCase(em)) return "🟢 مطوّر التطبيق";
+        return Store.admin(this) ? "🔵 مشرف" : "⚪ مستخدم";
+    }
+
+    private View welcomeCard() {
+        LinearLayout w = new LinearLayout(this);
+        w.setOrientation(LinearLayout.VERTICAL);
+        w.setBackground(round(this, PRIMARY_LIGHT, 12));
+        w.setPadding(dp(this, 12), dp(this, 8), dp(this, 12), dp(this, 8));
+        int h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+        String greet = h < 12 ? "صباح الخير" : (h < 18 ? "مساء الخير" : "مساء النور");
+        String full = Store.p(this).getString("uname", "").trim();
+        String first = full.isEmpty() ? "" : full.split("\\s+")[0];
+        String hi = guest() || first.isEmpty() ? "مرحباً بك 👋" : "مرحباً " + first + " 👋";
+        LinearLayout r = row(this);
+        r.addView(text(this, hi, 16, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
+        TextView badge = text(this, roleLabel(), 12, Color.WHITE, true);
+        badge.setBackground(round(this, guest() ? MUTED : (Store.admin(this) ? GREEN : PRIMARY), 10));
+        badge.setPadding(dp(this, 10), dp(this, 3), dp(this, 10), dp(this, 3));
+        r.addView(badge);
+        w.addView(r);
+        String date = new java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.forLanguageTag("ar-SY-u-nu-latn")).format(new java.util.Date());
+        w.addView(text(this, greet + " • " + date, 12, MUTED, false));
+        return w;
+    }
+
+    private View updateBar() {
+        Updater.Info n = Updater.newer(this);
+        if (n == null || System.currentTimeMillis() - Store.p(this).getLong("upd_bar_hide", 0) < 24 * 3600_000L) return null;
+        LinearLayout sb = row(this);
+        sb.setBackground(round(this, 0xFFD7F5DD, 12));
+        sb.setPadding(dp(this, 12), dp(this, 8), dp(this, 8), dp(this, 8));
+        TextView t = text(this, "🆕 إصدار " + n.version + " متاح — اضغط للتحديث", 13, TEXT, true);
+        t.setOnClickListener(v -> showUpdateDialog(n));
+        sb.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView x = text(this, "✕", 18, MUTED, true);
+        x.setPadding(dp(this, 12), dp(this, 4), dp(this, 8), dp(this, 4));
+        x.setOnClickListener(v -> { Store.p(this).edit().putLong("upd_bar_hide", System.currentTimeMillis()).apply(); show(tab); });
+        sb.addView(x);
+        return sb;
     }
 
     @SuppressWarnings("deprecation")
