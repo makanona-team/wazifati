@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '1.8';
+const VERSION = '1.9';
 const GUEST_JOBS = 10;      // الزائر يرى أحدث 10 وظائف
 const GUEST_TENDERS = 2;    // وأحدث مناقصتين
 const RELEASE = 'https://github.com/makanona-team/wazifati/releases/latest';
@@ -153,7 +153,7 @@ export class Db {
       if (req.method === 'GET' && p === '/') return this.home();
       if (req.method === 'GET' && p === '/privacy') return new Response(PRIVACY, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       if (req.method === 'GET' && p === '/terms') return new Response(TERMS, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-      if (req.method === 'GET' && p === '/api') return json({ ok: true, app: 'wazifati', v: VERSION, now: Date.now(), login: !!this.env.GOOGLE_CLIENT_ID });
+      if (req.method === 'GET' && p === '/api') return json({ ok: true, app: 'wazifati', v: VERSION, now: Date.now(), login: !!this.env.GOOGLE_CLIENT_ID, ...this.minInfo() });
       if (req.method === 'POST' && p === '/auth') return await this.auth(b);
       if (this.keyOk(req)) {
         if (p === '/ingest') return this.ingest(b);
@@ -168,7 +168,10 @@ export class Db {
         if ((m = p.match(/^\/j\/(\d+)$/))) return this.jobPage(+m[1]);
         if (p === '/jobs') return this.jobs(url, req);
         if (p === '/changes') return this.changes(url);
-        if (p === '/announce') return json({ items: this.q(`SELECT id,text,created FROM announcements WHERE id > ? ORDER BY id DESC LIMIT 20`, +url.searchParams.get('since') || 0) });
+        if (p === '/announce') {
+          if (url.searchParams.get('all')) return json({ items: this.q(`SELECT id,text,created FROM announcements ORDER BY id DESC LIMIT 50`), ...this.minInfo() });
+          return json({ items: this.q(`SELECT id,text,created FROM announcements WHERE id > ? ORDER BY id DESC LIMIT 20`, +url.searchParams.get('since') || 0) });
+        }
         if (p === '/labels') return json(LABELS);
       }
 
@@ -207,6 +210,8 @@ export class Db {
         if (p === '/admin/users/status') return this.setStatus(me, b);
         if (p === '/admin/fixes/decide') return this.decideFix(b);
         if (p === '/admin/announce') return this.announce(me, b);
+        if (p === '/admin/announce/delete') { this.run(`DELETE FROM announcements WHERE id=?`, +b.id); return json({ ok: true }); }
+        if (p === '/admin/minver') return this.setMinVer(b);
         if (p === '/admin/flags/decide') return this.decideFlag(b);
       }
       return json({ error: 'not found' }, 404);
@@ -553,6 +558,20 @@ export class Db {
     this.run(`UPDATE accounts SET status=? WHERE email=?`, st, email);
     if (st === 'blocked') this.run(`DELETE FROM sessions WHERE email=?`, email);
     return json({ ok: true });
+  }
+
+  /** الحد الأدنى للإصدار (تحديث إجباري). فارغ = معطّل. */
+  minInfo() {
+    const g = k => (this.one(`SELECT v FROM meta WHERE k=?`, k) || {}).v || '';
+    return { minVer: g('min_ver'), minMsg: g('min_msg') };
+  }
+
+  setMinVer(b) {
+    const v = String(b.ver || '').trim();
+    if (v && !/^\d+(\.\d+){0,3}$/.test(v)) throw new HttpErr(400, 'صيغة الإصدار غير صحيحة (مثال: 1.9)');
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('min_ver',?)`, v);
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('min_msg',?)`, String(b.msg || '').trim().slice(0, 300));
+    return json({ ok: true, ...this.minInfo() });
   }
 
   announce(me, b) {

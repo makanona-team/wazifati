@@ -189,16 +189,30 @@ public final class Sync {
         sp.edit().putLong("changes_since", r.optLong("now", System.currentTimeMillis())).apply();
     }
 
-    /** إعلانات الأدمن لكل المستخدمين. */
+    /** إعلانات الأدمن (قائمة الجرس) + الحد الأدنى للإصدار. */
     static void syncAnnouncements(Context c, boolean notify) throws Exception {
         SharedPreferences sp = Store.p(c);
-        long since = sp.getLong("ann_last", 0);
-        JSONObject r = Api.get("/announce?since=" + since);
+        JSONObject r = Api.get("/announce?all=1");
         JSONArray a = r.optJSONArray("items");
-        if (a == null || a.length() == 0) return;
-        JSONObject newest = a.getJSONObject(0);
-        sp.edit().putLong("ann_last", newest.optLong("id")).putString("ann_text", newest.optString("text")).putBoolean("ann_dismissed", false).apply();
-        if (notify && since > 0) post(c, CH_ANN, 30, "📢 إعلان من وظيفتي", newest.optString("text"), 0);
+        if (a == null) a = new JSONArray();
+        long newest = a.length() > 0 ? a.getJSONObject(0).optLong("id") : 0;
+        long prev = sp.getLong("ann_last", 0);
+        SharedPreferences.Editor e = sp.edit().putString("ann_list", a.toString()).putLong("ann_last", Math.max(prev, newest))
+                .putString("min_ver", r.optString("minVer", "")).putString("min_msg", r.optString("minMsg", ""));
+        if (!sp.contains("ann_seen")) e.putLong("ann_seen", prev > 0 ? prev : newest);   // القديم يُعدّ مقروءاً
+        e.apply();
+        if (notify && prev > 0 && newest > prev) post(c, CH_ANN, 30, "📢 إعلان من وظيفتي", a.getJSONObject(0).optString("text"), 0);
+    }
+
+    /** عدد الإعلانات غير المقروءة. */
+    static int annUnread(Context c) {
+        try {
+            long seen = Store.p(c).getLong("ann_seen", 0);
+            JSONArray a = new JSONArray(Store.p(c).getString("ann_list", "[]"));
+            int n = 0;
+            for (int i = 0; i < a.length(); i++) if (a.getJSONObject(i).optLong("id") > seen) n++;
+            return n;
+        } catch (Exception e) { return 0; }
     }
 
     /** للأدمن: مصادر مقترحة وتصحيحات بانتظار الموافقة. */

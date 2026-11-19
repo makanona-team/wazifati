@@ -54,7 +54,7 @@ public class MainActivity extends Activity {
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private FrameLayout content;
-    private TextView status, syncIcon;
+    private TextView status, syncIcon, bell;
     static final int T_JOBS = 0, T_TENDERS = 1, T_SAVED = 2, T_FILTER = 3, T_MORE = 4;
     private final TextView[] tabs = new TextView[5];
     private boolean tenderMode = false;
@@ -86,6 +86,8 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
         Sync.init(this);
         Sync.channels(this);
+        if (outdated()) { setContentView(forceScreen()); return; }
+        checkMinAsync();
         if (!Sync.loggedIn(this) && !Store.guest(this)) {
             Uri link = getIntent().getData();
             if (link != null && "wazifati".equals(link.getScheme())) Store.p(this).edit().putBoolean("guest", true).apply();   // رابط مشاركة: ادخل كضيف مباشرة
@@ -105,6 +107,165 @@ public class MainActivity extends Activity {
         refresh(false);
         if (getIntent().getBooleanExtra("update", false)) checkUpdate(true);
         handleLink(getIntent());
+    }
+
+    // ===== التحديث الإجباري =====
+    private boolean outdated() {
+        String m = Store.p(this).getString("min_ver", "");
+        return !m.isEmpty() && Updater.cmp(Updater.current(this), m) < 0;
+    }
+
+    /** يقرأ الحد الأدنى للإصدار من الخادم؛ إن صار الإصدار قديماً تُعاد البناء بشاشة الإجبار. */
+    private void checkMinAsync() {
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            try {
+                JSONObject r = Api.get("/api");
+                Store.p(app).edit().putString("min_ver", r.optString("minVer", "")).putString("min_msg", r.optString("minMsg", "")).apply();
+            } catch (Throwable ignored) { return; }
+            ui.post(() -> { if (!isFinishing() && outdated()) recreate(); });
+        }).start();
+    }
+
+    private View forceScreen() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setGravity(Gravity.CENTER);
+        l.setBackgroundColor(BG);
+        l.setPadding(dp(this, 28), dp(this, 28), dp(this, 28), dp(this, 28));
+        TextView e = text(this, "⬆️", 60, TEXT, false);
+        e.setGravity(Gravity.CENTER);
+        l.addView(e);
+        TextView t = text(this, "يلزم تحديث التطبيق", 24, PRIMARY, true);
+        t.setGravity(Gravity.CENTER);
+        l.addView(t);
+        String msg = Store.p(this).getString("min_msg", "");
+        TextView m = text(this, (msg.isEmpty() ? "هذا الإصدار (" + Updater.current(this) + ") قديم ولم يعد مدعوماً." : msg) + "\nحدّث إلى أحدث إصدار للمتابعة.", 15, MUTED, false);
+        m.setGravity(Gravity.CENTER);
+        m.setPadding(0, dp(this, 10), 0, dp(this, 24));
+        l.addView(m);
+        Button up = button(this, "⬇  تحميل وتثبيت التحديث", true);
+        up.setMinHeight(dp(this, 54));
+        up.setOnClickListener(v -> {
+            up.setEnabled(false);
+            new Thread(() -> {
+                Updater.Info info = null;
+                String err = null;
+                try { info = Updater.fetch(); } catch (Throwable x) { err = x.getMessage(); }
+                final Updater.Info fi = info;
+                final String fe = err;
+                ui.post(() -> {
+                    up.setEnabled(true);
+                    if (fi == null) Toast.makeText(this, "تعذّر الاتصال: " + fe, Toast.LENGTH_LONG).show();
+                    else download(fi);
+                });
+            }).start();
+        });
+        l.addView(up, lp(-1, -2));
+        Button re = button(this, "🔄 ثبّتّ التحديث — فحص من جديد", false);
+        re.setOnClickListener(v -> {
+            new Thread(() -> {
+                try {
+                    JSONObject r = Api.get("/api");
+                    Store.p(getApplicationContext()).edit().putString("min_ver", r.optString("minVer", "")).putString("min_msg", r.optString("minMsg", "")).apply();
+                } catch (Throwable ignored) { }
+                ui.post(this::recreate);
+            }).start();
+        });
+        l.addView(re, lpm(this, -1, -2, 10, 0));
+        return l;
+    }
+
+    // ===== إشعارات الأدمن (الجرس) =====
+    private void showAnnouncements() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("الإشعارات", dh);
+        Dialog d = dh[0];
+        JSONArray a;
+        try { a = new JSONArray(Store.p(this).getString("ann_list", "[]")); } catch (Exception e) { a = new JSONArray(); }
+        long maxId = 0;
+        if (Store.admin(this)) {
+            Button add = button(this, "➕ إعلان جديد لكل المستخدمين", true);
+            add.setOnClickListener(v -> { d.dismiss(); adminAnnounce(); });
+            l.addView(add, lpm(this, -1, -2, 0, 10));
+        }
+        long seen = Store.p(this).getLong("ann_seen", 0);
+        if (a.length() == 0) {
+            TextView e = text(this, "لا توجد إشعارات.", 15, MUTED, false);
+            e.setGravity(Gravity.CENTER);
+            e.setPadding(0, dp(this, 40), 0, 0);
+            l.addView(e);
+        }
+        for (int i = 0; i < a.length(); i++) {
+            JSONObject o = a.optJSONObject(i);
+            if (o == null) continue;
+            final long id = o.optLong("id");
+            maxId = Math.max(maxId, id);
+            LinearLayout c = card(this);
+            TextView when = text(this, (id > seen ? "🆕 " : "") + ago(o.optLong("created")), 12, id > seen ? PRIMARY : MUTED, id > seen);
+            c.addView(when);
+            TextView body = text(this, o.optString("text"), 15, TEXT, false);
+            body.setPadding(0, dp(this, 4), 0, 0);
+            body.setTextIsSelectable(true);
+            body.setAutoLinkMask(Linkify.WEB_URLS);
+            body.setLinkTextColor(PRIMARY);
+            c.addView(body);
+            if (Store.admin(this)) {
+                Button del = button(this, "🗑 حذف الإعلان", false);
+                del.setTextColor(RED);
+                del.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("حذف هذا الإعلان عند كل المستخدمين؟")
+                        .setPositiveButton("حذف", (x, w) -> post("/admin/announce/delete", jo("id", id), r -> {
+                            Context app = getApplicationContext();
+                            new Thread(() -> {
+                                try { Sync.syncAnnouncements(app, false); } catch (Throwable ignored) { }
+                                ui.post(() -> { d.dismiss(); setStatus(); showAnnouncements(); });
+                            }).start();
+                        })).setNegativeButton("إلغاء", null).show());
+                c.addView(del, lpm(this, -1, -2, 8, 0));
+            }
+            l.addView(c, lpm(this, -1, -2, 0, 8));
+        }
+        Store.p(this).edit().putLong("ann_seen", Math.max(seen, maxId)).apply();
+        setStatus();
+        d.show();
+    }
+
+    /** الأدمن: تحديد أقدم إصدار مسموح. */
+    private void adminMinVer() {
+        String cur = Store.p(this).getString("min_ver", "");
+        EditText ver = input("مثال: 1.9  (فارغ = إلغاء الإجبار)");
+        ver.setText(cur);
+        ver.setSingleLine(true);
+        EditText msg = input("رسالة تظهر للمستخدم (اختيارية)");
+        msg.setText(Store.p(this).getString("min_msg", ""));
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(this, 18), dp(this, 8), dp(this, 18), 0);
+        box.addView(ver, lp(-1, -2));
+        box.addView(msg, lpm(this, -1, -2, 8, 0));
+        new AlertDialog.Builder(this).setTitle("⬆ تحديث إجباري")
+                .setMessage("أي إصدار أقدم من الرقم المكتوب يُحجب ويُطلب منه التحديث.\nالحد الحالي: " + (cur.isEmpty() ? "غير مفعّل" : cur) + "\nإصدارك: " + Updater.current(this)
+                        + "\nملاحظة: الإصدارات التي لا تحتوي هذه الميزة (قبل 1.9) لا يمكن إجبارها.")
+                .setView(box)
+                .setPositiveButton("حفظ", (dd, w) -> {
+                    String v = ver.getText().toString().trim();
+                    String m = msg.getText().toString().trim();
+                    Context app = getApplicationContext();
+                    new Thread(() -> {
+                        String err = null;
+                        try {
+                            if (!v.isEmpty()) {
+                                Updater.Info latest = Updater.fetch();
+                                if (Updater.cmp(v, latest.version) > 0) throw new Exception("الحد (" + v + ") أعلى من آخر إصدار منشور (" + latest.version + ")، سيُحجب الجميع بلا تحديث متاح");
+                            }
+                            Api.post("/admin/minver", jo("ver", v, "msg", m));
+                            Store.p(app).edit().putString("min_ver", v).putString("min_msg", m).apply();
+                        } catch (Throwable x) { err = x.getMessage(); }
+                        final String fe = err;
+                        ui.post(() -> Toast.makeText(this, fe != null ? "❌ " + fe : (v.isEmpty() ? "✅ أُلغي التحديث الإجباري" : "✅ أي إصدار أقدم من " + v + " سيُحجب"), Toast.LENGTH_LONG).show());
+                    }).start();
+                })
+                .setNegativeButton("إلغاء", null).show();
     }
 
     /** ضيف = لا حساب (قراءة فقط). */
@@ -267,6 +428,9 @@ public class MainActivity extends Activity {
             in.setOnClickListener(v -> goLogin());
             head.addView(in);
         }
+        bell = headBtn("🔔", "إشعارات");
+        bell.setOnClickListener(v -> showAnnouncements());
+        head.addView(bell);
         TextView theme = headBtn("🌓", "المظهر");
         theme.setOnClickListener(v -> {
             String cur = Store.p(this).getString("theme", "auto");
@@ -310,6 +474,7 @@ public class MainActivity extends Activity {
 
     private void setStatus() {
         if (status == null) return;
+        if (bell != null) { int un = Sync.annUnread(this); bell.setText(un > 0 ? "🔔 " + un + "\nإشعارات" : "🔔\nإشعارات"); bell.setTextColor(un > 0 ? 0xFFFFD54F : Color.WHITE); }
         long ls = Store.p(this).getLong("last_sync", 0);
         status.setText(syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls))));
         int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) : 0;
@@ -337,6 +502,7 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 syncing = false;
                 if (syncIcon != null) syncIcon.setAlpha(1f);
+                if (outdated()) { recreate(); return; }
                 if (fa) { signedOut(fe == null ? "سجّل الدخول من جديد" : fe); return; }
                 all = l;
                 setStatus();
@@ -480,18 +646,6 @@ public class MainActivity extends Activity {
         l.setOrientation(LinearLayout.VERTICAL);
         l.setPadding(dp(this, 10), dp(this, 8), dp(this, 10), 0);
 
-        String ann = Store.p(this).getString("ann_text", "");
-        if (!ann.isEmpty() && !Store.p(this).getBoolean("ann_dismissed", false)) {
-            LinearLayout banner = row(this);
-            banner.setBackground(round(this, PRIMARY_LIGHT, 12));
-            banner.setPadding(dp(this, 12), dp(this, 8), dp(this, 8), dp(this, 8));
-            banner.addView(text(this, "📢 " + ann, 14, TEXT, false), new LinearLayout.LayoutParams(0, -2, 1));
-            TextView x = text(this, "✕", 18, MUTED, true);
-            x.setPadding(dp(this, 10), 0, dp(this, 6), 0);
-            x.setOnClickListener(v -> { Store.p(this).edit().putBoolean("ann_dismissed", true).apply(); banner.setVisibility(View.GONE); });
-            banner.addView(x);
-            l.addView(banner, lpm(this, -1, -2, 0, 8));
-        }
         if (guest()) {
             LinearLayout gb = row(this);
             gb.setBackground(round(this, PRIMARY_LIGHT, 12));
@@ -1301,11 +1455,13 @@ public class MainActivity extends Activity {
             int pfl = Store.p(this).getInt("pending_flags", 0);
             Button bfl = button(this, "🚩 البلاغات" + (pfl > 0 ? "  (" + pfl + " 🔴)" : ""), pfl > 0);
             bfl.setOnClickListener(v -> adminFlags());
-            Button ba = button(this, "📢 إعلان لكل المستخدمين", false);
-            ba.setOnClickListener(v -> adminAnnounce());
+            Button ba = button(this, "📢 إشعارات المستخدمين (إرسال / حذف)", false);
+            ba.setOnClickListener(v -> showAnnouncements());
+            Button bm = button(this, "⬆ تحديث إجباري", false);
+            bm.setOnClickListener(v -> adminMinVer());
             Button bt = button(this, "📊 الإحصائيات", false);
             bt.setOnClickListener(v -> adminStats());
-            for (Button bb : new Button[]{bs, bu, bf, bfl, ba, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
+            for (Button bb : new Button[]{bs, bu, bf, bfl, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
             l.addView(ad, lpm(this, -1, -2, 0, 12));
         }
 
@@ -1800,8 +1956,15 @@ public class MainActivity extends Activity {
         LinearLayout box = new LinearLayout(this);
         box.setPadding(dp(this, 18), dp(this, 8), dp(this, 18), 0);
         box.addView(e, lp(-1, -2));
-        new AlertDialog.Builder(this).setTitle("📢 إعلان لكل المستخدمين").setMessage("يظهر أعلى شاشة الفرص ويصل كإشعار.").setView(box)
-                .setPositiveButton("إرسال", (d, w) -> post("/admin/announce", jo("text", e.getText().toString().trim()), r -> Toast.makeText(this, "✅ أُرسل الإعلان", Toast.LENGTH_SHORT).show()))
+        new AlertDialog.Builder(this).setTitle("📢 إعلان لكل المستخدمين").setMessage("يظهر في قائمة الإشعارات 🔔 عند الجميع ويصل كإشعار على الهاتف.").setView(box)
+                .setPositiveButton("إرسال", (d, w) -> post("/admin/announce", jo("text", e.getText().toString().trim()), r -> {
+                    Toast.makeText(this, "✅ أُرسل الإعلان", Toast.LENGTH_SHORT).show();
+                    Context app = getApplicationContext();
+                    new Thread(() -> {
+                        try { Sync.syncAnnouncements(app, false); } catch (Throwable ignored) { }
+                        ui.post(() -> { setStatus(); showAnnouncements(); });
+                    }).start();
+                }))
                 .setNegativeButton("إلغاء", null).show();
     }
 

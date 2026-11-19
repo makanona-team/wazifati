@@ -18,8 +18,8 @@ android {
         applicationId 'com.feras.wazifati'
         minSdk 26
         targetSdk 34
-        versionCode 9
-        versionName '1.8'
+        versionCode 10
+        versionName '1.9'
         buildConfigField 'String', 'API_URL', "\"${apiUrl}\""
         buildConfigField 'String', 'GOOGLE_CLIENT_ID', "\"${googleClientId}\""
     }
