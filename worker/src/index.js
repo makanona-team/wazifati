@@ -4,7 +4,9 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '1.7';
+const VERSION = '1.8';
+const GUEST_JOBS = 10;      // الزائر يرى أحدث 10 وظائف
+const GUEST_TENDERS = 2;    // وأحدث مناقصتين
 const RELEASE = 'https://github.com/makanona-team/wazifati/releases/latest';
 const FAIL_DAYS = 3;
 const DAY = 864e5;
@@ -164,7 +166,7 @@ export class Db {
       if (req.method === 'GET') {
         let m;
         if ((m = p.match(/^\/j\/(\d+)$/))) return this.jobPage(+m[1]);
-        if (p === '/jobs') return this.jobs(url);
+        if (p === '/jobs') return this.jobs(url, req);
         if (p === '/changes') return this.changes(url);
         if (p === '/announce') return json({ items: this.q(`SELECT id,text,created FROM announcements WHERE id > ? ORDER BY id DESC LIMIT 20`, +url.searchParams.get('since') || 0) });
         if (p === '/labels') return json(LABELS);
@@ -291,12 +293,31 @@ export class Db {
     };
   }
 
-  jobs(url) {
+  /** الزائر (بلا جلسة صالحة): أحدث GUEST_JOBS وظيفة وGUEST_TENDERS مناقصة فقط، مع عدد المقفل. */
+  guestJobs() {
+    const now = Date.now();
+    const okDl = new Date(now - 2 * DAY).toISOString().slice(0, 10);
+    const base = `hidden=0 AND doubt=0 AND created > ? AND (deadline IS NULL OR deadline='' OR deadline >= ?)`;
+    const pick = (kind, n) => this.q(`SELECT * FROM jobs WHERE ${base} AND COALESCE(kind,'job')=? ORDER BY id DESC LIMIT ?`, now - FIRST_DAYS * DAY, okDl, kind, n);
+    const cnt = kind => this.one(`SELECT COUNT(*) AS n FROM jobs WHERE ${base} AND COALESCE(kind,'job')=?`, now - FIRST_DAYS * DAY, okDl, kind).n;
+    const rows = [...pick('job', GUEST_JOBS), ...pick('tender', GUEST_TENDERS)].sort((a, b) => a.id - b.id);
+    const mx = (this.one(`SELECT MAX(id) AS m FROM jobs`) || {}).m || 0;
+    return json({
+      now, last: mx, max: mx, more: false, guest: true,
+      limJobs: GUEST_JOBS, limTenders: GUEST_TENDERS,
+      lockedJobs: Math.max(0, cnt('job') - GUEST_JOBS), lockedTenders: Math.max(0, cnt('tender') - GUEST_TENDERS),
+      jobs: rows.map(r => this.jobRow(r)),
+    });
+  }
+
+  jobs(url, req) {
     const one = +url.searchParams.get('id') || 0;
-    if (one) {
+    if (one) {   // فرصة واحدة بالرابط: مفتوحة للجميع
       const r = this.one(`SELECT * FROM jobs WHERE id=? AND hidden=0`, one);
       return json({ now: Date.now(), last: one, max: one, more: false, jobs: r ? [this.jobRow(r)] : [] });
     }
+    const t = bearer(req);
+    if (!t || !this.one(`SELECT 1 FROM sessions WHERE token=?`, t)) return this.guestJobs();
     const since = +url.searchParams.get('since') || 0;
     const limit = Math.min(+url.searchParams.get('limit') || 800, 2000);
     const rows = since > 0

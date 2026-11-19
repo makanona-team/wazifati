@@ -369,7 +369,62 @@ public class MainActivity extends Activity {
         else if (k == T_TENDERS) content.addView(jobsScreen(true));
         else if (k == T_SAVED) content.addView(guest() ? gateScreen("⭐ الفرص المحفوظة", "احفظ الفرص التي تهمك، وسنذكّرك قبل يوم من إغلاق التقديم، وتتابع ما قدّمت عليه.", false) : savedScreen());
         else if (k == T_FILTER) content.addView(guest() ? gateScreen("🎯 فلتري والإشعارات", "اختر اختصاصك ومحافظتك ليصلك إشعار بكل فرصة تناسبك، وارفع سيرتك الذاتية لتعرف نسبة مناسبتك لكل وظيفة.", false) : filterScreen());
-        else content.addView(guest() ? gateScreen("☰ المزيد", "سجّل الدخول لتفعيل الإشعارات والسيرة الذاتية واقتراح المصادر. إعداداتك تعود إليك على أي هاتف.", true) : moreScreen());
+        else content.addView(guest() ? guestMore() : moreScreen());
+    }
+
+    /** «المزيد» للزائر: جدول يشرح الفرق بين الزائر والمسجّل. */
+    private View guestMore() {
+        ScrollView sv = new ScrollView(this);
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(dp(this, 12), dp(this, 12), dp(this, 12), dp(this, 20));
+        sv.addView(l);
+        int lj = Store.p(this).getInt("g_lim_j", 10), lt = Store.p(this).getInt("g_lim_t", 2);
+        l.addView(text(this, "الفرق بين الزائر والمسجّل", 19, TEXT, true));
+        TextView sub = text(this, "التسجيل مجاني، بضغطة واحدة بحساب Google، بلا كلمة سر.", 13, MUTED, false);
+        sub.setPadding(0, dp(this, 4), 0, dp(this, 10));
+        l.addView(sub);
+        String[][] rows = {
+                {"الميزة", "👀 زائر", "✅ مسجّل"},
+                {"الفرص المعروضة", "أحدث " + lj, "كل الفرص"},
+                {"المناقصات المعروضة", "أحدث " + lt, "كل المناقصات"},
+                {"البحث والتصفية السريعة", "❌", "✅"},
+                {"رابط التقديم والإعلان الأصلي", "✅", "✅"},
+                {"مشاركة الفرصة", "✅", "✅"},
+                {"حفظ الفرص وتذكير قبل الإغلاق", "❌", "✅"},
+                {"فلتري وإشعارات الفرص الجديدة", "❌", "✅"},
+                {"السيرة الذاتية ونسبة المناسبة", "❌", "✅"},
+                {"استعادة إعداداتك على أي هاتف", "❌", "✅"},
+                {"الإبلاغ وتصحيح التصنيف واقتراح مصادر", "❌", "✅"},
+        };
+        LinearLayout tbl = card(this);
+        for (int i = 0; i < rows.length; i++) {
+            LinearLayout r = row(this);
+            r.setPadding(0, dp(this, 8), 0, dp(this, 8));
+            boolean head = i == 0;
+            TextView a = text(this, rows[i][0], head ? 13 : 14, head ? MUTED : TEXT, head);
+            TextView b = text(this, rows[i][1], head ? 13 : 14, head ? MUTED : TEXT, head);
+            TextView c = text(this, rows[i][2], head ? 13 : 14, head ? MUTED : TEXT, head);
+            b.setGravity(Gravity.CENTER);
+            c.setGravity(Gravity.CENTER);
+            r.addView(a, new LinearLayout.LayoutParams(0, -2, 5));
+            r.addView(b, new LinearLayout.LayoutParams(0, -2, 2));
+            r.addView(c, new LinearLayout.LayoutParams(0, -2, 2));
+            tbl.addView(r);
+            if (i < rows.length - 1) {
+                View line = new View(this);
+                line.setBackgroundColor(LINE);
+                tbl.addView(line, new LinearLayout.LayoutParams(-1, dp(this, 1)));
+            }
+        }
+        l.addView(tbl, lp(-1, -2));
+        Button in = button(this, "G   سجّل الدخول بحساب Google", true);
+        in.setOnClickListener(v -> goLogin());
+        l.addView(in, lpm(this, -1, -2, 14, 0));
+        Button up = button(this, "🔄 البحث عن تحديث للتطبيق", false);
+        up.setOnClickListener(v -> checkUpdate(false));
+        l.addView(up, lpm(this, -1, -2, 8, 0));
+        return sv;
     }
 
     /** شاشة «للمسجّلين فقط» في وضع الضيف. */
@@ -437,6 +492,18 @@ public class MainActivity extends Activity {
             banner.addView(x);
             l.addView(banner, lpm(this, -1, -2, 0, 8));
         }
+        if (guest()) {
+            LinearLayout gb = row(this);
+            gb.setBackground(round(this, PRIMARY_LIGHT, 12));
+            gb.setPadding(dp(this, 12), dp(this, 8), dp(this, 8), dp(this, 8));
+            int lj = Store.p(this).getInt("g_lim_j", 10), lt = Store.p(this).getInt("g_lim_t", 2);
+            gb.addView(text(this, "👀 تتصفّح كضيف: تظهر لك أحدث " + lj + " فرص و" + lt + " مناقصتين فقط. سجّل الدخول لترى الكل وتفعّل الإشعارات.", 13, TEXT, false), new LinearLayout.LayoutParams(0, -2, 1));
+            TextView go = text(this, "دخول", 14, PRIMARY, true);
+            go.setPadding(dp(this, 12), dp(this, 6), dp(this, 8), dp(this, 6));
+            go.setOnClickListener(v -> goLogin());
+            gb.addView(go);
+            l.addView(gb, lpm(this, -1, -2, 0, 8));
+        }
 
         LinearLayout sr = row(this);
         EditText search = input(tenders ? "🔍 ابحث في المناقصات: توريد، ترميم، مولدات، الحسكة…" : "🔍 ابحث بأي كلمة: مهندس، محاسب، UNICEF، الرقة…");
@@ -474,7 +541,7 @@ public class MainActivity extends Activity {
             });
         }
         gs.addView(gr);
-        l.addView(gs);
+        if (!guest()) l.addView(gs);
 
         if (tenders) {   // تصنيفات المناقصات السريعة
             HorizontalScrollView cs = new HorizontalScrollView(this);
@@ -498,6 +565,7 @@ public class MainActivity extends Activity {
                 });
             }
             cs.addView(cr);
+            if (guest()) cs.setVisibility(View.GONE);
             l.addView(cs);
         }
 
@@ -540,8 +608,24 @@ public class MainActivity extends Activity {
         lv.setClipToPadding(false);
         lv.setPadding(0, 0, 0, dp(this, 12));
         adapter = new JobAdapter();
+        int locked = Store.p(this).getInt(tenders ? "g_lock_t" : "g_lock_j", 0);
+        if (guest() && locked > 0) {
+            LinearLayout lk = card(this);
+            lk.setGravity(Gravity.CENTER);
+            TextView lt = text(this, "🔒 +" + locked + (tenders ? " مناقصة أخرى" : " فرصة أخرى") + " بانتظارك", 17, TEXT, true);
+            lt.setGravity(Gravity.CENTER);
+            lk.addView(lt);
+            TextView lm = text(this, "سجّل الدخول بضغطة واحدة لتفتح كل الفرص، وتصلك إشعارات بما يناسب اختصاصك ومحافظتك.", 13, MUTED, false);
+            lm.setGravity(Gravity.CENTER);
+            lm.setPadding(0, dp(this, 6), 0, dp(this, 10));
+            lk.addView(lm);
+            Button lb = button(this, "G   الدخول بحساب Google", true);
+            lb.setOnClickListener(v -> goLogin());
+            lk.addView(lb, lp(-1, -2));
+            lv.addFooterView(lk, null, false);
+        }
         lv.setAdapter(adapter);
-        lv.setOnItemClickListener((p, v, pos, id) -> openJob(adapter.items.get(pos)));
+        lv.setOnItemClickListener((p, v, pos, id) -> { if (pos < adapter.items.size()) openJob(adapter.items.get(pos)); });
         lv.setEmptyView(emptyView(l));
         l.addView(lv, new LinearLayout.LayoutParams(-1, 0, 1));
 

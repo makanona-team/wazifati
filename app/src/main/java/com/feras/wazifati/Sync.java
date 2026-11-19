@@ -126,6 +126,29 @@ public final class Sync {
         }
     }
 
+    /** الزائر: يستبدل القائمة المحلية بما يعرضه الخادم (أحدث 10 وظائف + مناقصتان) ويحفظ عدد المقفل. */
+    static void syncGuest(Context c) throws Exception {
+        synchronized (LOCK) {
+            init(c);
+            JSONObject r = Api.get("/jobs");
+            JSONArray arr = r.optJSONArray("jobs");
+            List<Store.Job> l = new ArrayList<>();
+            Store st = Store.get(c);
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
+            for (Store.Job o : st.all()) if (o.seen == 1) seen.add(String.valueOf(o.id));
+            if (arr != null) for (int i = 0; i < arr.length(); i++) {
+                Store.Job j = parseJob(arr.getJSONObject(i), false);
+                j.seen = seen.contains(String.valueOf(j.id)) ? 1 : 0;
+                l.add(j);
+            }
+            st.getWritableDatabase().delete("jobs", null, null);
+            st.insert(l);
+            Store.p(c).edit().putLong("last_sync", System.currentTimeMillis())
+                    .putInt("g_lim_j", r.optInt("limJobs", 10)).putInt("g_lim_t", r.optInt("limTenders", 2))
+                    .putInt("g_lock_j", r.optInt("lockedJobs")).putInt("g_lock_t", r.optInt("lockedTenders")).apply();
+        }
+    }
+
     static Store.Job parseJob(JSONObject o, boolean seen) {
         Store.Job j = new Store.Job();
         j.id = o.optLong("id"); j.title = o.optString("t"); j.org = o.optString("o"); j.specs = o.optString("s");
@@ -213,8 +236,7 @@ public final class Sync {
         if (!loggedIn(c)) {
             // ضيف: قراءة فقط، بلا إشعارات ولا مزامنة إعدادات
             if (!Store.guest(c) || background) return 0;
-            syncJobs(c);
-            try { syncChanges(c); } catch (Throwable ignored) { }
+            syncGuest(c);
             try { syncAnnouncements(c, false); } catch (Throwable ignored) { }
             JobsWidget.update(c);
             Updater.autoCheck(c);
