@@ -273,6 +273,12 @@ public final class Store extends SQLiteOpenHelper {
         getWritableDatabase().update("jobs", v, "id=?", new String[]{String.valueOf(id)});
     }
 
+    public void updateTitle(long id, String title, String org) {
+        ContentValues v = new ContentValues();
+        v.put("t", title); v.put("o", org == null ? "" : org);
+        getWritableDatabase().update("jobs", v, "id=?", new String[]{String.valueOf(id)});
+    }
+
     public List<Job> byIds(Set<String> ids) {
         ArrayList<Job> out = new ArrayList<>();
         if (ids.isEmpty()) return out;

@@ -283,6 +283,11 @@ public class MainActivity extends Activity {
         i.setData(null);
         long id;
         try { id = Long.parseLong(d.getLastPathSegment()); } catch (Exception e) { return; }
+        openJobById(id);
+    }
+
+    /** يفتح فرصة محلياً، أو يجلبها من الخادم إن لم تكن محفوظة. */
+    private void openJobById(long id) {
         final long fid = id;
         List<Store.Job> l = Store.get(this).byIds(new HashSet<>(Arrays.asList(String.valueOf(fid))));
         if (!l.isEmpty()) { openJob(l.get(0)); return; }
@@ -477,7 +482,7 @@ public class MainActivity extends Activity {
         if (bell != null) { int un = Sync.annUnread(this); bell.setText(un > 0 ? "🔔 " + un + "\nإشعارات" : "🔔\nإشعارات"); bell.setTextColor(un > 0 ? 0xFFFFD54F : Color.WHITE); }
         long ls = Store.p(this).getLong("last_sync", 0);
         status.setText(syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls))));
-        int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) : 0;
+        int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) + Store.p(this).getInt("pending_edits", 0) : 0;
         tabs[T_MORE].setText(pend > 0 ? "☰ " + pend + "🔴\nالمزيد" : "☰\nالمزيد");
     }
 
@@ -1136,6 +1141,9 @@ public class MainActivity extends Activity {
             r3.addView(fix, weight());
             r3.addView(hide, weight());
             l.addView(r3, lpm(this, -1, -2, 0, 8));
+            Button et = button(this, Store.admin(this) ? "✏️ تعديل العنوان والجهة" : "✏️ اقترح تصحيح العنوان", false);
+            et.setOnClickListener(v -> editTitleDialog(j, d));
+            l.addView(et, lpm(this, -1, -2, 0, 8));
             Button flag = button(this, Store.admin(this) ? "🚩 إعلان غير مفيد (حذف للجميع)" : "🚩 ليس إعلاناً مفيداً", false);
             flag.setTextColor(RED);
             flag.setOnClickListener(v -> new AlertDialog.Builder(this)
@@ -1186,6 +1194,110 @@ public class MainActivity extends Activity {
     private void openUrl(String u) {
         try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u))); }
         catch (Exception e) { Toast.makeText(this, "لا يوجد تطبيق لفتح الرابط", Toast.LENGTH_SHORT).show(); }
+    }
+
+    // ===== تعديل العنوان =====
+    private void editTitleDialog(Store.Job j, Dialog parent) {
+        boolean admin = Store.admin(this);
+        EditText t = input("عنوان الإعلان");
+        t.setText(j.title);
+        t.setMinLines(2);
+        EditText o = input("الجهة المعلنة (اختياري)");
+        o.setText(j.org);
+        o.setSingleLine(true);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(this, 18), dp(this, 8), dp(this, 18), 0);
+        box.addView(t, lp(-1, -2));
+        box.addView(o, lpm(this, -1, -2, 8, 0));
+        new AlertDialog.Builder(this).setTitle(admin ? "✏️ تعديل العنوان والجهة" : "✏️ اقتراح تصحيح العنوان")
+                .setMessage(admin ? "يُطبّق التعديل عند كل المستخدمين، ويُحفظ الأصل في «المنشورات المصححة» لتسترجعه." : "يصل اقتراحك للأدمن، وبعد موافقته يظهر العنوان الجديد للجميع.")
+                .setView(box)
+                .setPositiveButton("حفظ", (dd, w) -> {
+                    String nt = t.getText().toString().trim(), no = o.getText().toString().trim();
+                    if (nt.length() < 3) { Toast.makeText(this, "العنوان قصير جداً", Toast.LENGTH_SHORT).show(); return; }
+                    post(admin ? "/admin/job/edit" : "/fix", jo("id", j.id, "title", nt, "org", no), r -> {
+                        if (admin) {
+                            Store.get(this).updateTitle(j.id, nt, no);
+                            j.title = nt; j.org = no;
+                            Toast.makeText(this, r.optBoolean("changed", true) ? "✅ تم تعديل العنوان للجميع" : "لم يتغيّر شيء", Toast.LENGTH_SHORT).show();
+                            parent.dismiss();
+                            openJob(j);
+                            applyList();
+                            refreshPending();
+                        } else Toast.makeText(this, "✅ شكراً! وصل اقتراحك للأدمن", Toast.LENGTH_SHORT).show();
+                    });
+                })
+                .setNegativeButton("إلغاء", null).show();
+    }
+
+    private boolean editsAll = false;
+
+    /** الأدمن: قائمة المنشورات التي عُدّل عنوانها أو جهتها، للمراجعة والاسترجاع. */
+    private void adminEdits() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("المنشورات المصححة", dh);
+        l.addView(text(this, "جارٍ التحميل…", 14, MUTED, false));
+        dh[0].show();
+        get("/admin/edits" + (editsAll ? "?filter=all" : ""), r -> {
+            l.removeAllViews();
+            LinearLayout fr = row(this);
+            TextView c1 = chip(this, "🔴 غير المراجَع", !editsAll), c2 = chip(this, "الكل", editsAll);
+            c1.setOnClickListener(v -> { editsAll = false; dh[0].dismiss(); adminEdits(); });
+            c2.setOnClickListener(v -> { editsAll = true; dh[0].dismiss(); adminEdits(); });
+            fr.addView(c1, lp(-2, -2));
+            LinearLayout.LayoutParams p2 = lp(-2, -2);
+            p2.rightMargin = dp(this, 6);
+            fr.addView(c2, p2);
+            l.addView(fr, lpm(this, -1, -2, 0, 8));
+            JSONArray a = r.optJSONArray("edits");
+            if (a == null || a.length() == 0) { l.addView(text(this, editsAll ? "لا توجد منشورات مصححة بعد." : "لا توجد تعديلات بانتظار المراجعة ✅", 15, MUTED, false)); return; }
+            if (!editsAll) {
+                Button all = button(this, "✔ تمت مراجعة الكل", false);
+                all.setOnClickListener(v -> post("/admin/edits/review", jo("all", true), x -> { dh[0].dismiss(); adminEdits(); refreshPending(); }));
+                l.addView(all, lpm(this, -1, -2, 0, 8));
+            }
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject e = a.optJSONObject(i);
+                if (e == null) continue;
+                final long id = e.optLong("id");
+                boolean reviewed = e.optInt("edit_reviewed") == 1;
+                LinearLayout c = card(this);
+                TextView nw = text(this, str(e, "title"), 15, TEXT, true);
+                nw.setTextIsSelectable(true);
+                c.addView(nw);
+                if (!str(e, "title_orig").equals(str(e, "title"))) {
+                    TextView old = text(this, "الأصلي: " + str(e, "title_orig"), 12, MUTED, false);
+                    old.setPaintFlags(old.getPaintFlags() | android.graphics.Paint.STRIKE_THRU_TEXT_FLAG);
+                    c.addView(old);
+                }
+                if (!str(e, "org_orig").equals(str(e, "org"))) {
+                    c.addView(text(this, "🏢 الجهة: " + (str(e, "org").isEmpty() ? "—" : str(e, "org")) + "   (الأصلية: " + (str(e, "org_orig").isEmpty() ? "—" : str(e, "org_orig")) + ")", 12, MUTED, false));
+                }
+                c.addView(text(this, "✏️ " + str(e, "edited_by") + (str(e, "edit_via").isEmpty() ? "" : " • اقتراح من " + str(e, "edit_via")) + " • " + ago(e.optLong("edited_at")) + (reviewed ? " • ✔ مراجَع" : " • 🔴 غير مراجَع"), 11, MUTED, false));
+                LinearLayout r2 = row(this);
+                if (!reviewed) {
+                    Button ok = button(this, "✔ مراجعة", true);
+                    ok.setOnClickListener(v -> post("/admin/edits/review", jo("id", id), x -> { dh[0].dismiss(); adminEdits(); refreshPending(); }));
+                    r2.addView(ok, weight());
+                }
+                Button rs = button(this, "↩ استرجاع الأصلي", false);
+                rs.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("استرجاع العنوان والجهة الأصليين لكل المستخدمين؟")
+                        .setPositiveButton("استرجاع", (x, w) -> post("/admin/edits/restore", jo("id", id), y -> {
+                            Toast.makeText(this, "✅ استُرجع الأصل", Toast.LENGTH_SHORT).show();
+                            dh[0].dismiss();
+                            adminEdits();
+                            refreshPending();
+                            refresh(false);
+                        })).setNegativeButton("إلغاء", null).show());
+                Button op = button(this, "👁 فتح", false);
+                op.setOnClickListener(v -> openJobById(id));
+                r2.addView(rs, weight());
+                r2.addView(op, weight());
+                c.addView(r2, lpm(this, -1, -2, 8, 0));
+                l.addView(c, lpm(this, -1, -2, 0, 8));
+            }
+        });
     }
 
     // ===== تصحيح التصنيف =====
@@ -1455,13 +1567,16 @@ public class MainActivity extends Activity {
             int pfl = Store.p(this).getInt("pending_flags", 0);
             Button bfl = button(this, "🚩 البلاغات" + (pfl > 0 ? "  (" + pfl + " 🔴)" : ""), pfl > 0);
             bfl.setOnClickListener(v -> adminFlags());
+            int pe = Store.p(this).getInt("pending_edits", 0);
+            Button be = button(this, "✏️ المنشورات المصححة" + (pe > 0 ? "  (" + pe + " 🔴)" : ""), pe > 0);
+            be.setOnClickListener(v -> adminEdits());
             Button ba = button(this, "📢 إشعارات المستخدمين (إرسال / حذف)", false);
             ba.setOnClickListener(v -> showAnnouncements());
             Button bm = button(this, "⬆ تحديث إجباري", false);
             bm.setOnClickListener(v -> adminMinVer());
             Button bt = button(this, "📊 الإحصائيات", false);
             bt.setOnClickListener(v -> adminStats());
-            for (Button bb : new Button[]{bs, bu, bf, bfl, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
+            for (Button bb : new Button[]{bs, bu, bf, bfl, be, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
             l.addView(ad, lpm(this, -1, -2, 0, 12));
         }
 
@@ -1934,8 +2049,12 @@ public class MainActivity extends Activity {
                 LinearLayout c = card(this);
                 String tt = str(f, "title");
                 c.addView(text(this, tt.isEmpty() ? "إعلان محذوف" : tt, 15, TEXT, true));
-                c.addView(text(this, "الحالي: 🏷 " + Labels.names(Labels.SPECS, str(f, "j_specs")) + "  📍 " + Labels.names(Labels.GOVS, str(f, "j_govs")), 12, MUTED, false));
-                c.addView(text(this, "المقترح: 🏷 " + Labels.names(Labels.SPECS, str(f, "specs")) + "  📍 " + Labels.names(Labels.GOVS, str(f, "govs")), 13, GREEN, true));
+                if (!str(f, "specs").isEmpty() || !str(f, "govs").isEmpty()) {
+                    c.addView(text(this, "الحالي: 🏷 " + Labels.names(Labels.SPECS, str(f, "j_specs")) + "  📍 " + Labels.names(Labels.GOVS, str(f, "j_govs")), 12, MUTED, false));
+                    c.addView(text(this, "المقترح: 🏷 " + Labels.names(Labels.SPECS, str(f, "specs")) + "  📍 " + Labels.names(Labels.GOVS, str(f, "govs")), 13, GREEN, true));
+                }
+                if (!str(f, "s_title").isEmpty()) c.addView(text(this, "✏️ العنوان المقترح: " + str(f, "s_title"), 13, GREEN, true));
+                if (!str(f, "s_org").isEmpty()) c.addView(text(this, "🏢 الجهة المقترحة: " + str(f, "s_org") + (str(f, "j_org").isEmpty() ? "" : "  (الحالية: " + str(f, "j_org") + ")"), 13, GREEN, true));
                 c.addView(text(this, "من: " + str(f, "email") + " • " + ago(f.optLong("created")), 11, MUTED, false));
                 LinearLayout r2 = row(this);
                 Button ok = button(this, "✅ اعتماد", true);

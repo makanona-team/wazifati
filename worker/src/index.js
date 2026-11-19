@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '1.9';
+const VERSION = '2.0';
 const GUEST_JOBS = 10;      // الزائر يرى أحدث 10 وظائف
 const GUEST_TENDERS = 2;    // وأحدث مناقصتين
 const RELEASE = 'https://github.com/makanona-team/wazifati/releases/latest';
@@ -74,6 +74,7 @@ export class Db {
       specs TEXT, govs TEXT, sector TEXT, deadline TEXT, posted INTEGER, created INTEGER,
       src TEXT, srcs TEXT, apply TEXT, text TEXT, shared_by TEXT)`);
     this.tryRun(`ALTER TABLE jobs ADD COLUMN updated INTEGER DEFAULT 0`);
+    for (const col of ['title_orig TEXT', 'org_orig TEXT', 'edited_by TEXT', 'edit_via TEXT', 'edited_at INTEGER DEFAULT 0', 'edit_reviewed INTEGER DEFAULT 1']) this.tryRun(`ALTER TABLE jobs ADD COLUMN ${col}`);
     for (const col of ['image TEXT', 'doubt INTEGER DEFAULT 0', 'hidden INTEGER DEFAULT 0', 'flag_ok INTEGER DEFAULT 0', "kind TEXT DEFAULT 'job'", 'tcat TEXT', 'bond TEXT']) this.tryRun(`ALTER TABLE jobs ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS flags (job_id INTEGER, email TEXT, created INTEGER, PRIMARY KEY(job_id, email))`);
     this.run(`CREATE INDEX IF NOT EXISTS jobs_k1 ON jobs(k1)`);
@@ -100,6 +101,7 @@ export class Db {
     this.run(`CREATE TABLE IF NOT EXISTS fixes (
       id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, email TEXT, specs TEXT, govs TEXT, sector TEXT, note TEXT,
       status TEXT DEFAULT 'pending', created INTEGER)`);
+    for (const col of ['title TEXT', 'org TEXT']) this.tryRun(`ALTER TABLE fixes ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS announcements (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, email TEXT, created INTEGER)`);
 
     if (!this.one(`SELECT v FROM meta WHERE k='seeded'`)) {
@@ -196,7 +198,8 @@ export class Db {
       if (req.method === 'GET') {
         if (p === '/admin/sources') return json({ sources: this.q(`SELECT * FROM sources ORDER BY pending DESC, enabled DESC, id`) });
         if (p === '/admin/users') return json({ users: this.users() });
-        if (p === '/admin/fixes') return json({ fixes: this.q(`SELECT f.*, j.title, j.specs AS j_specs, j.govs AS j_govs, j.sector AS j_sector FROM fixes f LEFT JOIN jobs j ON j.id=f.job_id WHERE f.status='pending' ORDER BY f.id DESC LIMIT 100`) });
+        if (p === '/admin/fixes') return json({ fixes: this.q(`SELECT f.id, f.job_id, f.email, f.specs, f.govs, f.sector, f.note, f.created, f.title AS s_title, f.org AS s_org, j.title, j.org AS j_org, j.specs AS j_specs, j.govs AS j_govs, j.sector AS j_sector FROM fixes f LEFT JOIN jobs j ON j.id=f.job_id WHERE f.status='pending' ORDER BY f.id DESC LIMIT 100`) });
+        if (p === '/admin/edits') return json({ edits: this.q(`SELECT id, title, title_orig, org, org_orig, edited_by, edit_via, edited_at, edit_reviewed, hidden FROM jobs WHERE edited_at > 0 ${url.searchParams.get('filter') === 'all' ? '' : 'AND edit_reviewed=0'} ORDER BY edited_at DESC LIMIT 200`) });
         if (p === '/admin/pending') return json(this.pending(+url.searchParams.get('since') || 0));
         if (p === '/admin/stats') return json(this.stats());
         if (p === '/admin/flags') return json({ flags: this.q(`SELECT j.id, j.title, j.src, j.url, j.hidden, COUNT(f.email) AS n, GROUP_CONCAT(f.email, '، ') AS who, MAX(f.created) AS last
@@ -208,7 +211,14 @@ export class Db {
         if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/users/role') return this.setRole(me, b);
         if (p === '/admin/users/status') return this.setStatus(me, b);
-        if (p === '/admin/fixes/decide') return this.decideFix(b);
+        if (p === '/admin/fixes/decide') return this.decideFix(me, b);
+        if (p === '/admin/job/edit') return json({ ok: true, changed: this.editJob(+b.id, b.title, b.org == null ? null : b.org, me.email, null) });
+        if (p === '/admin/edits/review') {
+          if (b.all) this.run(`UPDATE jobs SET edit_reviewed=1 WHERE edited_at > 0`);
+          else this.run(`UPDATE jobs SET edit_reviewed=1 WHERE id=?`, +b.id);
+          return json({ ok: true });
+        }
+        if (p === '/admin/edits/restore') return this.restoreEdit(+b.id);
         if (p === '/admin/announce') return this.announce(me, b);
         if (p === '/admin/announce/delete') { this.run(`DELETE FROM announcements WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/minver') return this.setMinVer(b);
@@ -338,8 +348,8 @@ export class Db {
   // تصحيحات التصنيف التي حدثت بعد وقت معيّن
   changes(url) {
     const since = +url.searchParams.get('since') || 0;
-    const rows = this.q(`SELECT id, specs, govs, sector, hidden, doubt, kind, tcat, bond FROM jobs WHERE updated > ? ORDER BY updated LIMIT 1000`, since);
-    return json({ now: Date.now(), items: rows.map(r => ({ id: r.id, s: r.specs, g: r.govs, c: r.sector, h: r.hidden ? 1 : 0, dt: r.doubt ? 1 : 0, k: r.kind || 'job', tc: r.tcat || '', bd: r.bond || '' })) });
+    const rows = this.q(`SELECT id, title, org, specs, govs, sector, hidden, doubt, kind, tcat, bond FROM jobs WHERE updated > ? ORDER BY updated LIMIT 1000`, since);
+    return json({ now: Date.now(), items: rows.map(r => ({ id: r.id, t: r.title, o: r.org || '', s: r.specs, g: r.govs, c: r.sector, h: r.hidden ? 1 : 0, dt: r.doubt ? 1 : 0, k: r.kind || 'job', tc: r.tcat || '', bd: r.bond || '' })) });
   }
 
   addJob(post, opts = {}) {
@@ -422,11 +432,19 @@ export class Db {
     if (!job) throw new HttpErr(404, 'الإعلان غير موجود');
     const specs = cleanCsv(b.specs, LABELS.specs), govs = cleanCsv(b.govs, LABELS.govs);
     const sector = LABELS.sectors[b.sector] ? b.sector : '';
+    const title = String(b.title || '').trim(), org = b.org == null ? null : String(b.org).trim();
+    if (title && (title.length < 3 || title.length > 140)) throw new HttpErr(400, 'العنوان من 3 إلى 140 حرفاً');
+    if (org && org.length > 80) throw new HttpErr(400, 'اسم الجهة طويل (80 حرفاً كحد أقصى)');
     if (me.role === 'admin') {
       this.applyFix(id, specs, govs, sector);
+      if (title || org != null) this.editJob(id, title, org, me.email, null);
       return json({ ok: true, applied: true });
     }
-    this.run(`INSERT INTO fixes(job_id,email,specs,govs,sector,note,status,created) VALUES(?,?,?,?,?,?,?,?)`, id, me.email, specs, govs, sector, String(b.note || '').slice(0, 300), 'pending', Date.now());
+    if (title || org != null) {
+      const cur = this.one(`SELECT title, org FROM jobs WHERE id=?`, id);
+      if ((!title || title === cur.title) && (org == null || org === (cur.org || ''))) throw new HttpErr(400, 'لم تغيّر شيئاً');
+    }
+    this.run(`INSERT INTO fixes(job_id,email,specs,govs,sector,note,status,created,title,org) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, me.email, specs, govs, sector, String(b.note || '').slice(0, 300), 'pending', Date.now(), title || null, org);
     return json({ ok: true, applied: false });
   }
 
@@ -436,11 +454,34 @@ export class Db {
     this.run(`UPDATE jobs SET specs=?, govs=?, sector=?, updated=? WHERE id=?`, specs || j.specs, govs || j.govs, sector || j.sector, Date.now(), id);
   }
 
-  decideFix(b) {
+  /** تعديل عنوان/جهة الإعلان مع حفظ الأصل. org=null يعني «بلا تغيير». */
+  editJob(id, title, org, by, via) {
+    const j = this.one(`SELECT title, org FROM jobs WHERE id=?`, id);
+    if (!j) throw new HttpErr(404, 'الإعلان غير موجود');
+    title = String(title || '').trim();
+    if (title && (title.length < 3 || title.length > 140)) throw new HttpErr(400, 'العنوان من 3 إلى 140 حرفاً');
+    if (org != null) { org = String(org).trim(); if (org.length > 80) throw new HttpErr(400, 'اسم الجهة طويل (80 حرفاً كحد أقصى)'); }
+    const nt = title || j.title, no = org == null ? (j.org || '') : org;
+    if (nt === j.title && no === (j.org || '')) return false;
+    const now = Date.now();
+    this.run(`UPDATE jobs SET title=?, org=?, title_orig=COALESCE(title_orig, ?), org_orig=COALESCE(org_orig, ?), edited_by=?, edit_via=?, edited_at=?, edit_reviewed=?, updated=? WHERE id=?`,
+      nt, no, j.title, j.org || '', by, via, now, by === FIRST_ADMIN ? 1 : 0, now, id);
+    return true;
+  }
+
+  restoreEdit(id) {
+    const j = this.one(`SELECT title_orig, org_orig, edited_at FROM jobs WHERE id=?`, id);
+    if (!j || !j.edited_at) throw new HttpErr(400, 'لا يوجد تعديل لاسترجاعه');
+    this.run(`UPDATE jobs SET title=COALESCE(title_orig, title), org=COALESCE(org_orig, org), title_orig=NULL, org_orig=NULL, edited_by=NULL, edit_via=NULL, edited_at=0, edit_reviewed=1, updated=? WHERE id=?`, Date.now(), id);
+    return json({ ok: true });
+  }
+
+  decideFix(me, b) {
     const f = this.one(`SELECT * FROM fixes WHERE id=?`, +b.id);
     if (!f) throw new HttpErr(404, 'غير موجود');
     if (b.ok) {
       this.applyFix(f.job_id, b.specs != null ? cleanCsv(b.specs, LABELS.specs) : f.specs, b.govs != null ? cleanCsv(b.govs, LABELS.govs) : f.govs, f.sector);
+      if (f.title || f.org != null) this.editJob(f.job_id, f.title || '', f.org, me.email, f.email);
     }
     this.run(`UPDATE fixes SET status=? WHERE id=?`, b.ok ? 'done' : 'rejected', f.id);
     return json({ ok: true });
@@ -587,6 +628,7 @@ export class Db {
       fixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending'`).n,
       flags: this.one(`SELECT COUNT(DISTINCT f.job_id) AS n FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2`).n,
       newFlags: this.one(`SELECT COUNT(*) AS n FROM flags WHERE created > ?`, since).n,
+      edits: this.one(`SELECT COUNT(*) AS n FROM jobs WHERE edited_at > 0 AND edit_reviewed=0`).n,
       newFixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending' AND created > ?`, since).n,
       autoOff: this.q(`SELECT name FROM sources WHERE auto_off > ? AND ? > 0 ORDER BY auto_off DESC LIMIT 10`, since, since).map(r => r.name),
       systemic: (() => { const m = JSON.parse((this.one(`SELECT v FROM meta WHERE k='systemic'`) || {}).v || 'null'); return m && m.at > since && since > 0 ? m : null; })(),

@@ -182,6 +182,7 @@ public final class Sync {
             JSONObject o = a.getJSONObject(i);
             long id = o.optLong("id");
             if (o.optInt("h") == 1) { Store.get(c).delete(id); continue; }
+            if (!o.optString("t").isEmpty()) Store.get(c).updateTitle(id, o.optString("t"), o.optString("o"));
             if (!o.isNull("s")) Store.get(c).updateClass(id, o.optString("s"), o.optString("g"), o.optString("c"));
             Store.get(c).updateDoubt(id, o.optInt("dt"));
             if (o.has("k")) Store.get(c).updateKind(id, o.optString("k", "job"), o.optString("tc"), o.optString("bd"));
@@ -230,7 +231,7 @@ public final class Sync {
             if (s.optLong("created") > since) { newSrc++; who = s.optString("added_by"); }
         }
         int fixes = r.optInt("fixes"), newFixes = r.optInt("newFixes"), flags = r.optInt("flags"), newFlags = r.optInt("newFlags");
-        sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putLong("admin_check", System.currentTimeMillis()).apply();
+        sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putInt("pending_edits", r.optInt("edits")).putLong("admin_check", System.currentTimeMillis()).apply();
         if (!notify || since == 0) return;
         if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 4);
         if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 4);
