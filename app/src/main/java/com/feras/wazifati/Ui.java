@@ -54,15 +54,8 @@ public final class Ui {
 
     public static String today() {
         java.util.Calendar g = java.util.Calendar.getInstance();
-        String s = DAYS[g.get(java.util.Calendar.DAY_OF_WEEK) - 1] + " " + g.get(java.util.Calendar.DAY_OF_MONTH) + " "
-                + MONTHS[g.get(java.util.Calendar.MONTH)] + " " + g.get(java.util.Calendar.YEAR);
-        try {
-            android.icu.util.IslamicCalendar h = new android.icu.util.IslamicCalendar();
-            h.setCalculationType(android.icu.util.IslamicCalendar.CalculationType.ISLAMIC_UMALQURA);
-            h.setTime(new java.util.Date());
-            s += "  •  " + h.get(android.icu.util.Calendar.DAY_OF_MONTH) + " " + HIJRI[h.get(android.icu.util.Calendar.MONTH)] + " " + h.get(android.icu.util.Calendar.YEAR) + " هـ";
-        } catch (Throwable ignored) { }
-        return s;
+        return DAYS[g.get(java.util.Calendar.DAY_OF_WEEK) - 1] + " " + g.get(java.util.Calendar.DAY_OF_MONTH) + " "
+                + MONTHS[g.get(java.util.Calendar.MONTH)];
     }
 
     public static int dp(Context c, float v) {

@@ -423,7 +423,6 @@ public class MainActivity extends Activity {
         LinearLayout ht = new LinearLayout(this);
         ht.setOrientation(LinearLayout.VERTICAL);
         ht.addView(text(this, "💼 وظيفتي", 20, Color.WHITE, true));
-        ht.addView(oneLine(text(this, Ui.today(), 12, 0xEEFFFFFF, false)));
         status = oneLine(text(this, "", 11, 0xCCFFFFFF, false));
         ht.addView(status);
         head.addView(ht, new LinearLayout.LayoutParams(0, -2, 1));
@@ -481,7 +480,7 @@ public class MainActivity extends Activity {
         if (status == null) return;
         if (bell != null) { int un = Sync.annUnread(this); bell.setText(un > 0 ? "🔔 " + un + "\nإشعارات" : "🔔\nإشعارات"); bell.setTextColor(un > 0 ? 0xFFFFD54F : Color.WHITE); }
         long ls = Store.p(this).getLong("last_sync", 0);
-        status.setText(syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls))));
+        status.setText(Ui.today() + " • " + (syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls)))));
         int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) + Store.p(this).getInt("pending_edits", 0) : 0;
         tabs[T_MORE].setText(pend > 0 ? "☰ " + pend + "🔴\nالمزيد" : "☰\nالمزيد");
     }
@@ -655,8 +654,6 @@ public class MainActivity extends Activity {
         l.setPadding(dp(this, 10), dp(this, 8), dp(this, 10), 0);
 
         l.addView(welcomeCard(), lpm(this, -1, -2, 0, 8));
-        View ub = updateBar();
-        if (ub != null) l.addView(ub, lpm(this, -1, -2, 0, 8));
 
         if (guest()) {
             LinearLayout gb = row(this);
@@ -1133,6 +1130,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (powerDlg != null) buildPower();
+        if (pendingUpd != null && getPackageManager().canRequestPackageInstalls()) { Updater.Info u = pendingUpd; pendingUpd = null; download(u); }
     }
 
     @Override
@@ -2465,47 +2463,38 @@ public class MainActivity extends Activity {
     }
 
     private View welcomeCard() {
-        LinearLayout w = new LinearLayout(this);
-        w.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout w = row(this);
         w.setBackground(round(this, PRIMARY_LIGHT, 12));
         w.setPadding(dp(this, 12), dp(this, 8), dp(this, 12), dp(this, 8));
-        int h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
-        String greet = h < 12 ? "صباح الخير" : (h < 18 ? "مساء الخير" : "مساء النور");
         String full = Store.p(this).getString("uname", "").trim();
         String first = full.isEmpty() ? "" : full.split("\\s+")[0];
         String hi = guest() || first.isEmpty() ? "مرحباً بك 👋" : "مرحباً " + first + " 👋";
-        LinearLayout r = row(this);
-        r.addView(text(this, hi, 16, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
+        w.addView(text(this, hi, 16, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
+        Updater.Info n = Updater.newer(this);
+        if (n != null) {
+            TextView up = text(this, "⬆ تحديث", 12, Color.WHITE, true);
+            up.setBackground(round(this, 0xFFE65100, 10));
+            up.setPadding(dp(this, 10), dp(this, 3), dp(this, 10), dp(this, 3));
+            up.setOnClickListener(v -> download(n));
+            w.addView(up, lpm(this, -2, -2, 0, 0));
+        }
         TextView badge = text(this, roleLabel(), 12, Color.WHITE, true);
         badge.setBackground(round(this, guest() ? MUTED : (Store.admin(this) ? GREEN : PRIMARY), 10));
         badge.setPadding(dp(this, 10), dp(this, 3), dp(this, 10), dp(this, 3));
-        r.addView(badge);
-        w.addView(r);
-        String date = new java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.forLanguageTag("ar-SY-u-nu-latn")).format(new java.util.Date());
-        w.addView(text(this, greet + " • " + date, 12, MUTED, false));
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-2, -2);
+        bl.setMarginStart(dp(this, 6));
+        w.addView(badge, bl);
         return w;
     }
 
-    private View updateBar() {
-        Updater.Info n = Updater.newer(this);
-        if (n == null || System.currentTimeMillis() - Store.p(this).getLong("upd_bar_hide", 0) < 24 * 3600_000L) return null;
-        LinearLayout sb = row(this);
-        sb.setBackground(round(this, 0xFFD7F5DD, 12));
-        sb.setPadding(dp(this, 12), dp(this, 8), dp(this, 8), dp(this, 8));
-        TextView t = text(this, "🆕 إصدار " + n.version + " متاح — اضغط للتحديث", 13, TEXT, true);
-        t.setOnClickListener(v -> showUpdateDialog(n));
-        sb.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView x = text(this, "✕", 18, MUTED, true);
-        x.setPadding(dp(this, 12), dp(this, 4), dp(this, 8), dp(this, 4));
-        x.setOnClickListener(v -> { Store.p(this).edit().putLong("upd_bar_hide", System.currentTimeMillis()).apply(); show(tab); });
-        sb.addView(x);
-        return sb;
-    }
 
     @SuppressWarnings("deprecation")
+    private Updater.Info pendingUpd;
+
     private void download(Updater.Info info) {
         if (!getPackageManager().canRequestPackageInstalls()) {
-            Toast.makeText(this, "اسمح لوظيفتي بتثبيت التطبيقات ثم أعد المحاولة", Toast.LENGTH_LONG).show();
+            pendingUpd = info;
+            Toast.makeText(this, "اسمح لوظيفتي بتثبيت التطبيقات وسيكمل التحديث تلقائياً", Toast.LENGTH_LONG).show();
             startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
             return;
         }
