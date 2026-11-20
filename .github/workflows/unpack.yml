@@ -1,0 +1,47 @@
+name: فك ضغط التحديث تلقائياً (Unpack)
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'wazifati-*.zip' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: فك الضغط واستبدال الملفات
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ZIP=$(ls -t wazifati-*.zip 2>/dev/null | head -1 || true)
+          if [ -z "$ZIP" ]; then echo "لا يوجد ملف zip للفك"; exit 0; fi
+          echo "Unpacking $ZIP ..."
+          rm -rf /tmp/unp && mkdir -p /tmp/unp
+          unzip -o -q "$ZIP" -d /tmp/unp
+          SRC="/tmp/unp"
+          TOP=$(find /tmp/unp -mindepth 1 -maxdepth 1 -type d | head -1 || true)
+          if [ -n "$TOP" ] && [ "$(ls -A /tmp/unp | wc -l)" -eq 1 ]; then SRC="$TOP"; fi
+          # نسخ كل الملفات عدا .github/workflows (لأن GitHub يمنع تعديلها آلياً لأسباب أمنية)
+          rm -rf "$SRC/.github/workflows"
+          cp -rf "$SRC"/. .
+          rm -f wazifati-*.zip
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "لا توجد تغييرات جديدة"
+            exit 0
+          fi
+          git commit -m "تحديث تلقائي من $ZIP"
+          git push
+          gh workflow run deploy.yml -R "$GITHUB_REPOSITORY" || true
+          gh workflow run release.yml -R "$GITHUB_REPOSITORY" || true
+          
