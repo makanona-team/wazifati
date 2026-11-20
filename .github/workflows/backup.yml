@@ -1,0 +1,61 @@
+name: نسخ احتياطي مشفّر (Backup)
+
+# يومياً الساعة 00:00 UTC (03:00 فجراً بتوقيت سوريا):
+# يصدّر قاعدة البيانات من Cloudflare Worker، يضغطها ويشفّرها بـ AES-256، ويرفعها كـ Artifact خاص لمدة 30 يوماً (خارج المستودع).
+#
+# خطوات الاسترجاع عند الحاجة:
+# 1) حمّل ملف النسخة المشفّرة من تبويب Actions -> آخر تشغيل -> Artifacts
+# 2) فكّ التشفير والضغط على حاسوبك:
+#    openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in wazifati-backup-YYYY-MM-DD.json.gz.enc -out backup.json.gz
+#    gunzip backup.json.gz
+# 3) أرسلها للخادم عبر مسار الاسترجاع المحمي بمفتاح INGEST_KEY:
+#    curl -X POST -H "Content-Type: application/json" -H "X-Key: $WZ_KEY" --data-binary @backup.json "$WZ_API/admin/restore"
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: تصدير وتشفير قاعدة البيانات
+        env:
+          SIGN_PASS: ${{ secrets.SIGN_PASS }}
+          BACKUP_PASS: ${{ secrets.BACKUP_PASS }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGN_PASS" ]; then echo "::error::السر SIGN_PASS غير مضاف"; exit 1; fi
+          git fetch -q origin config && WZ_API=$(git show origin/config:api-url.txt | tr -d '\r\n ')
+          if [ -z "$WZ_API" ]; then echo "::error::لم يُعثر على عنوان الخادم في فرع config"; exit 1; fi
+          WZ_KEY=$(printf '%s' "$SIGN_PASS:wazifati-ingest" | sha256sum | cut -c1-40)
+          DATE=$(date -u +%Y-%m-%d)
+          OUT="wazifati-backup-$DATE.json.gz.enc"
+          curl -fsSL -H "X-Key: $WZ_KEY" "$WZ_API/admin/backup" | gzip -c > backup.json.gz
+          SIZE=$(stat -c%s backup.json.gz)
+          echo "Exported compressed size: $SIZE bytes"
+          if [ "$SIZE" -lt 40 ]; then echo "::error::الملف المصدّر فارغ أو غير صالح"; exit 1; fi
+          ENC_PASS="${BACKUP_PASS:-$SIGN_PASS}"
+          export ENC_PASS
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in backup.json.gz -out "$OUT" -pass env:ENC_PASS
+          rm -f backup.json.gz
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
+
+      - name: رفع النسخة المشفّرة كـ Artifact خاص (30 يوماً)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wazifati-db-backup-${{ github.run_id }}
+          path: ${{ env.OUT }}
+          retention-days: 30
+          
