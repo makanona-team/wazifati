@@ -538,7 +538,7 @@ public class MainActivity extends Activity {
                     .setNeutralButton("رجوع", null).show();
             return;
         }
-        if (k == T_TENDERS && !Store.flag(this, "tenders")) k = T_JOBS;
+        if (k == T_TENDERS && !Store.flag(this, "tenders")) { show(T_JOBS); return; }
         if (k != T_FILTER) { draft = null; draftDirty = false; }
         tab = k;
         for (int i = 0; i < 5; i++) {
