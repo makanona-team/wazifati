@@ -4,7 +4,15 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.0';
+const VERSION = '2.4';
+const DEFAULT_FLAGS = {
+  tenders: true,        // قسم المناقصات
+  cv_match: true,       // السيرة الذاتية ونسبة التطابق
+  suggest_source: true, // اقتراح المصادر
+  share_job: true,      // مشاركة الفرص
+  guest_mode: true,     // التصفح كضيف
+  learn_tab: false,     // قسم التعلّم (يُفعّل في 2.5)
+};
 const GUEST_JOBS = 10;      // الزائر يرى أحدث 10 وظائف
 const GUEST_TENDERS = 2;    // وأحدث مناقصتين
 const RELEASE = 'https://github.com/makanona-team/wazifati/releases/latest';
@@ -103,6 +111,15 @@ export class Db {
       status TEXT DEFAULT 'pending', created INTEGER)`);
     for (const col of ['title TEXT', 'org TEXT']) this.tryRun(`ALTER TABLE fixes ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS announcements (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, email TEXT, created INTEGER)`);
+    this.run(`CREATE TABLE IF NOT EXISTS feature_flags (k TEXT PRIMARY KEY, enabled INTEGER DEFAULT 1, updated INTEGER DEFAULT 0)`);
+    this.run(`CREATE TABLE IF NOT EXISTS client_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, sig TEXT UNIQUE, app_ver TEXT, android_ver TEXT,
+      model TEXT, rooted INTEGER DEFAULT 0, err_code TEXT, msg TEXT, trace TEXT,
+      count INTEGER DEFAULT 1, first_seen INTEGER, last_seen INTEGER, resolved INTEGER DEFAULT 0)`);
+    this.run(`CREATE TABLE IF NOT EXISTS installs (
+      install_id TEXT PRIMARY KEY, model TEXT, android_ver TEXT, app_ver TEXT,
+      mode TEXT DEFAULT 'guest', rooted INTEGER DEFAULT 0, first_seen INTEGER, last_seen INTEGER)`);
+    this.run(`CREATE TABLE IF NOT EXISTS deletion_reasons (id INTEGER PRIMARY KEY AUTOINCREMENT, reason TEXT, note TEXT, created INTEGER)`);
 
     if (!this.one(`SELECT v FROM meta WHERE k='seeded'`)) {
       for (const [kind, value, name] of SEED_SOURCES)
@@ -155,13 +172,17 @@ export class Db {
       if (req.method === 'GET' && p === '/') return this.home();
       if (req.method === 'GET' && p === '/privacy') return new Response(PRIVACY, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       if (req.method === 'GET' && p === '/terms') return new Response(TERMS, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
-      if (req.method === 'GET' && p === '/api') return json({ ok: true, app: 'wazifati', v: VERSION, now: Date.now(), login: !!this.env.GOOGLE_CLIENT_ID, ...this.minInfo() });
+      if (req.method === 'GET' && p === '/api') return json({ ok: true, app: 'wazifati', v: VERSION, now: Date.now(), login: !!this.env.GOOGLE_CLIENT_ID, ...this.minInfo(), flags: this.flagsObj() });
+      if (req.method === 'POST' && p === '/client/report') return this.clientReport(b);
+      if (req.method === 'POST' && p === '/client/ping') return this.clientPing(req, b);
       if (req.method === 'POST' && p === '/auth') return await this.auth(b);
       if (this.keyOk(req)) {
         if (p === '/ingest') return this.ingest(b);
         if (p === '/known') return this.known(b);
         if (p === '/report') return this.report(b);
         if (p === '/sources') return json({ sources: this.q(`SELECT * FROM sources WHERE enabled=1 AND pending=0 ORDER BY id`) });
+        if (req.method === 'GET' && p === '/admin/backup') return this.exportBackup();
+        if (req.method === 'POST' && p === '/admin/restore') return this.restoreBackup(b);
       }
 
       // ----- قراءة عامة (تصفّح كضيف + صفحات المشاركة) -----
@@ -171,7 +192,7 @@ export class Db {
         if (p === '/jobs') return this.jobs(url, req);
         if (p === '/changes') return this.changes(url);
         if (p === '/announce') {
-          if (url.searchParams.get('all')) return json({ items: this.q(`SELECT id,text,created FROM announcements ORDER BY id DESC LIMIT 50`), ...this.minInfo() });
+          if (url.searchParams.get('all')) return json({ items: this.q(`SELECT id,text,created FROM announcements ORDER BY id DESC LIMIT 50`), ...this.minInfo(), flags: this.flagsObj() });
           return json({ items: this.q(`SELECT id,text,created FROM announcements WHERE id > ? ORDER BY id DESC LIMIT 20`, +url.searchParams.get('since') || 0) });
         }
         if (p === '/labels') return json(LABELS);
@@ -191,17 +212,20 @@ export class Db {
         if (p === '/cv') return this.saveCV(me, b);
         if (p === '/flag') return this.flag(me, b);
         if (p === '/cv/delete') { this.run(`UPDATE accounts SET cv_text=NULL, cv_profile=NULL, cv_name=NULL, cv_updated=0 WHERE email=?`, me.email); return json({ ok: true }); }
+        if (p === '/account/delete') return this.deleteAccount(me, b);
       }
 
       // ----- أدمن -----
       if (me.role !== 'admin') throw new HttpErr(403, 'هذه الصفحة للأدمن فقط');
       if (req.method === 'GET') {
         if (p === '/admin/sources') return json({ sources: this.q(`SELECT * FROM sources ORDER BY pending DESC, enabled DESC, id`) });
-        if (p === '/admin/users') return json({ users: this.users() });
+        if (p === '/admin/users') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذه الصفحة لمطوّر التطبيق فقط'); return json({ users: this.users() }); }
         if (p === '/admin/fixes') return json({ fixes: this.q(`SELECT f.id, f.job_id, f.email, f.specs, f.govs, f.sector, f.note, f.created, f.title AS s_title, f.org AS s_org, j.title, j.org AS j_org, j.specs AS j_specs, j.govs AS j_govs, j.sector AS j_sector FROM fixes f LEFT JOIN jobs j ON j.id=f.job_id WHERE f.status='pending' ORDER BY f.id DESC LIMIT 100`) });
         if (p === '/admin/edits') return json({ edits: this.q(`SELECT id, title, title_orig, org, org_orig, edited_by, edit_via, edited_at, edit_reviewed, hidden FROM jobs WHERE edited_at > 0 ${url.searchParams.get('filter') === 'all' ? '' : 'AND edit_reviewed=0'} ORDER BY edited_at DESC LIMIT 200`) });
         if (p === '/admin/pending') return json(this.pending(+url.searchParams.get('since') || 0));
         if (p === '/admin/stats') return json(this.stats());
+        if (p === '/admin/features') return json({ flags: this.flagsObj() });
+        if (p === '/admin/reports') return this.getReports(url);
         if (p === '/admin/flags') return json({ flags: this.q(`SELECT j.id, j.title, j.src, j.url, j.hidden, COUNT(f.email) AS n, GROUP_CONCAT(f.email, '، ') AS who, MAX(f.created) AS last
           FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2 GROUP BY j.id ORDER BY last DESC LIMIT 100`) });
       }
@@ -209,8 +233,8 @@ export class Db {
         if (p === '/admin/sources/approve') return this.approve(b);
         if (p === '/admin/sources/toggle') { this.run(`UPDATE sources SET enabled=?, fail_since=NULL, auto_off=0 WHERE id=?`, b.enabled ? 1 : 0, +b.id); return json({ ok: true }); }
         if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
-        if (p === '/admin/users/role') return this.setRole(me, b);
-        if (p === '/admin/users/status') return this.setStatus(me, b);
+        if (p === '/admin/users/role') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذا الإجراء لمطوّر التطبيق فقط'); return this.setRole(me, b); }
+        if (p === '/admin/users/status') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذا الإجراء لمطوّر التطبيق فقط'); return this.setStatus(me, b); }
         if (p === '/admin/fixes/decide') return this.decideFix(me, b);
         if (p === '/admin/job/edit') return json({ ok: true, changed: this.editJob(+b.id, b.title, b.org == null ? null : b.org, me.email, null) });
         if (p === '/admin/edits/review') {
@@ -223,6 +247,8 @@ export class Db {
         if (p === '/admin/announce/delete') { this.run(`DELETE FROM announcements WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/minver') return this.setMinVer(b);
         if (p === '/admin/flags/decide') return this.decideFlag(b);
+        if (p === '/admin/features') return this.setFeature(b);
+        if (p === '/admin/reports/clear') return this.clearReports(b);
       }
       return json({ error: 'not found' }, 404);
     } catch (e) {
@@ -629,6 +655,8 @@ export class Db {
       flags: this.one(`SELECT COUNT(DISTINCT f.job_id) AS n FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2`).n,
       newFlags: this.one(`SELECT COUNT(*) AS n FROM flags WHERE created > ?`, since).n,
       edits: this.one(`SELECT COUNT(*) AS n FROM jobs WHERE edited_at > 0 AND edit_reviewed=0`).n,
+      reports: this.one(`SELECT COUNT(*) AS n FROM client_reports WHERE resolved=0`).n,
+      newReports: this.one(`SELECT COUNT(*) AS n FROM client_reports WHERE resolved=0 AND last_seen > ?`, since).n,
       newFixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending' AND created > ?`, since).n,
       autoOff: this.q(`SELECT name FROM sources WHERE auto_off > ? AND ? > 0 ORDER BY auto_off DESC LIMIT 10`, since, since).map(r => r.name),
       systemic: (() => { const m = JSON.parse((this.one(`SELECT v FROM meta WHERE k='systemic'`) || {}).v || 'null'); return m && m.at > since && since > 0 ? m : null; })(),
@@ -654,7 +682,148 @@ export class Db {
       noisy: this.q(`SELECT name, total, rejected FROM sources WHERE pending=0 AND COALESCE(rejected,0) >= 5 ORDER BY 1.0*rejected/(total+rejected) DESC LIMIT 10`),
       cleanup: JSON.parse((this.one(`SELECT v FROM meta WHERE k='mig15'`) || {}).v || 'null'),
       broken: this.q(`SELECT name, last_err FROM sources WHERE pending=0 AND last_err IS NOT NULL AND kind<>'manual' AND (enabled=1 OR auto_off>0)`),
+      installs: {
+        total: this.one(`SELECT COUNT(*) AS n FROM installs`).n,
+        registered: this.one(`SELECT COUNT(*) AS n FROM installs WHERE mode='registered'`).n,
+        guest: this.one(`SELECT COUNT(*) AS n FROM installs WHERE mode='guest'`).n,
+        active7: this.one(`SELECT COUNT(*) AS n FROM installs WHERE last_seen > ?`, now - 7 * DAY).n,
+        rooted: this.one(`SELECT COUNT(*) AS n FROM installs WHERE rooted=1`).n,
+        topModels: this.q(`SELECT model, COUNT(*) AS n FROM installs WHERE model<>'' GROUP BY model ORDER BY n DESC LIMIT 10`),
+        androidVers: this.q(`SELECT android_ver AS v, COUNT(*) AS n FROM installs WHERE android_ver<>'' GROUP BY android_ver ORDER BY n DESC LIMIT 8`),
+      },
+      deletions: {
+        total: this.one(`SELECT COUNT(*) AS n FROM deletion_reasons`).n,
+        byReason: this.q(`SELECT reason, COUNT(*) AS n FROM deletion_reasons GROUP BY reason ORDER BY n DESC`),
+      },
     };
+  }
+
+  // ===== مفاتيح التشغيل عن بُعد (2.4) =====
+  flagsObj() {
+    const out = { ...DEFAULT_FLAGS };
+    for (const r of this.q(`SELECT k, enabled FROM feature_flags`)) {
+      if (Object.prototype.hasOwnProperty.call(DEFAULT_FLAGS, r.k)) out[r.k] = !!r.enabled;
+    }
+    return out;
+  }
+
+  setFeature(b) {
+    const k = String(b.key || '').trim();
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_FLAGS, k)) throw new HttpErr(400, 'مفتاح غير معروف');
+    this.run(`INSERT OR REPLACE INTO feature_flags(k,enabled,updated) VALUES(?,?,?)`, k, b.enabled ? 1 : 0, Date.now());
+    return json({ ok: true, flags: this.flagsObj() });
+  }
+
+  // ===== تقارير الأخطاء وفشل الدخول (2.4) =====
+  clientReport(b) {
+    const kind = b.kind === 'auth_fail' ? 'auth_fail' : 'crash';
+    const ver = String(b.ver || '').slice(0, 24);
+    const android = String(b.android || '').slice(0, 24);
+    const model = String(b.model || '').slice(0, 80);
+    const rooted = b.rooted ? 1 : 0;
+    const code = String(b.code || '').slice(0, 60);
+    const clean = s => String(s || '').replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '[email]').replace(/Bearer\s+\S+/gi, 'Bearer [redacted]');
+    const msg = clean(b.msg).slice(0, 400);
+    const trace = clean(b.trace).slice(0, 2500);
+    const first = (msg || trace.split('\n')[0] || '').slice(0, 100);
+    const sig = `${kind}|${ver}|${code}|${first}`;
+    const now = Date.now();
+    const ex = this.one(`SELECT id FROM client_reports WHERE sig=?`, sig);
+    if (ex) {
+      this.run(`UPDATE client_reports SET count=count+1, last_seen=?, model=?, android_ver=?, rooted=?, resolved=0 WHERE id=?`, now, model, android, rooted, ex.id);
+    } else {
+      this.run(`INSERT INTO client_reports(kind,sig,app_ver,android_ver,model,rooted,err_code,msg,trace,count,first_seen,last_seen,resolved) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,0)`,
+        kind, sig, ver, android, model, rooted, code, msg, trace, now, now);
+    }
+    if (kind === 'auth_fail' && this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) {
+      const txt = `⚠️ فشل تسجيل دخول في وظيفتي (v${ver})\n📱 ${model || 'غير معروف'} (Android ${android || '?'})${rooted ? '\n🔓 الجهاز عليه روت (Root)' : ''}\n❌ ${code}: ${msg}`;
+      this.ctx.waitUntil(this.notifyTg(txt));
+    }
+    return json({ ok: true });
+  }
+
+  async notifyTg(text) {
+    try {
+      await fetch(`https://api.telegram.org/bot${this.env.TG_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: this.env.TG_CHAT_ID, text: String(text).slice(0, 3500) }),
+      });
+    } catch (_) { /* تجاهل */ }
+  }
+
+  getReports(url) {
+    const all = url.searchParams.get('all') === '1';
+    const rows = this.q(`SELECT * FROM client_reports ${all ? '' : 'WHERE resolved=0'} ORDER BY last_seen DESC LIMIT 100`);
+    return json({ reports: rows });
+  }
+
+  clearReports(b) {
+    if (b.all) this.run(`UPDATE client_reports SET resolved=1 WHERE resolved=0`);
+    else if (b.deleteId) this.run(`DELETE FROM client_reports WHERE id=?`, +b.deleteId);
+    else this.run(`UPDATE client_reports SET resolved=1 WHERE id=?`, +b.id);
+    return json({ ok: true });
+  }
+
+  // ===== إحصائيات التثبيت والأجهزة والزوار (2.4) =====
+  clientPing(req, b) {
+    const id = String(b.installId || '').trim().slice(0, 64);
+    if (id.length < 8) return json({ ok: false }, 400);
+    const t = bearer(req);
+    const isReg = (t && !!this.one(`SELECT 1 FROM sessions WHERE token=?`, t)) || b.mode === 'registered';
+    const mode = isReg ? 'registered' : 'guest';
+    const model = String(b.model || '').trim().slice(0, 80);
+    const android = String(b.android || '').trim().slice(0, 24);
+    const ver = String(b.ver || '').trim().slice(0, 24);
+    const rooted = b.rooted ? 1 : 0;
+    const now = Date.now();
+    this.run(`INSERT INTO installs(install_id,model,android_ver,app_ver,mode,rooted,first_seen,last_seen) VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(install_id) DO UPDATE SET model=excluded.model, android_ver=excluded.android_ver, app_ver=excluded.app_ver, mode=excluded.mode, rooted=excluded.rooted, last_seen=excluded.last_seen`,
+      id, model, android, ver, mode, rooted, now, now);
+    return json({ ok: true });
+  }
+
+  // ===== حذف الحساب نهائياً (2.4) =====
+  deleteAccount(me, b) {
+    if (me.email === FIRST_ADMIN) throw new HttpErr(400, 'لا يمكن حذف حساب المدير الأول من داخل التطبيق');
+    if (String(b.confirm || '').trim().toLowerCase() !== 'delete') throw new HttpErr(400, 'يجب كتابة كلمة delete للتأكيد');
+    const reason = String(b.reason || 'other').trim().slice(0, 40);
+    const note = String(b.note || '').trim().slice(0, 300);
+    this.run(`INSERT INTO deletion_reasons(reason,note,created) VALUES(?,?,?)`, reason, note, Date.now());
+    this.run(`DELETE FROM sessions WHERE email=?`, me.email);
+    this.run(`DELETE FROM flags WHERE email=?`, me.email);
+    this.run(`DELETE FROM accounts WHERE email=?`, me.email);
+    return json({ ok: true });
+  }
+
+  // ===== النسخ الاحتياطي والاسترجاع (2.4) =====
+  exportBackup() {
+    const names = ['jobs', 'sources', 'accounts', 'sessions', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons'];
+    const tables = {};
+    for (const t of names) tables[t] = this.q(`SELECT * FROM ${t}`);
+    return json({ exported_at: Date.now(), version: VERSION, tables });
+  }
+
+  restoreBackup(b) {
+    const tables = b && b.tables;
+    if (!tables || typeof tables !== 'object') throw new HttpErr(400, 'ملف نسخة احتياطية غير صالح');
+    const allowed = ['jobs', 'sources', 'accounts', 'sessions', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons'];
+    const counts = {};
+    for (const t of allowed) {
+      const rows = tables[t];
+      if (!Array.isArray(rows)) continue;
+      this.run(`DELETE FROM ${t}`);
+      let n = 0;
+      for (const r of rows) {
+        const cols = Object.keys(r);
+        if (!cols.length) continue;
+        const qs = cols.map(() => '?').join(',');
+        this.run(`INSERT OR REPLACE INTO ${t}(${cols.join(',')}) VALUES(${qs})`, ...cols.map(c => r[c]));
+        n++;
+      }
+      counts[t] = n;
+    }
+    return json({ ok: true, restored: counts });
   }
 
   // ===== صفحة ويب لكل وظيفة (للمشاركة على واتساب/تيليغرام) =====

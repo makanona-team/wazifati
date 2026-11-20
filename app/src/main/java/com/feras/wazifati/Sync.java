@@ -200,6 +200,7 @@ public final class Sync {
         long prev = sp.getLong("ann_last", 0);
         SharedPreferences.Editor e = sp.edit().putString("ann_list", a.toString()).putLong("ann_last", Math.max(prev, newest))
                 .putString("min_ver", r.optString("minVer", "")).putString("min_msg", r.optString("minMsg", ""));
+        if (r.has("flags")) Store.saveFlags(c, r.optJSONObject("flags"));
         if (!sp.contains("ann_seen")) e.putLong("ann_seen", prev > 0 ? prev : newest);   // القديم يُعدّ مقروءاً
         e.apply();
         if (notify && prev > 0 && newest > prev) post(c, CH_ANN, 30, "📢 إعلان من وظيفتي", a.getJSONObject(0).optString("text"), 0);
@@ -231,7 +232,7 @@ public final class Sync {
             if (s.optLong("created") > since) { newSrc++; who = s.optString("added_by"); }
         }
         int fixes = r.optInt("fixes"), newFixes = r.optInt("newFixes"), flags = r.optInt("flags"), newFlags = r.optInt("newFlags");
-        sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putInt("pending_edits", r.optInt("edits")).putLong("admin_check", System.currentTimeMillis()).apply();
+        sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putInt("pending_edits", r.optInt("edits")).putInt("pending_reports", r.optInt("reports")).putLong("admin_check", System.currentTimeMillis()).apply();
         if (!notify || since == 0) return;
         if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 4);
         if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 4);
@@ -243,11 +244,13 @@ public final class Sync {
         }
         if (r.optJSONObject("systemic") != null) post(c, CH_ADMIN, 44, "⚠️ عطل عام في الجلب", "أغلب المصادر فشلت معاً (غالباً حجب أو عطل شبكة). لم يُوقف شيء تلقائياً.", 4);
         if (newFlags > 0) post(c, CH_ADMIN, 42, "🚩 بلاغات جديدة", newFlags + " بلاغ «ليس إعلان وظيفة» بانتظار مراجعتك", 4);
+        if (r.optInt("newReports") > 0) post(c, CH_ADMIN, 45, "🐞 تقارير أخطاء جديدة", r.optInt("newReports") + " تقرير انهيار أو فشل دخول بانتظار مراجعتك", 4);
     }
 
     /** مزامنة كاملة (من الخلفية ومن زر المزامنة). يعيد عدد الفرص الجديدة المطابقة. */
     public static int run(Context c, boolean background) throws Exception {
         init(c);
+        pingInstall(c, false);
         if (!loggedIn(c)) {
             // ضيف: قراءة فقط، بلا إشعارات ولا مزامنة إعدادات
             if (!Store.guest(c) || background) return 0;
@@ -269,6 +272,32 @@ public final class Sync {
         JobsWidget.update(c);
         Updater.autoCheck(c);
         return matched.size();
+    }
+
+
+    /** يسجّل/يحدّث بيانات التثبيت المجهولة (النوع، إصدار أندرويد، زائر/مسجّل) كل 6 ساعات أو عند تغيّر الوضع. */
+    public static void pingInstall(Context c, boolean force) {
+        final Context app = c.getApplicationContext();
+        SharedPreferences sp = app.getSharedPreferences("w_id", Context.MODE_PRIVATE);
+        String mode = loggedIn(app) ? "registered" : "guest";
+        String ver = Updater.current(app);
+        long now = System.currentTimeMillis();
+        boolean changed = !mode.equals(sp.getString("ping_mode", "")) || !ver.equals(sp.getString("ping_ver", ""));
+        if (!force && !changed && now - sp.getLong("ping_at", 0) < 6 * 3_600_000L) return;
+        new Thread(() -> {
+            try {
+                init(app);
+                JSONObject j = new JSONObject();
+                j.put("installId", Store.installId(app));
+                j.put("model", CrashHandler.deviceModel());
+                j.put("android", Build.VERSION.RELEASE == null ? "" : Build.VERSION.RELEASE);
+                j.put("ver", ver);
+                j.put("mode", mode);
+                j.put("rooted", CrashHandler.isRooted());
+                Api.post("/client/ping", j);
+                sp.edit().putLong("ping_at", System.currentTimeMillis()).putString("ping_mode", mode).putString("ping_ver", ver).apply();
+            } catch (Throwable ignored) { }
+        }).start();
     }
 
     // ===== الإشعارات =====

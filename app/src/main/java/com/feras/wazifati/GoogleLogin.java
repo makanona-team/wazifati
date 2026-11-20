@@ -17,7 +17,7 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 
 import java.util.concurrent.Executors;
 
-/** الدخول بحساب Google عبر Credential Manager (بدون كلمة سر). */
+/** الدخول بحساب Google عبر Credential Manager (مع إرسال تقرير تلقائي عند الفشل). */
 public final class GoogleLogin {
     private GoogleLogin() { }
 
@@ -44,17 +44,30 @@ public final class GoogleLogin {
                             if (c instanceof CustomCredential && GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL.equals(c.getType())) {
                                 GoogleIdTokenCredential g = GoogleIdTokenCredential.createFrom(c.getData());
                                 cb.ok(g.getIdToken());
-                            } else cb.err("نوع حساب غير مدعوم");
+                            } else {
+                                CrashHandler.reportAuthFail(act, "UnsupportedCredential", String.valueOf(c == null ? "null" : c.getType()));
+                                cb.err("نوع حساب غير مدعوم");
+                            }
                         } catch (Throwable e) {
-                            cb.err(String.valueOf(e.getMessage()));
+                            CrashHandler.reportAuthFail(act, e.getClass().getSimpleName(), String.valueOf(e.getMessage()));
+                            cb.err(friendlyError(e.getMessage()));
                         }
                     }
 
                     @Override
                     public void onError(GetCredentialException e) {
-                        if (e instanceof GetCredentialCancellationException) cb.err("");
-                        else cb.err(String.valueOf(e.getMessage()));
+                        if (e instanceof GetCredentialCancellationException) { cb.err(""); return; }
+                        CrashHandler.reportAuthFail(act, e.getClass().getSimpleName(), String.valueOf(e.getMessage()));
+                        cb.err(friendlyError(e.getMessage()));
                     }
                 });
+    }
+
+    private static String friendlyError(String raw) {
+        String base = (raw == null || raw.isEmpty()) ? "خطأ غير معروف في خدمات Google" : raw;
+        if (CrashHandler.isRooted()) {
+            return base + "\n\n⚠️ يبدو أن جهازك عليه روت (Root)، وقد تقيّد خدمات Google تسجيل الدخول عليه. جرّب تحديث «خدمات Google Play» أو تصفّح كضيف.";
+        }
+        return base;
     }
 }

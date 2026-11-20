@@ -49,7 +49,7 @@ public final class Match {
     }
 
     public static boolean enabled(Context c) {
-        return Store.bool(c, "show_match") && profile(c) != null;
+        return Store.flag(c, "cv_match") && Store.bool(c, "show_match") && profile(c) != null;
     }
 
     public static Profile parse(JSONObject o) {

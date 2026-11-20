@@ -191,6 +191,34 @@ public final class Store extends SQLiteOpenHelper {
         get(c).getWritableDatabase().delete("jobs", null, null);
     }
 
+    /** معرّف تثبيت عشوائي مجهول للإحصائيات (لا يُمسح عند تسجيل الخروج). */
+    public static String installId(Context c) {
+        SharedPreferences sp = c.getSharedPreferences("w_id", Context.MODE_PRIVATE);
+        String id = sp.getString("install_id", "");
+        if (id.isEmpty()) {
+            id = java.util.UUID.randomUUID().toString();
+            sp.edit().putString("install_id", id).apply();
+        }
+        return id;
+    }
+
+    /** حفظ مفاتيح التشغيل عن بُعد محلياً للعمل دون إنترنت. */
+    public static void saveFlags(Context c, JSONObject f) {
+        if (f == null) return;
+        c.getSharedPreferences("w_id", Context.MODE_PRIVATE).edit().putString("feature_flags", f.toString()).apply();
+    }
+
+    /** قراءة حالة ميزة؛ تعمل افتراضياً عند غياب القيمة (عدا قسم التعلّم المؤجّل لـ 2.5). */
+    public static boolean flag(Context c, String key) {
+        boolean def = !"learn_tab".equals(key);
+        try {
+            String raw = c.getSharedPreferences("w_id", Context.MODE_PRIVATE).getString("feature_flags", "");
+            if (raw.isEmpty()) return def;
+            JSONObject o = new JSONObject(raw);
+            return o.has(key) ? o.optBoolean(key, def) : def;
+        } catch (Exception e) { return def; }
+    }
+
     public static boolean bool(Context c, String k) {
         return p(c).getBoolean(k, defBool(k));
     }

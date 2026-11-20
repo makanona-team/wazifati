@@ -84,7 +84,10 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(HEADER);
         getWindow().setNavigationBarColor(CARD);
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        CrashHandler.install(this);
         Sync.init(this);
+        CrashHandler.sendPending(this);
+        Sync.pingInstall(this, false);
         Sync.channels(this);
         if (outdated()) { setContentView(forceScreen()); return; }
         checkMinAsync();
@@ -122,6 +125,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject r = Api.get("/api");
                 Store.p(app).edit().putString("min_ver", r.optString("minVer", "")).putString("min_msg", r.optString("minMsg", "")).apply();
+                if (r.has("flags")) Store.saveFlags(app, r.optJSONObject("flags"));
             } catch (Throwable ignored) { return; }
             ui.post(() -> { if (!isFinishing() && outdated()) recreate(); });
         }).start();
@@ -351,8 +355,8 @@ public class MainActivity extends Activity {
         l.addView(g, lp(-1, -2));
         Button gu = button(this, "👀  تصفّح كضيف بدون حساب", false);
         gu.setMinHeight(dp(this, 50));
-        gu.setOnClickListener(v -> { Store.p(this).edit().putBoolean("guest", true).apply(); recreate(); });
-        l.addView(gu, lpm(this, -1, -2, 10, 0));
+        gu.setOnClickListener(v -> { Store.p(this).edit().putBoolean("guest", true).apply(); Sync.pingInstall(this, true); recreate(); });
+        if (Store.flag(this, "guest_mode")) l.addView(gu, lpm(this, -1, -2, 10, 0));
         TextView note = text(this, "بدون كلمة سر — اختر حسابك بضغطة واحدة.\nإعداداتك ومحفوظاتك تُحفظ على حسابك وتعود على أي هاتف.", 13, MUTED, false);
         note.setGravity(Gravity.CENTER);
         note.setPadding(0, dp(this, 16), 0, 0);
@@ -366,7 +370,10 @@ public class MainActivity extends Activity {
                     ui.post(() -> {
                         g.setEnabled(true);
                         g.setText("G   الدخول بحساب Google");
-                        if (msg != null && !msg.isEmpty()) Toast.makeText(MainActivity.this, "تعذّر الدخول: " + msg, Toast.LENGTH_LONG).show();
+                        if (msg != null && !msg.isEmpty()) {
+                            if (msg.length() > 80) new AlertDialog.Builder(MainActivity.this).setTitle("تعذّر تسجيل الدخول").setMessage(msg).setPositiveButton("حسناً", null).show();
+                            else Toast.makeText(MainActivity.this, "تعذّر الدخول: " + msg, Toast.LENGTH_LONG).show();
+                        }
                     });
                 }
             });
@@ -389,7 +396,8 @@ public class MainActivity extends Activity {
                     JSONObject pr = me.optJSONObject("prefs");
                     if (pr != null) Store.applyPrefs(app, pr, me.optLong("updated", System.currentTimeMillis()));
                 }
-            } catch (Throwable e) { err = e.getMessage(); }
+                Sync.pingInstall(app, true);
+            } catch (Throwable e) { err = e.getMessage(); CrashHandler.reportAuthFail(app, "server_auth", err); }
             final String fe = err;
             ui.post(() -> {
                 if (fe != null) {
@@ -463,6 +471,7 @@ public class MainActivity extends Activity {
             t.setPadding(0, dp(this, 6), 0, dp(this, 6));
             t.setOnClickListener(v -> show(k));
             tabs[i] = t;
+            if (i == T_TENDERS && !Store.flag(this, "tenders")) t.setVisibility(View.GONE);
             nav.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
         }
         root.addView(nav);
@@ -481,7 +490,7 @@ public class MainActivity extends Activity {
         if (bell != null) { int un = Sync.annUnread(this); bell.setText(un > 0 ? "🔔 " + un + "\nإشعارات" : "🔔\nإشعارات"); bell.setTextColor(un > 0 ? 0xFFFFD54F : Color.WHITE); }
         long ls = Store.p(this).getLong("last_sync", 0);
         status.setText(Ui.today() + " • " + (syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls)))));
-        int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) + Store.p(this).getInt("pending_edits", 0) : 0;
+        int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) + Store.p(this).getInt("pending_edits", 0) + Store.p(this).getInt("pending_reports", 0) : 0;
         tabs[T_MORE].setText(pend > 0 ? "☰ " + pend + "🔴\nالمزيد" : "☰\nالمزيد");
     }
 
@@ -529,6 +538,7 @@ public class MainActivity extends Activity {
                     .setNeutralButton("رجوع", null).show();
             return;
         }
+        if (k == T_TENDERS && !Store.flag(this, "tenders")) k = T_JOBS;
         if (k != T_FILTER) { draft = null; draftDirty = false; }
         tab = k;
         for (int i = 0; i < 5; i++) {
@@ -1673,9 +1683,13 @@ public class MainActivity extends Activity {
                     ui.postDelayed(() -> signedOut("تم تسجيل الخروج"), 300);
                 }).setNegativeButton("إلغاء", null).show());
         ac.addView(out, lpm(this, -1, -2, 8, 0));
+        Button delAcc = button(this, "🗑 حذف حسابي نهائياً", false);
+        delAcc.setTextColor(RED);
+        delAcc.setOnClickListener(v -> deleteAccountStep1());
+        ac.addView(delAcc, lpm(this, -1, -2, 6, 0));
         l.addView(ac, lpm(this, -1, -2, 0, 12));
 
-        l.addView(cvCard(), lpm(this, -1, -2, 0, 12));
+        if (Store.flag(this, "cv_match")) l.addView(cvCard(), lpm(this, -1, -2, 0, 12));
 
         if (!guest()) {
             Button pw = button(this, (powerScore() < 3 ? "⚠ " : "✅ ") + "ضمان وصول الإشعارات", powerScore() < 3);
@@ -1689,8 +1703,10 @@ public class MainActivity extends Activity {
             int ps = Store.p(this).getInt("pending_sources", 0), pf = Store.p(this).getInt("pending_fixes", 0);
             Button bs = button(this, "📡 المصادر" + (ps > 0 ? "  (" + ps + " بانتظار موافقتك 🔴)" : ""), ps > 0);
             bs.setOnClickListener(v -> adminSources());
+            boolean isDev = "eng.feras8585@gmail.com".equalsIgnoreCase(Store.p(this).getString("email", ""));
             Button bu = button(this, "👥 المستخدمون", false);
             bu.setOnClickListener(v -> adminUsers());
+            if (!isDev) bu.setVisibility(View.GONE);
             Button bf = button(this, "🏷 تصحيحات التصنيف" + (pf > 0 ? "  (" + pf + " 🔴)" : ""), pf > 0);
             bf.setOnClickListener(v -> adminFixes());
             int pfl = Store.p(this).getInt("pending_flags", 0);
@@ -1703,9 +1719,14 @@ public class MainActivity extends Activity {
             ba.setOnClickListener(v -> showAnnouncements());
             Button bm = button(this, "⬆ تحديث إجباري", false);
             bm.setOnClickListener(v -> adminMinVer());
+            Button bft = button(this, "🎛 مفاتيح الميزات (تشغيل / إيقاف)", false);
+            bft.setOnClickListener(v -> adminFeatures());
+            int prp = Store.p(this).getInt("pending_reports", 0);
+            Button brp = button(this, "🐞 الأخطاء وفشل الدخول" + (prp > 0 ? "  (" + prp + " 🔴)" : ""), prp > 0);
+            brp.setOnClickListener(v -> adminReports());
             Button bt = button(this, "📊 الإحصائيات", false);
             bt.setOnClickListener(v -> adminStats());
-            for (Button bb : new Button[]{bs, bu, bf, bfl, be, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
+            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
             l.addView(ad, lpm(this, -1, -2, 0, 12));
         }
 
@@ -1718,12 +1739,12 @@ public class MainActivity extends Activity {
         Button add = button(this, admin ? "إضافة" : "إرسال الاقتراح", true);
         add.setOnClickListener(v -> suggest(src));
         sc.addView(add, lp(-1, -2));
-        l.addView(sc, lpm(this, -1, -2, 0, 12));
+        if (admin || Store.flag(this, "suggest_source")) l.addView(sc, lpm(this, -1, -2, 0, 12));
 
         LinearLayout hc = card(this);
         hc.addView(text(this, "🤝 مشاركة فرصة من فيسبوك أو لينكدإن", 16, TEXT, true));
         hc.addView(text(this, "عندما ترى إعلاناً هناك: اضغط «مشاركة» ← «المزيد» ← اختر «وظيفتي». يصل الإعلان لكل المستخدمين ويُصنَّف تلقائياً.", 13, TEXT, false));
-        l.addView(hc, lpm(this, -1, -2, 0, 12));
+        if (Store.flag(this, "share_job")) l.addView(hc, lpm(this, -1, -2, 0, 12));
 
         l.addView(notifyCard(), lpm(this, -1, -2, 0, 12));
 
@@ -2159,7 +2180,7 @@ public class MainActivity extends Activity {
                     Button role = button(this, isAdmin ? "إزالة صلاحية الأدمن" : "اجعله أدمن", false);
                     String who = name.isEmpty() ? email : name;
                     role.setOnClickListener(v -> new AlertDialog.Builder(this)
-                            .setMessage(isAdmin ? "إزالة صلاحية الأدمن من " + who + "؟" : "هل تريد جعل " + who + " أدمن؟\nسيرى المصادر والمستخدمين ويستطيع الموافقة والإيقاف.")
+                            .setMessage(isAdmin ? "إزالة صلاحية الأدمن من " + who + "؟" : "هل تريد جعل " + who + " أدمن؟\nسيرى المصادر والتصحيحات والبلاغات ويستطيع الموافقة والإدارة (دون صلاحية عرض المستخدمين أو رفع أدمن).")
                             .setPositiveButton("نعم", (x, w) -> post("/admin/users/role", jo("email", email, "role", isAdmin ? "user" : "admin"), y -> { dh[0].dismiss(); adminUsers(); }))
                             .setNegativeButton("إلغاء", null).show());
                     Button blk = button(this, blocked ? "✅ تفعيل" : "⛔ إيقاف", false);
@@ -2241,7 +2262,51 @@ public class MainActivity extends Activity {
                     + "\n🔄 آخر جلب: " + (r.optLong("lastRun") > 0 ? ago(r.optLong("lastRun")) : "—"), 15, TEXT, false));
             l.addView(c, lpm(this, -1, -2, 0, 10));
 
-            JSONArray days = r.optJSONArray("days");
+            JSONObject ins = r.optJSONObject("installs");
+            if (ins != null) {
+                LinearLayout ic = card(this);
+                ic.addView(text(this, "📱 التثبيتات والأجهزة والزوار", 15, TEXT, true));
+                int tot = ins.optInt("total"), reg = ins.optInt("registered"), gst = ins.optInt("guest");
+                int regPct = tot > 0 ? Math.round(100f * reg / tot) : 0;
+                int gstPct = tot > 0 ? 100 - regPct : 0;
+                ic.addView(text(this, "📲 إجمالي الهواتف المثبّتة: " + tot
+                        + "\n✅ مسجّلون بحساب Google: " + reg + " (" + regPct + "%)"
+                        + "\n👀 زوار بدون حساب: " + gst + " (" + gstPct + "%)"
+                        + "\n🕒 نشطون آخر 7 أيام: " + ins.optInt("active7")
+                        + (ins.optInt("rooted") > 0 ? "\n🔓 أجهزة عليها روت: " + ins.optInt("rooted") : ""), 14, TEXT, false));
+                JSONArray mods = ins.optJSONArray("topModels");
+                if (mods != null && mods.length() > 0) {
+                    StringBuilder ms = new StringBuilder("\nأكثر الهواتف انتشاراً:");
+                    for (int i = 0; i < mods.length(); i++) {
+                        JSONObject m = mods.optJSONObject(i);
+                        ms.append("\n  • ").append(str(m, "model")).append(" ← ").append(m.optInt("n"));
+                    }
+                    ic.addView(text(this, ms.toString(), 13, MUTED, false));
+                }
+                JSONArray avs = ins.optJSONArray("androidVers");
+                if (avs != null && avs.length() > 0) {
+                    StringBuilder as = new StringBuilder("\nإصدارات أندرويد: ");
+                    for (int i = 0; i < avs.length(); i++) {
+                        JSONObject a2 = avs.optJSONObject(i);
+                        if (i > 0) as.append(" • ");
+                        as.append("Android ").append(str(a2, "v")).append(" (").append(a2.optInt("n")).append(")");
+                    }
+                    ic.addView(text(this, as.toString(), 12, MUTED, false));
+                }
+                l.addView(ic, lpm(this, -1, -2, 0, 10));
+            }
+            JSONObject del = r.optJSONObject("deletions");
+            if (del != null && del.optInt("total") > 0) {
+                LinearLayout dl = card(this);
+                dl.addView(text(this, "🗑 الحسابات المحذوفة (" + del.optInt("total") + ")", 15, RED, true));
+                JSONArray br = del.optJSONArray("byReason");
+                if (br != null) for (int i = 0; i < br.length(); i++) {
+                    JSONObject o = br.optJSONObject(i);
+                    dl.addView(text(this, "• " + delReasonLabel(str(o, "reason")) + ": " + o.optInt("n"), 13, TEXT, false));
+                }
+                l.addView(dl, lpm(this, -1, -2, 0, 10));
+            }
+                        JSONArray days = r.optJSONArray("days");
             if (days != null) {
                 LinearLayout dc = card(this);
                 dc.addView(text(this, "📈 الفرص الجديدة يومياً (آخر 14 يوم)", 15, TEXT, true));
@@ -2376,6 +2441,188 @@ public class MainActivity extends Activity {
                 res.setOnClickListener(v -> post("/admin/flags/decide", jo("id", f.optInt("id"), "action", "restore"), x -> { dh[0].dismiss(); adminFlags(); refreshPending(); }));
                 r2.addView(del, weight());
                 r2.addView(res, weight());
+                c.addView(r2, lpm(this, -1, -2, 8, 0));
+                l.addView(c, lpm(this, -1, -2, 0, 8));
+            }
+        });
+    }
+
+    // =====================================================================
+    // حذف الحساب نهائياً (2.4)
+    // =====================================================================
+    private static final String[][] DEL_REASONS = {
+            {"found_job", "وجدت وظيفة مناسبة 🎉"},
+            {"not_relevant", "الوظائف لا تناسب اختصاصي أو منطقتي"},
+            {"too_many_notifs", "كثرة الإشعارات"},
+            {"tech_issue", "مشكلة تقنية أو بطء في التطبيق"},
+            {"privacy", "أسباب تتعلق بالخصوصية"},
+            {"other", "سبب آخر"},
+    };
+
+    private static String delReasonLabel(String code) {
+        for (String[] r : DEL_REASONS) if (r[0].equals(code)) return r[1];
+        return code;
+    }
+
+    private void deleteAccountStep1() {
+        String[] labels = new String[DEL_REASONS.length];
+        for (int i = 0; i < DEL_REASONS.length; i++) labels[i] = DEL_REASONS[i][1];
+        final int[] picked = {-1};
+        EditText note = input("ملاحظة إضافية لتحسين التطبيق (اختياري)");
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(this, 18), dp(this, 4), dp(this, 18), 0);
+        box.addView(note, lp(-1, -2));
+        AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("🗑 لماذا تريد حذف حسابك؟")
+                .setSingleChoiceItems(labels, -1, (d, which) -> picked[0] = which)
+                .setView(box)
+                .setPositiveButton("متابعة ←", null)
+                .setNegativeButton("إلغاء", null)
+                .create();
+        dlg.setOnShowListener(x -> dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            if (picked[0] < 0) {
+                Toast.makeText(this, "يرجى اختيار سبب الحذف أولاً", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            dlg.dismiss();
+            deleteAccountStep2(DEL_REASONS[picked[0]][0], note.getText().toString().trim());
+        }));
+        dlg.show();
+    }
+
+    private void deleteAccountStep2(String reason, String note) {
+        EditText confirm = input("اكتب كلمة delete هنا للتأكيد");
+        confirm.setSingleLine(true);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(this, 18), dp(this, 8), dp(this, 18), 0);
+        box.addView(confirm, lp(-1, -2));
+        AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("⚠️ تأكيد الحذف النهائي")
+                .setMessage("سيُمسح حسابك وسيرتك الذاتية ومحفوظاتك وإعداداتك نهائياً من الخادم ولا يمكن التراجع.\n\nاكتب عبارة  delete  للتأكيد:")
+                .setView(box)
+                .setPositiveButton("حذف نهائي", (d, w) -> post("/account/delete", jo("reason", reason, "note", note, "confirm", confirm.getText().toString().trim()), r -> {
+                    Sync.pingInstall(this, true);
+                    signedOut("تم حذف حسابك وجميع بياناتك نهائياً");
+                }))
+                .setNegativeButton("تراجع", null)
+                .create();
+        dlg.setOnShowListener(x -> {
+            Button ok = dlg.getButton(AlertDialog.BUTTON_POSITIVE);
+            ok.setTextColor(RED);
+            ok.setEnabled(false);
+            confirm.addTextChangedListener(new TextWatcher() {
+                public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+                public void onTextChanged(CharSequence s, int a, int b, int c) { }
+                public void afterTextChanged(Editable s) {
+                    ok.setEnabled("delete".equalsIgnoreCase(s.toString().trim()));
+                }
+            });
+        });
+        dlg.show();
+    }
+
+    // =====================================================================
+    // الأدمن: مفاتيح التشغيل عن بُعد (2.4)
+    // =====================================================================
+    private void adminFeatures() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("مفاتيح الميزات عن بُعد", dh);
+        l.addView(text(this, "جارٍ التحميل…", 14, MUTED, false));
+        dh[0].show();
+        get("/admin/features", r -> {
+            l.removeAllViews();
+            JSONObject f = r.optJSONObject("flags");
+            if (f == null) return;
+            Store.saveFlags(this, f);
+            l.addView(text(this, "تغييراتك تُحفظ فوراً على الخادم وتُطبّق عند المستخدمين في المزامنة التالية دون الحاجة لتحديث التطبيق.", 13, MUTED, false));
+            String[][] items = {
+                    {"tenders", "📑 قسم المناقصات"},
+                    {"cv_match", "📄 السيرة الذاتية ونسبة التطابق"},
+                    {"suggest_source", "➕ اقتراح المصادر من المستخدمين"},
+                    {"share_job", "🤝 بطاقة مشاركة الفرص"},
+                    {"guest_mode", "👀 التصفّح كضيف بدون حساب"},
+                    {"learn_tab", "📚 قسم التعلّم والمراجع (جاهز لـ 2.5)"},
+            };
+            for (String[] it : items) {
+                LinearLayout c = card(this);
+                Switch sw = new Switch(this);
+                sw.setText(it[1]);
+                sw.setTextSize(15);
+                sw.setTextColor(TEXT);
+                sw.setChecked(f.optBoolean(it[0], true));
+                sw.setOnCheckedChangeListener((b, on) -> post("/admin/features", jo("key", it[0], "enabled", on), res -> {
+                    if (res.has("flags")) Store.saveFlags(this, res.optJSONObject("flags"));
+                    Toast.makeText(this, on ? "✅ تم التفعيل" : "⛔ تم الإيقاف", Toast.LENGTH_SHORT).show();
+                }));
+                c.addView(sw);
+                l.addView(c, lpm(this, -1, -2, 8, 0));
+            }
+        });
+    }
+
+    // =====================================================================
+    // الأدمن: تقارير الأخطاء وفشل تسجيل الدخول (2.4)
+    // =====================================================================
+    private boolean reportsAll = false;
+
+    private void adminReports() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("الأخطاء وفشل الدخول", dh);
+        l.addView(text(this, "جارٍ التحميل…", 14, MUTED, false));
+        dh[0].show();
+        get("/admin/reports" + (reportsAll ? "?all=1" : ""), r -> {
+            l.removeAllViews();
+            LinearLayout fr = row(this);
+            TextView c1 = chip(this, "🔴 الجديدة", !reportsAll), c2 = chip(this, "الكل", reportsAll);
+            c1.setOnClickListener(v -> { reportsAll = false; dh[0].dismiss(); adminReports(); });
+            c2.setOnClickListener(v -> { reportsAll = true; dh[0].dismiss(); adminReports(); });
+            fr.addView(c1, lp(-2, -2));
+            LinearLayout.LayoutParams p2 = lp(-2, -2);
+            p2.rightMargin = dp(this, 6);
+            fr.addView(c2, p2);
+            l.addView(fr, lpm(this, -1, -2, 0, 8));
+            JSONArray a = r.optJSONArray("reports");
+            if (a == null || a.length() == 0) { l.addView(text(this, reportsAll ? "لا توجد تقارير أخطاء." : "لا توجد أخطاء جديدة ✅", 15, MUTED, false)); return; }
+            if (!reportsAll) {
+                Button clrAll = button(this, "✔ تعليم الكل كمحلول", false);
+                clrAll.setOnClickListener(v -> post("/admin/reports/clear", jo("all", true), x -> { dh[0].dismiss(); adminReports(); refreshPending(); }));
+                l.addView(clrAll, lpm(this, -1, -2, 0, 8));
+            }
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.optJSONObject(i);
+                if (o == null) continue;
+                final long id = o.optLong("id");
+                boolean authFail = "auth_fail".equals(str(o, "kind"));
+                boolean rooted = o.optInt("rooted") == 1;
+                LinearLayout c = card(this);
+                c.addView(text(this, (authFail ? "🔑 فشل دخول" : "💥 انهيار") + " • " + str(o, "err_code") + " (×" + o.optInt("count", 1) + ")", 15, authFail ? ORANGE : RED, true));
+                c.addView(text(this, "📱 " + str(o, "model") + " • Android " + str(o, "android_ver") + " • v" + str(o, "app_ver") + (rooted ? " • 🔓 روت" : ""), 12, MUTED, false));
+                c.addView(text(this, "🕒 آخر مرة: " + ago(o.optLong("last_seen")), 11, MUTED, false));
+                String msg = str(o, "msg");
+                if (!msg.isEmpty()) {
+                    TextView mt = text(this, msg, 13, TEXT, false);
+                    mt.setPadding(0, dp(this, 4), 0, 0);
+                    mt.setTextIsSelectable(true);
+                    c.addView(mt);
+                }
+                String tr = str(o, "trace");
+                LinearLayout r2 = row(this);
+                if (!tr.isEmpty()) {
+                    Button showTr = button(this, "📄 السجل", false);
+                    showTr.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("تفاصيل السجل").setMessage(tr).setPositiveButton("إغلاق", null).show());
+                    r2.addView(showTr, weight());
+                }
+                if (o.optInt("resolved") == 0) {
+                    Button ok = button(this, "✔ تم الحل", true);
+                    ok.setOnClickListener(v -> post("/admin/reports/clear", jo("id", id), x -> { dh[0].dismiss(); adminReports(); refreshPending(); }));
+                    r2.addView(ok, weight());
+                }
+                Button dl = button(this, "🗑 حذف", false);
+                dl.setTextColor(RED);
+                dl.setOnClickListener(v -> post("/admin/reports/clear", jo("deleteId", id), x -> { dh[0].dismiss(); adminReports(); refreshPending(); }));
+                r2.addView(dl, weight());
                 c.addView(r2, lpm(this, -1, -2, 8, 0));
                 l.addView(c, lpm(this, -1, -2, 0, 8));
             }
