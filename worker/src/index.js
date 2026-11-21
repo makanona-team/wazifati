@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo } from './cl
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.7.1';
+const VERSION = '2.8';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -81,6 +81,12 @@ const SEED_LEARN = [
   ['rss', 'https://reliefweb.int/training/rss.xml', 'ReliefWeb Training'],
 ];
 
+// بوتات مكتبات تعليمية (2.8) تُفهرس بحساب القراءة الخاص
+const SEED_BOTS = [
+  ['tgbot', 'Binaa1alkodrat2protection_bot', 'مكتبة بناء القدرات'],
+  ['tgbot', 'TakeyourpartsyBot', 'روبوت حقك تاخد دورك'],
+];
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -142,6 +148,8 @@ export class Db {
       free INTEGER DEFAULT 0, cert INTEGER DEFAULT 0, deadline TEXT, skills TEXT, text TEXT, posted INTEGER,
       created INTEGER, src TEXT, hidden INTEGER DEFAULT 0)`);
     this.run(`CREATE INDEX IF NOT EXISTS learn_k1 ON learn(k1)`);
+    for (const col of ['ftype TEXT', 'fsize TEXT', 'howto TEXT']) this.tryRun(`ALTER TABLE learn ADD COLUMN ${col}`);
+    this.run(`CREATE TABLE IF NOT EXISTS tg_secret (k TEXT PRIMARY KEY, v TEXT, at INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT UNIQUE, name TEXT, enabled INTEGER DEFAULT 1,
       added_by TEXT, last_try INTEGER, last_ok INTEGER, last_err TEXT, last_count INTEGER DEFAULT 0, total INTEGER DEFAULT 0, orig TEXT)`);
@@ -153,6 +161,7 @@ export class Db {
     this.tryRun(`ALTER TABLE sources ADD COLUMN auto_off INTEGER DEFAULT 0`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN purpose TEXT DEFAULT 'jobs'`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN learn_total INTEGER DEFAULT 0`);
+    this.tryRun(`ALTER TABLE sources ADD COLUMN state TEXT`);
     this.run(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
     this.run(`CREATE TABLE IF NOT EXISTS accounts (
       email TEXT PRIMARY KEY, name TEXT, photo TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
@@ -185,6 +194,11 @@ export class Db {
       for (const [kind, value, name] of SEED_LEARN)
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose) VALUES(?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn');
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_learn','1')`);
+    }
+    if (!this.one(`SELECT v FROM meta WHERE k='seed_bots'`)) {
+      for (const [kind, value, name] of SEED_BOTS)
+        this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose,nkey) VALUES(?,?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn', sourceKey(kind, value));
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_bots','1')`);
     }
     // ترحيل 2.7.1: حذف مصدرين معطّلين، وإعادة فحص ما رُفض من مصادر التعلّم
     if (!this.one(`SELECT v FROM meta WHERE k='mig271'`)) {
@@ -250,6 +264,9 @@ export class Db {
         if (p === '/ingest') return this.ingest(b);
         if (p === '/known') return this.known(b);
         if (p === '/report') return this.report(b);
+        if (p === '/tg/secret' && req.method === 'GET') { const r = this.one(`SELECT v FROM tg_secret WHERE k=?`, url.searchParams.get('k') || 'session'); return json({ v: r ? r.v : '' }); }
+        if (p === '/tg/secret') { this.run(`INSERT OR REPLACE INTO tg_secret(k,v,at) VALUES(?,?,?)`, String(b.k || 'session'), String(b.v || ''), Date.now()); return json({ ok: true }); }
+        if (p === '/tg/status') return this.tgStatus(b);
         if (p === '/sources') return json({ sources: this.q(`SELECT * FROM sources WHERE enabled=1 AND pending=0 ORDER BY id`) });
         if (req.method === 'GET' && p === '/admin/backup') return this.exportBackup();
         if (req.method === 'POST' && p === '/admin/restore') return this.restoreBackup(b);
@@ -291,7 +308,7 @@ export class Db {
       // ----- أدمن -----
       if (me.role !== 'admin') throw new HttpErr(403, 'هذه الصفحة للأدمن فقط');
       if (req.method === 'GET') {
-        if (p === '/admin/sources') return json({ sources: this.q(`SELECT * FROM sources ORDER BY pending DESC, enabled DESC, id`) });
+        if (p === '/admin/sources') return json({ sources: this.q(`SELECT * FROM sources ORDER BY pending DESC, enabled DESC, id`), tg: JSON.parse((this.one(`SELECT v FROM meta WHERE k='tg_account'`) || {}).v || 'null') });
         if (p === '/admin/users') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذه الصفحة لمطوّر التطبيق فقط'); return json({ users: this.users() }); }
         if (p === '/admin/fixes') return json({ fixes: this.q(`SELECT f.id, f.job_id, f.email, f.specs, f.govs, f.sector, f.note, f.created, f.title AS s_title, f.org AS s_org, j.title, j.org AS j_org, j.specs AS j_specs, j.govs AS j_govs, j.sector AS j_sector FROM fixes f LEFT JOIN jobs j ON j.id=f.job_id WHERE f.status='pending' ORDER BY f.id DESC LIMIT 100`) });
         if (p === '/admin/edits') return json({ edits: this.q(`SELECT id, title, title_orig, org, org_orig, edited_by, edit_via, edited_at, edit_reviewed, hidden FROM jobs WHERE edited_at > 0 ${url.searchParams.get('filter') === 'all' ? '' : 'AND edit_reviewed=0'} ORDER BY edited_at DESC LIMIT 200`) });
@@ -474,8 +491,9 @@ export class Db {
       const cj = classify(text, { now: new Date(), links: post.links || [] });
       const jj = jobScore(text, cj, {});
       const looksJob = cj.isJob && jj.verdict === 'ok' && !learnInfo(text, post.links || []);
+      if (post.file && this.addLearn(post, text, url, posted, now, true)) return 'learn';
       if (!looksJob && !image && this.addLearn(post, text, url, posted, now, true)) return 'learn';
-      this.markSeen(url); return 'notjob';
+      if (!looksJob) { this.markSeen(url); return 'notjob'; }
     }
     if (posted < now - FIRST_DAYS * DAY && !opts.force) { this.markSeen(url); return 'old'; }
     const c = classify(text, { now: new Date(), links: post.links || [], force: opts.force, deadline: post.deadline || '', sectorHint: post.sector || '', srcName: post.srcName || '' });
@@ -509,7 +527,9 @@ export class Db {
   }
 
   addLearn(post, text, url, posted, now, lenient = false) {
+    const f = post.file && post.file.name ? post.file : null;
     let li = learnInfo(text, post.links || []);
+    if (f && lenient) li = li || { free: 1, lang: /[\u0600-\u06FF]/.test(f.name + text) ? 'ar' : 'en', cert: 0, link: '' };
     if (!li && lenient) {
       const links = (post.links || []).concat(String(text).match(/https?:\/\/[^\s<>"'()\]]+/g) || []);
       if (!links.length || text.length < 25) return false;
@@ -518,17 +538,18 @@ export class Db {
       if (/freecodecamp\.org|edlibre\.com/i.test(li.link)) li.free = 1;
     }
     if (!li) return false;
-    let title = String(post.title || '').trim();
+    let title = String(post.title || (f ? f.name.replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[_]+/g, ' ') : '')).trim();
     if (!title) title = (text.split('\n').map(x => x.trim()).find(x => x.length > 6) || text).replace(/^[^\p{L}\p{N}]+/u, '').slice(0, 120);
     const prov = String(post.srcName || post.src || '').slice(0, 60);
-    const k1 = 'L:' + nrm(title).replace(/[^\p{L}\p{N}]+/gu, '').slice(0, 60);
+    const k1 = (f ? 'F:' + String(f.size || '') : 'L:') + nrm(title).replace(/[^\p{L}\p{N}]+/gu, '').slice(0, 60);
     this.markSeen(url);
-    if (this.one(`SELECT 1 FROM learn WHERE k1=? OR (?<>'' AND link=?)`, k1, li.link, li.link)) return true;
+    if (this.one(`SELECT 1 FROM learn WHERE k1=? OR (? AND ?<>'' AND link=?)`, k1, f ? 0 : 1, li.link, li.link)) return true;
     const t = nrm(title + ' ' + text);
     const skills = SEED_SKILLS.filter(([, , , , al]) => al.some(a => aliasHit(t, a))).map(x => x[0]).join(',');
     const dl = classify(text, { now: new Date() }).deadline || '';
-    this.run(`INSERT INTO learn(k1,url,link,title,provider,lang,free,cert,deadline,skills,text,posted,created,src) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      k1, url, li.link, title, prov, li.lang, li.free, li.cert, dl, skills, text.slice(0, 1500), posted, now, prov);
+    this.run(`INSERT INTO learn(k1,url,link,title,provider,lang,free,cert,deadline,skills,text,posted,created,src,ftype,fsize,howto) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      k1, url, f ? (post.open || url) : li.link, title, prov, li.lang, li.free, li.cert, dl, skills, text.slice(0, 1500), posted, now, prov,
+      f ? (String(f.name).split('.').pop() || 'file').toLowerCase().slice(0, 8) : null, f ? String(f.size || '').slice(0, 20) : null, post.howto ? String(post.howto).slice(0, 200) : null);
     return true;
   }
 
@@ -538,9 +559,9 @@ export class Db {
     const now = Date.now();
     const okDl = new Date(now - DAY).toISOString().slice(0, 10);
     const base = `hidden=0 AND created > ? AND (deadline IS NULL OR deadline='' OR deadline >= ?)`;
-    const total = this.one(`SELECT COUNT(*) AS n FROM learn WHERE ${base}`, now - 120 * DAY, okDl).n;
-    const rows = this.q(`SELECT id,title,provider,lang,free,cert,deadline,skills,link,url,text,posted FROM learn WHERE ${base} ORDER BY posted DESC LIMIT ?`, now - 120 * DAY, okDl, user ? 500 : 10);
-    return json({ now, guest: !user, locked: user ? 0 : Math.max(0, total - 10), items: rows.map(r => ({ id: r.id, t: r.title, p: r.provider, l: r.lang, f: r.free, c: r.cert, d: r.deadline || '', s: r.skills || '', a: r.link || r.url, u: r.url, x: (r.text || '').slice(0, 600), d0: r.posted })) });
+    const total = this.one(`SELECT COUNT(*) AS n FROM learn WHERE ${base}`, now - 400 * DAY, okDl).n;
+    const rows = this.q(`SELECT id,title,provider,lang,free,cert,deadline,skills,link,url,text,posted,ftype,fsize,howto FROM learn WHERE ${base} ORDER BY posted DESC LIMIT ?`, now - 400 * DAY, okDl, user ? 3000 : 10);
+    return json({ now, guest: !user, locked: user ? 0 : Math.max(0, total - 10), items: rows.map(r => ({ id: r.id, t: r.title, p: r.provider, l: r.lang, f: r.free, c: r.cert, d: r.deadline || '', s: r.skills || '', a: r.link || r.url, u: r.url, x: (r.text || '').slice(0, 600), d0: r.posted, ft: r.ftype || '', fs: r.fsize || '', h: r.howto || '' })) });
   }
 
   markSeen(url) { if (url) this.run(`INSERT OR REPLACE INTO seen(url,at) VALUES(?,?)`, url, Date.now()); }
@@ -565,7 +586,8 @@ export class Db {
     const last = +((this.one(`SELECT v FROM meta WHERE k='cleanup'`) || {}).v || 0);
     if (Date.now() - last < 6 * 3600e3) return;
     this.run(`DELETE FROM jobs WHERE created < ?`, Date.now() - KEEP_DAYS * DAY);
-    this.run(`DELETE FROM learn WHERE created < ?`, Date.now() - 150 * DAY);
+    this.run(`DELETE FROM learn WHERE created < ? AND ftype IS NULL`, Date.now() - 150 * DAY);
+    this.run(`DELETE FROM learn WHERE created < ? AND ftype IS NOT NULL`, Date.now() - 420 * DAY);
     this.run(`DELETE FROM seen WHERE at < ?`, Date.now() - 120 * DAY);
     this.run(`DELETE FROM fixes WHERE status<>'pending' AND created < ?`, Date.now() - 30 * DAY);
     this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('cleanup',?)`, String(Date.now()));
@@ -647,7 +669,10 @@ export class Db {
   // ===== المصادر =====
   parseSource(raw) {
     let v = String(raw || '').trim(), kind = 'site', m;
+    if ((m = v.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(?:\+|joinchat\/)([\w-]{6,})/i))) return { kind: 'tgp', value: 'https://t.me/+' + m[1], nkey: 'tgp:' + m[1] };
     if ((m = v.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(?:s\/)?([A-Za-z0-9_]{4,})/i)) || (m = v.match(/^@?([A-Za-z][A-Za-z0-9_]{3,})$/))) { kind = 'tg'; v = m[1]; }
+    if (kind === 'tg' && /bot$/i.test(v)) kind = 'tgbot';
+    if (kind.startsWith('tg')) { }
     else if (/lnkd\.in|bit\.ly|tinyurl|t\.co\//i.test(v)) kind = 'link';
     else if (/facebook\.com|fb\.com|fb\.me|linkedin\.com|instagram\.com/i.test(v)) kind = 'manual';
     else if (/(\/feed\/?$|\/rss|\.rss$|rss\.xml|atom\.xml|\/feeds?\/)/i.test(v)) kind = 'rss';
@@ -687,6 +712,7 @@ export class Db {
       if (clash) this.run(`UPDATE sources SET enabled=0, kind=?, last_err=? WHERE id=?`, kind, 'مكرر مع مصدر آخر', id);
       else this.run(`UPDATE sources SET kind=?, value=?, nkey=? WHERE id=?`, kind, value, nk, id);
     }
+    if (b.state != null) this.run(`UPDATE sources SET state=? WHERE id=?`, String(b.state).slice(0, 20000), id);
     if (b.name) this.run(`UPDATE sources SET name=? WHERE id=? AND (name=value OR name=orig OR name='' OR name IS NULL)`, String(b.name).slice(0, 60), id);
     if (b.ok) this.run(`UPDATE sources SET last_try=?, last_ok=?, last_err=NULL, last_count=?, fail_since=NULL WHERE id=?`, Date.now(), Date.now(), +b.count || 0, id);
     else this.run(`UPDATE sources SET last_try=?, last_err=?, fail_since=COALESCE(fail_since, ?) WHERE id=?`, Date.now(), String(b.err || 'خطأ').slice(0, 200), Date.now(), id);
@@ -700,7 +726,7 @@ export class Db {
   /** يوقف تلقائياً المصدر الذي فشل FAIL_DAYS أيام متتالية، إلا عند عطل عام (أغلب المصادر تفشل معاً). */
   autoDisable() {
     const now = Date.now();
-    const base = `enabled=1 AND pending=0 AND kind<>'manual'`;
+    const base = `enabled=1 AND pending=0 AND kind<>'manual' AND COALESCE(last_err,'') NOT LIKE '⏸%'`;
     const total = this.one(`SELECT COUNT(*) AS n FROM sources WHERE ${base}`).n;
     const failing = this.q(`SELECT id, name, last_err, fail_since FROM sources WHERE ${base} AND fail_since IS NOT NULL`);
     if (total >= 4 && failing.length / total > 0.5) {
@@ -872,6 +898,20 @@ export class Db {
       const txt = `⚠️ فشل تسجيل دخول في وظيفتي (v${ver})\n📱 ${model || 'غير معروف'} (Android ${android || '?'})${rooted ? '\n🔓 الجهاز عليه روت (Root)' : ''}\n❌ ${code}: ${msg}`;
       this.ctx.waitUntil(this.notifyTg(txt));
     }
+    return json({ ok: true });
+  }
+
+  /** حالة حساب القراءة الخاص في تيليغرام؛ تنبيه المطوّر عند التعطل (مرة كل 12 ساعة). */
+  tgStatus(b) {
+    const prev = JSON.parse((this.one(`SELECT v FROM meta WHERE k='tg_account'`) || {}).v || '{}');
+    const now = Date.now();
+    const st = { ok: !!b.ok, err: String(b.err || '').slice(0, 200), at: now, name: String(b.name || prev.name || '').slice(0, 60), alerted: prev.alerted || 0 };
+    if (!st.ok && b.alert && this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID && now - (prev.alerted || 0) > 12 * 3600e3) {
+      st.alerted = now;
+      this.ctx.waitUntil(this.notifyTg('⚠️ حساب القراءة في وظيفتي متوقف\n' + st.err + '\nأعد تسجيل الدخول من GitHub: Actions ← «تسجيل دخول حساب تيليغرام»'));
+    }
+    if (st.ok) st.alerted = 0;
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_account',?)`, JSON.stringify(st));
     return json({ ok: true });
   }
 

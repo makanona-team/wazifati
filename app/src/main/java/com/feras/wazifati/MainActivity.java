@@ -1363,6 +1363,7 @@ public class MainActivity extends Activity {
     private int learnLocked = 0;
     private int learnMode = 0;            // 0 دورات جديدة، 1 دليل المهارات
     private Set<String> learnOnly = null; // مهارات وظيفة محددة (من تفاصيل الوظيفة)
+    private boolean learnFiles = true;
     private boolean learnFree = true, learnLangAr = true, learnLangEn = true, learnForMe = true, learnLoading = false;
     private String learnQuery = "";
     private LinearLayout learnList;
@@ -1410,7 +1411,9 @@ public class MainActivity extends Activity {
         cFree.setOnClickListener(v -> { learnFree = !learnFree; setChip(this, cFree, learnFree); fillLearn(); });
         cAr.setOnClickListener(v -> { learnLangAr = !learnLangAr; setChip(this, cAr, learnLangAr); fillLearn(); });
         cEn.setOnClickListener(v -> { learnLangEn = !learnLangEn; setChip(this, cEn, learnLangEn); fillLearn(); });
-        chips.addView(cMe); chips.addView(cFree); chips.addView(cAr); chips.addView(cEn);
+        TextView cFiles = chip(this, "📄 ملفات وكتب", learnFiles);
+        cFiles.setOnClickListener(v -> { learnFiles = !learnFiles; setChip(this, cFiles, learnFiles); fillLearn(); });
+        chips.addView(cMe); chips.addView(cFree); chips.addView(cFiles); chips.addView(cAr); chips.addView(cEn);
         HorizontalScrollView hs = new HorizontalScrollView(this);
         hs.setHorizontalScrollBarEnabled(false);
         hs.addView(chips);
@@ -1466,10 +1469,12 @@ public class MainActivity extends Activity {
             if (it == null) continue;
             boolean ar = "ar".equals(it.optString("l"));
             if ((ar && !learnLangAr) || (!ar && !learnLangEn)) continue;
+            boolean fl = !it.optString("ft").isEmpty();
+            if (fl && !learnFiles) continue;
             if (learnFree && it.optInt("f") != 1) continue;
             String dl = it.optString("d");
             if (!dl.isEmpty() && dl.compareTo(today) < 0) continue;
-            String hay = Search.light(it.optString("t") + " " + it.optString("p") + " " + it.optString("x"));
+            String hay = Search.light(it.optString("t") + " " + it.optString("p") + " " + it.optString("x") + " " + it.optString("h"));
             if (!qn.isEmpty()) {
                 boolean ok = true;
                 for (String w : qn.split("\\s+")) if (!w.isEmpty() && !hay.contains(w)) { ok = false; break; }
@@ -1507,8 +1512,10 @@ public class MainActivity extends Activity {
 
     private View learnCard(JSONObject it, boolean forMe) {
         LinearLayout c = card(this);
-        c.addView(text(this, it.optString("t"), 16, TEXT, true));
+        boolean isFile = !it.optString("ft").isEmpty();
+        c.addView(text(this, (isFile ? "📄 " : "") + it.optString("t"), 16, TEXT, true));
         LinearLayout pr = row(this);
+        if (isFile) pr.addView(pill(this, it.optString("ft").toUpperCase() + (it.optString("fs").isEmpty() ? "" : " • " + it.optString("fs")), INFO_BG));
         if (forMe) pr.addView(pill(this, "✨ يناسبك", INFO_BG));
         if (it.optInt("f") == 1) pr.addView(pill(this, "🆓 مجاني", OK_BG));
         if (it.optInt("c") == 1) pr.addView(pill(this, "🏅 شهادة", INFO_BG));
@@ -1523,7 +1530,9 @@ public class MainActivity extends Activity {
         if (!x.isEmpty()) c.addView(text(this, x, 13, MUTED, false), lpm(this, -1, -2, 6, 0));
         if (!it.optString("p").isEmpty()) c.addView(text(this, "المصدر: " + it.optString("p"), 11, MUTED, false), lpm(this, -1, -2, 4, 0));
         final String u = it.optString("a");
-        Button b = button(this, "فتح الدورة", true);
+        boolean file = !it.optString("ft").isEmpty();
+        if (!it.optString("h").isEmpty()) c.addView(text(this, "🧭 " + it.optString("h"), 12, PRIMARY, false), lpm(this, -1, -2, 4, 0));
+        Button b = button(this, file ? "📥 فتح في تيليغرام" : "فتح الدورة", true);
         b.setOnClickListener(v -> { if (!u.isEmpty()) openUrl(u); });
         c.addView(b, lpm(this, -1, -2, 8, 0));
         return c;
@@ -1578,6 +1587,8 @@ public class MainActivity extends Activity {
             @Override public void afterTextChanged(android.text.Editable e) { fillSkills(body, null, e.toString()); }
         });
 
+        l.addView(platformsCard(q), lpm(this, -1, -2, 8, 0));
+
         LinearLayout ex = card(this);
         ex.addView(text(this, "🔎 لم تجد ما تبحث عنه؟ ابحث في:", 15, TEXT, true));
         String[][] sites = {
@@ -1605,6 +1616,44 @@ public class MainActivity extends Activity {
             ex.addView(rr);
         }
         l.addView(ex, lpm(this, -1, -2, 8, 8));
+    }
+
+    /** منصات تعلّم موصى بها: فتح الموقع، أو بحث داخله بموضوع خانة البحث. */
+    private View platformsCard(EditText q) {
+        LinearLayout c = card(this);
+        c.addView(text(this, "🏫 منصات موصى بها", 15, TEXT, true));
+        c.addView(text(this, "اكتب موضوعاً في خانة البحث أعلاه ثم اضغط منصة للبحث داخلها، أو اضغطها مباشرة لفتحها.", 12, MUTED, false), lpm(this, -1, -2, 2, 6));
+        String[][] ps = {
+                {"إدراك", "edraak.org", "عربي • مجاني بشهادة"},
+                {"رواق", "rwaq.org", "عربي • مساقات جامعية"},
+                {"أكاديمية حسوب", "academy.hsoub.com", "عربي • برمجة وتصميم"},
+                {"دروب", "doroob.sa", "عربي • مهارات وظيفية"},
+                {"Kaya", "kayaconnect.org", "عربي/English • عمل إنساني ومنظمات"},
+                {"DisasterReady", "disasterready.org", "English • إنساني وحماية"},
+                {"MSF Tembo", "tembo.msf.org", "English • صحة عامة"},
+                {"Coursera", "coursera.org", "English/عربي • مساعدة مالية للشهادة"},
+                {"edX", "edx.org", "English • جامعات عالمية"},
+                {"Alison", "alison.com", "English • شهادات مجانية"},
+                {"Khan Academy", "ar.khanacademy.org", "عربي • أساسيات"},
+                {"Microsoft Learn", "learn.microsoft.com", "English • تقنية"},
+        };
+        for (String[] p : ps) {
+            LinearLayout r = row(this);
+            r.setPadding(0, dp(this, 7), 0, dp(this, 7));
+            LinearLayout tx = new LinearLayout(this);
+            tx.setOrientation(LinearLayout.VERTICAL);
+            tx.addView(text(this, "🌐 " + p[0], 14, PRIMARY, true));
+            tx.addView(text(this, p[2], 11, MUTED, false));
+            r.addView(tx, new LinearLayout.LayoutParams(0, -2, 1));
+            r.setOnClickListener(v -> {
+                String t = q.getText().toString().trim();
+                try {
+                    openUrl(t.isEmpty() ? "https://" + p[1] : "https://www.google.com/search?q=" + java.net.URLEncoder.encode("site:" + p[1] + " " + t, "UTF-8"));
+                } catch (Exception ignored) { }
+            });
+            c.addView(r);
+        }
+        return c;
     }
 
     private void fillSkills(LinearLayout body, Set<String> only, String query) {
@@ -2518,6 +2567,18 @@ public class MainActivity extends Activity {
             l.removeAllViews();
             JSONArray a = r.optJSONArray("sources");
             if (a == null) return;
+            JSONObject tg = r.optJSONObject("tg");
+            LinearLayout ac = card(this);
+            boolean tok = tg != null && tg.optBoolean("ok");
+            ac.addView(text(this, "👤 حساب قراءة تيليغرام (للمجموعات والقنوات الخاصة وبوتات المكتبات)", 14, TEXT, true));
+            ac.addView(text(this, tg == null ? "⏸ غير مفعّل بعد — سجّل الدخول من GitHub" : tok ? "✅ متصل" + (tg.optString("name").isEmpty() ? "" : " باسم " + tg.optString("name")) + " • " + ago(tg.optLong("at"))
+                    : "❌ متوقف: " + tg.optString("err"), 12, tok ? MUTED : RED, false), lpm(this, -1, -2, 4, 0));
+            if (!tok) {
+                Button lg = button(this, "🔑 فتح صفحة تسجيل الدخول", false);
+                lg.setOnClickListener(v -> openUrl("https://github.com/makanona-team/wazifati/actions/workflows/tg-login.yml"));
+                ac.addView(lg, lpm(this, -1, -2, 8, 0));
+            }
+            l.addView(ac, lpm(this, -1, -2, 0, 8));
             boolean pendHeader = false, actHeader = false;
             for (int i = 0; i < a.length(); i++) {
                 JSONObject s = a.optJSONObject(i);
@@ -2543,11 +2604,12 @@ public class MainActivity extends Activity {
     }
 
     private String kindIcon(String k) {
-        return k.equals("tg") ? "✈️" : k.equals("manual") ? "🤝" : k.equals("link") ? "🔗" : "🌐";
+        return k.equals("tg") ? "✈️" : k.equals("tgp") ? "🔒" : k.equals("tgbot") ? "🤖" : k.equals("rss") ? "📰" : k.equals("manual") ? "🤝" : k.equals("link") ? "🔗" : "🌐";
     }
 
     private String sourceLink(JSONObject s) {
         String k = s.optString("kind"), v = s.optString("value");
+        if (k.equals("tgbot")) return "https://t.me/" + v;
         return k.equals("tg") ? "https://t.me/s/" + v : k.equals("reliefweb") ? "https://reliefweb.int/jobs?search=" + v : v;
     }
 
@@ -2600,7 +2662,6 @@ public class MainActivity extends Activity {
                 try { s.put("purpose", isLearn ? "jobs" : "learn"); } catch (Exception ignored) { }
                 pu.setText(!isLearn ? "🎓 مصدر تعلّم فقط  ⇄" : "💼 مصدر وظائف (والدورات تُلتقط تلقائياً)  ⇄");
                 Toast.makeText(this, "تم التغيير، يُطبّق من الجلب القادم", Toast.LENGTH_SHORT).show();
-                adminSources();
             }));
             t.addView(pu);
         }

@@ -74,6 +74,8 @@ def links_of(h):
 
 
 # ---------- تيليغرام (صفحة القناة العامة t.me/s) ----------
+DOC_EXT = re.compile(r"\.(pdf|docx?|pptx?|xlsx?|epub)\s*$", re.I)
+
 def telegram(name):
     _, page = http(f"https://t.me/s/{name}")
     if "tgme_widget_message" not in page:
@@ -85,13 +87,23 @@ def telegram(name):
         m = re.search(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', blk, re.S)
         ph = re.search(r"tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)", blk)
         image = html.unescape(ph.group(1)) if ph else ""
-        if not m and not image:
+        doc = re.search(r'tgme_widget_message_document_title[^>]*>(.*?)</div>', blk, re.S)
+        dsz = re.search(r'tgme_widget_message_document_extra[^>]*>(.*?)</div>', blk, re.S)
+        fname = to_text(doc.group(1)) if doc else ""
+        if fname and not DOC_EXT.search(fname):
+            fname = ""
+        if not m and not image and not fname:
             continue
         inner = m.group(1) if m else ""
-        text = to_text(inner)
+        text = to_text(inner) or fname
         dt = re.search(r'<time datetime="([^"]+)"', blk)
         ts = int(datetime.fromisoformat(dt.group(1)).timestamp() * 1000) if dt else int(time.time() * 1000)
-        posts.append({"url": f"https://t.me/{pid}", "text": text, "date": ts, "links": links_of(inner), "image": image})
+        p = {"url": f"https://t.me/{pid}", "text": text, "date": ts, "links": links_of(inner), "image": image}
+        if fname:
+            p["file"] = {"name": fname, "size": to_text(dsz.group(1)) if dsz else ""}
+            p["open"] = p["url"]
+            p["image"] = ""
+        posts.append(p)
     return posts, (html.unescape(title.group(1)) if title else "")
 
 
@@ -246,6 +258,7 @@ def main():
     sources = api("/sources").get("sources", [])
     log(f"المصادر المفعّلة: {len(sources)}")
     added_all = 0
+    deferred = []   # مصادر تحتاج حساب القراءة الخاص (مجموعات، قنوات خاصة، بوتات)
     for s in sources:
         sid, kind, value, name = s["id"], s["kind"], s["value"], s.get("name") or s["value"]
         try:
@@ -257,8 +270,17 @@ def main():
             if kind == "manual":
                 api("/report", {"id": sid, "ok": True, "count": 0})
                 continue
+            if kind in ("tgp", "tgbot"):
+                deferred.append(s)
+                continue
             if kind == "tg":
-                posts, title = telegram(value)
+                try:
+                    posts, title = telegram(value)
+                except Exception as e:  # noqa
+                    if "غير متاحة" in str(e):   # مجموعة أو قناة بلا معاينة عامة ← حساب القراءة
+                        deferred.append(s)
+                        continue
+                    raise
                 if title and name == value:
                     name = title
             elif kind == "reliefweb":
@@ -281,6 +303,14 @@ def main():
             api("/report", {"id": sid, "ok": False, "err": str(e)[:180]})
             log(f"❌ {name}: {e}")
         time.sleep(1)
+    if deferred:
+        try:
+            import tgu
+            added_all += tgu.main(deferred, api, send, log)
+        except ImportError as e:
+            log(f"⏸ مكتبة telethon غير مثبتة: {e}")
+        except Exception as e:  # noqa
+            log(f"❌ حساب القراءة: {e}")
     api("/report", {"id": 0, "ok": True, "final": True})
     log(f"انتهى. أُضيف {added_all} إعلاناً جديداً.")
 

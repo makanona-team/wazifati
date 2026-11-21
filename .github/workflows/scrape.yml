@@ -17,13 +17,18 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: مكتبة حساب القراءة (telethon)
+        run: pip install -q "telethon>=1.36,<2" || echo "تعذّر تثبيت telethon"
 
       - name: الجلب (scrape)
         env:
           SIGN_PASS: ${{ secrets.SIGN_PASS }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: |
           set -o pipefail
           git fetch -q origin config && WZ_API=$(git show origin/config:api-url.txt | tr -d '\r\n ')

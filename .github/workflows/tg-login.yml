@@ -1,0 +1,49 @@
+name: تسجيل دخول حساب تيليغرام
+
+# تسجيل دخول حساب القراءة الخاص (للمجموعات والقنوات الخاصة وبوتات المكتبات) على مرحلتين.
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: 'المرحلة'
+        type: choice
+        options: ['1 - إرسال الرمز', '2 - إدخال الرمز']
+        default: '1 - إرسال الرمز'
+      phone:
+        description: 'رقم الهاتف (للمرحلة 1) مثل +9639xxxxxxxx'
+        required: false
+      code:
+        description: 'الرمز الذي وصلك في تيليغرام (للمرحلة 2)'
+        required: false
+      password:
+        description: 'كلمة سر التحقق بخطوتين إن وُجدت (أو ضعها كسرّ TG_2FA)'
+        required: false
+
+concurrency:
+  group: tg-login
+
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: إخفاء القيم من السجل
+        run: |
+          for v in "${{ inputs.phone }}" "${{ inputs.code }}" "${{ inputs.password }}"; do [ -n "$v" ] && echo "::add-mask::$v"; done; true
+      - uses: actions/checkout@v4
+      - run: pip install -q "telethon>=1.36,<2"
+      - name: تسجيل الدخول
+        env:
+          SIGN_PASS: ${{ secrets.SIGN_PASS }}
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          TG_PHONE: ${{ secrets.TG_PHONE }}
+          TG_2FA: ${{ secrets.TG_2FA }}
+          STEP: ${{ inputs.step }}
+          PHONE: ${{ inputs.phone }}
+          CODE: ${{ inputs.code }}
+          PASSWORD: ${{ inputs.password }}
+        run: |
+          git fetch -q origin config && export WZ_API=$(git show origin/config:api-url.txt | tr -d '\r\n ')
+          export WZ_KEY=$(printf '%s' "$SIGN_PASS:wazifati-ingest" | sha256sum | cut -c1-40)
+          python3 scraper/tg_login.py
