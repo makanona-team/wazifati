@@ -31,6 +31,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SIGN_PASS: ${{ secrets.SIGN_PASS }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         run: |
           set -o pipefail
           for s in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID SIGN_PASS; do
@@ -49,6 +50,14 @@ jobs:
           if [ -z "$URL" ]; then echo "::error::لم أجد عنوان workers.dev — فعّل النطاق الفرعي workers.dev في Cloudflare"; exit 1; fi
           KEY=$(printf '%s' "$SIGN_PASS:wazifati-ingest" | sha256sum | cut -c1-40)
           printf '%s' "$KEY" | npx --yes wrangler@4 secret put INGEST_KEY 2>&1 | tee -a ../deploy.log
+          # تنبيهات تيليغرام للمطوّر (اختياري): الرمز سرّ في المستودع، ورقم المحادثة في config/tg-chat-id.txt
+          TGC=$(tr -d ' \r\n' < ../config/tg-chat-id.txt 2>/dev/null || true)
+          if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TGC" ]; then
+            printf '%s' "$TG_BOT_TOKEN" | npx --yes wrangler@4 secret put TG_BOT_TOKEN 2>&1 | tee -a ../deploy.log
+            printf '%s' "$TGC" | npx --yes wrangler@4 secret put TG_CHAT_ID 2>&1 | tee -a ../deploy.log
+          else
+            echo "تنبيه: تنبيهات تيليغرام غير مفعّلة (السر TG_BOT_TOKEN غير مضاف)"
+          fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: حفظ عنوان الخادم (config)
