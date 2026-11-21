@@ -79,6 +79,7 @@ jobs:
           ./gradlew --no-daemon $TASK 2>&1 | tee build.log
 
       - name: حفظ نتيجة البناء (report)
+        continue-on-error: true   # فشل حفظ السجل لا يجب أن يمنع نشر الإصدار
         if: always() && steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
