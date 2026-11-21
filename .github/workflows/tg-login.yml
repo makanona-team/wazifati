@@ -28,8 +28,12 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: إخفاء القيم من السجل
+        env:
+          P1: ${{ inputs.phone }}
+          P2: ${{ inputs.code }}
+          P3: ${{ inputs.password }}
         run: |
-          for v in "${{ inputs.phone }}" "${{ inputs.code }}" "${{ inputs.password }}"; do [ -n "$v" ] && echo "::add-mask::$v"; done; true
+          for v in "$P1" "$P2" "$P3"; do [ -n "$v" ] && echo "::add-mask::$v"; done; true
       - uses: actions/checkout@v4
       - run: pip install -q "telethon>=1.36,<2"
       - name: تسجيل الدخول
