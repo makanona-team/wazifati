@@ -122,6 +122,35 @@ def reliefweb(country):
     return posts
 
 
+# ---------- RSS/Atom عام (مصادر التعلّم) ----------
+def rss(url):
+    _, x = http(url)
+    posts = []
+    items = re.findall(r"(?s)<item[ >].*?</item>", x) or re.findall(r"(?s)<entry[ >].*?</entry>", x)
+    for item in items[:40]:
+        def tag(t):
+            m = re.search(rf"(?s)<{t}[^>]*>(.*?)</{t}>", item)
+            v = m.group(1) if m else ""
+            return html.unescape(re.sub(r"(?s)^<!\[CDATA\[(.*)\]\]>$", r"\1", v.strip()))
+        title = to_text(tag("title"))
+        link = tag("link")
+        if not link:
+            m = re.search(r'<link[^>]*href="([^"]+)"', item)
+            link = m.group(1) if m else ""
+        body = to_text(tag("description") or tag("content") or tag("summary"))
+        pub = tag("pubDate") or tag("published") or tag("updated")
+        ts = int(time.time() * 1000)
+        for fmt in ("%a, %d %b %Y %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                ts = int(datetime.strptime(pub[:25 if fmt[0] == "%a" else 19].strip(), fmt).replace(tzinfo=timezone.utc).timestamp() * 1000)
+                break
+            except Exception:
+                pass
+        if title and link:
+            posts.append({"url": link, "title": title[:140], "text": f"{title}\n{body}"[:3000], "date": ts, "links": [link]})
+    return posts
+
+
 # ---------- مواقع عامة: روابط تبدو إعلانات وظائف ثم صفحة كل إعلان ----------
 JOB_HREF = re.compile(r"(job|vacanc|career|position|employment|opportunit|recruit|apply|وظ|فرص)", re.I)
 JOB_TEXT = re.compile(r"(officer|manager|assistant|coordinator|engineer|specialist|advisor|consultant|director|analyst|supervisor|nurse|doctor|teacher|driver|accountant|developer|technician|lead|head of|intern|associate|worker|مسؤول|مدير|مساعد|منسق|مهندس|اخصائي|أخصائي|مستشار|محاسب|ممرض|طبيب|معلم|سائق|مشرف|فني|موظف|مطور|مدرب|باحث|مسؤولة|مديرة|منسقة)", re.I)
@@ -234,6 +263,8 @@ def main():
                     name = title
             elif kind == "reliefweb":
                 posts = reliefweb(value)
+            elif kind == "rss":
+                posts = rss(value)
             elif kind == "site":
                 posts, _ = site(value)
             else:

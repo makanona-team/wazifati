@@ -1,10 +1,10 @@
 // خادم «وظيفتي» على Cloudflare Workers + Durable Object (قاعدة SQLite مجانية).
 // الدخول بحساب Google فقط. أدوار: admin / user.
-import { classify, dupKeys, LABELS, jobScore, tenderInfo } from './classify.js';
+import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.6';
+const VERSION = '2.7';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -72,6 +72,17 @@ const SEED_SOURCES = [
   ['site', 'https://untalent.org/jobs/in-anything/contract-all/syria', 'UN Talent'],
 ];
 
+// مصادر تعلّم افتراضية (2.7). الأسماء غير مجرّبة من بيئة التطوير: أي مصدر يفشل 3 أيام يُعطَّل تلقائياً.
+const SEED_LEARN = [
+  ['tg', 'learningforchanges', 'التعلم من أجل التغيير (شهادات Coursera/edX)'],
+  ['tg', 'edlibrecom', 'التعلم الحر EDLibre'],
+  ['tg', 'Programmer_of_the_Arab_world', 'مبرمجين الوطن العربي'],
+  ['rss', 'https://www.freecodecamp.org/news/rss/', 'freeCodeCamp'],
+  ['rss', 'https://www.classcentral.com/report/feed/', 'Class Central'],
+  ['rss', 'https://reliefweb.int/training/rss.xml', 'ReliefWeb Training'],
+  ['rss', 'https://edlibre.com/feed', 'EDLibre (موقع)'],
+];
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -128,6 +139,11 @@ export class Db {
     this.run(`CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created)`);
     this.run(`CREATE INDEX IF NOT EXISTS jobs_updated ON jobs(updated)`);
     this.run(`CREATE TABLE IF NOT EXISTS seen (url TEXT PRIMARY KEY, at INTEGER)`);
+    this.run(`CREATE TABLE IF NOT EXISTS learn (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, k1 TEXT, url TEXT, link TEXT, title TEXT, provider TEXT, lang TEXT,
+      free INTEGER DEFAULT 0, cert INTEGER DEFAULT 0, deadline TEXT, skills TEXT, text TEXT, posted INTEGER,
+      created INTEGER, src TEXT, hidden INTEGER DEFAULT 0)`);
+    this.run(`CREATE INDEX IF NOT EXISTS learn_k1 ON learn(k1)`);
     this.run(`CREATE TABLE IF NOT EXISTS sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT UNIQUE, name TEXT, enabled INTEGER DEFAULT 1,
       added_by TEXT, last_try INTEGER, last_ok INTEGER, last_err TEXT, last_count INTEGER DEFAULT 0, total INTEGER DEFAULT 0, orig TEXT)`);
@@ -137,6 +153,7 @@ export class Db {
     this.tryRun(`ALTER TABLE sources ADD COLUMN rejected INTEGER DEFAULT 0`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN fail_since INTEGER`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN auto_off INTEGER DEFAULT 0`);
+    this.tryRun(`ALTER TABLE sources ADD COLUMN purpose TEXT DEFAULT 'jobs'`);
     this.run(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
     this.run(`CREATE TABLE IF NOT EXISTS accounts (
       email TEXT PRIMARY KEY, name TEXT, photo TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
@@ -164,6 +181,11 @@ export class Db {
       for (const [kind, value, name] of SEED_SOURCES)
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig) VALUES(?,?,?,?,?)`, kind, value, name, 'seed', value);
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seeded','1')`);
+    }
+    if (!this.one(`SELECT v FROM meta WHERE k='seed_learn'`)) {
+      for (const [kind, value, name] of SEED_LEARN)
+        this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose) VALUES(?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn');
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_learn','1')`);
     }
     // ترحيل 1.1: مفاتيح التكرار، وإزالة المصادر المكررة القديمة
     if (!this.one(`SELECT v FROM meta WHERE k='mig11'`)) {
@@ -236,6 +258,7 @@ export class Db {
         }
         if (p === '/labels') return json(LABELS);
         if (p === '/skills') return this.skillsPublic();
+        if (p === '/learn') return this.learnList(req);
       }
 
       // ----- مستخدم مسجّل -----
@@ -443,6 +466,10 @@ export class Db {
     const tinfo = tenderInfo(text, c);
     const js = jobScore(text, c, { image: !!image });
     if (tinfo && js.verdict === 'reject' && js.score > -10 && (c.deadline || c.org)) js.verdict = 'ok';   // المناقصات بنية مختلفة عن الوظائف
+    if (opts.purpose === 'learn' || (!opts.force && (js.verdict === 'reject' || (!c.isJob && !image)) && !tinfo)) {
+      if (!image && this.addLearn(post, text, url, posted, now)) return 'learn';
+      if (opts.purpose === 'learn') { this.markSeen(url); return 'notjob'; }
+    }
     if (opts.force) { if (js.score <= -10) { this.markSeen(url); return 'notjob'; } }
     else if (js.verdict === 'reject' || (!c.isJob && !image)) { this.markSeen(url); return 'notjob'; }
     if (image && text.startsWith('📷')) c.title = '📷 إعلان وظيفة بصورة';
@@ -464,11 +491,40 @@ export class Db {
     return 'added';
   }
 
+  addLearn(post, text, url, posted, now) {
+    const li = learnInfo(text, post.links || []);
+    if (!li) return false;
+    let title = String(post.title || '').trim();
+    if (!title) title = (text.split('\n').map(x => x.trim()).find(x => x.length > 6) || text).replace(/^[^\p{L}\p{N}]+/u, '').slice(0, 120);
+    const prov = String(post.srcName || post.src || '').slice(0, 60);
+    const k1 = 'L:' + nrm(title).replace(/[^\p{L}\p{N}]+/gu, '').slice(0, 60);
+    this.markSeen(url);
+    if (this.one(`SELECT 1 FROM learn WHERE k1=? OR (?<>'' AND link=?)`, k1, li.link, li.link)) return true;
+    const t = nrm(title + ' ' + text);
+    const skills = SEED_SKILLS.filter(([, , , , al]) => al.some(a => aliasHit(t, a))).map(x => x[0]).join(',');
+    const dl = classify(text, { now: new Date() }).deadline || '';
+    this.run(`INSERT INTO learn(k1,url,link,title,provider,lang,free,cert,deadline,skills,text,posted,created,src) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      k1, url, li.link, title, prov, li.lang, li.free, li.cert, dl, skills, text.slice(0, 1500), posted, now, prov);
+    return true;
+  }
+
+  learnList(req) {
+    const t = bearer(req);
+    const user = !!(t && this.one(`SELECT 1 FROM sessions WHERE token=?`, t));
+    const now = Date.now();
+    const okDl = new Date(now - DAY).toISOString().slice(0, 10);
+    const base = `hidden=0 AND created > ? AND (deadline IS NULL OR deadline='' OR deadline >= ?)`;
+    const total = this.one(`SELECT COUNT(*) AS n FROM learn WHERE ${base}`, now - 120 * DAY, okDl).n;
+    const rows = this.q(`SELECT id,title,provider,lang,free,cert,deadline,skills,link,url,text,posted FROM learn WHERE ${base} ORDER BY posted DESC LIMIT ?`, now - 120 * DAY, okDl, user ? 500 : 10);
+    return json({ now, guest: !user, locked: user ? 0 : Math.max(0, total - 10), items: rows.map(r => ({ id: r.id, t: r.title, p: r.provider, l: r.lang, f: r.free, c: r.cert, d: r.deadline || '', s: r.skills || '', a: r.link || r.url, u: r.url, x: (r.text || '').slice(0, 600), d0: r.posted })) });
+  }
+
   markSeen(url) { if (url) this.run(`INSERT OR REPLACE INTO seen(url,at) VALUES(?,?)`, url, Date.now()); }
 
   ingest(b) {
-    const out = { added: 0, dup: 0, seen: 0, notjob: 0, old: 0, expired: 0, short: 0 };
-    for (const post of (b.posts || []).slice(0, 60)) { const r = this.addJob(post); out[r] = (out[r] || 0) + 1; }
+    const out = { added: 0, dup: 0, seen: 0, notjob: 0, old: 0, expired: 0, short: 0, learn: 0 };
+    const sp = b.sourceId ? (this.one(`SELECT purpose FROM sources WHERE id=?`, b.sourceId) || {}).purpose : '';
+    for (const post of (b.posts || []).slice(0, 60)) { const r = this.addJob(post, sp === 'learn' ? { purpose: 'learn' } : {}); out[r] = (out[r] || 0) + 1; }
     if (b.sourceId && out.added) this.run(`UPDATE sources SET total = total + ? WHERE id=?`, out.added, b.sourceId);
     if (b.sourceId && out.notjob) this.run(`UPDATE sources SET rejected = COALESCE(rejected,0) + ? WHERE id=?`, out.notjob, b.sourceId);
     this.cleanup();
@@ -484,6 +540,7 @@ export class Db {
     const last = +((this.one(`SELECT v FROM meta WHERE k='cleanup'`) || {}).v || 0);
     if (Date.now() - last < 6 * 3600e3) return;
     this.run(`DELETE FROM jobs WHERE created < ?`, Date.now() - KEEP_DAYS * DAY);
+    this.run(`DELETE FROM learn WHERE created < ?`, Date.now() - 150 * DAY);
     this.run(`DELETE FROM seen WHERE at < ?`, Date.now() - 120 * DAY);
     this.run(`DELETE FROM fixes WHERE status<>'pending' AND created < ?`, Date.now() - 30 * DAY);
     this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('cleanup',?)`, String(Date.now()));
@@ -913,7 +970,7 @@ export class Db {
 
   // ===== النسخ الاحتياطي والاسترجاع (2.4) =====
   exportBackup() {
-    const names = ['jobs', 'sources', 'accounts', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons', 'skills'];
+    const names = ['jobs', 'sources', 'accounts', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons', 'skills', 'learn'];
     const tables = {};
     for (const t of names) tables[t] = this.q(`SELECT * FROM ${t}`);
     return json({ exported_at: Date.now(), version: VERSION, tables });

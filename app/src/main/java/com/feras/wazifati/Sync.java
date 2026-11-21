@@ -234,17 +234,17 @@ public final class Sync {
         int fixes = r.optInt("fixes"), newFixes = r.optInt("newFixes"), flags = r.optInt("flags"), newFlags = r.optInt("newFlags");
         sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putInt("pending_edits", r.optInt("edits")).putInt("pending_reports", r.optInt("reports")).putLong("admin_check", System.currentTimeMillis()).apply();
         if (!notify || since == 0) return;
-        if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 4);
-        if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 4);
+        if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 5);
+        if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 5);
         JSONArray off = r.optJSONArray("autoOff");
         if (off != null && off.length() > 0) {
             StringBuilder nm = new StringBuilder();
             for (int i = 0; i < off.length(); i++) nm.append(i > 0 ? "، " : "").append(off.optString(i));
-            post(c, CH_ADMIN, 43, "⛔ أُوقف مصدر تلقائياً", nm + " — فشل 3 أيام متتالية. راجع صفحة المصادر.", 4);
+            post(c, CH_ADMIN, 43, "⛔ أُوقف مصدر تلقائياً", nm + " — فشل 3 أيام متتالية. راجع صفحة المصادر.", 5);
         }
-        if (r.optJSONObject("systemic") != null) post(c, CH_ADMIN, 44, "⚠️ عطل عام في الجلب", "أغلب المصادر فشلت معاً (غالباً حجب أو عطل شبكة). لم يُوقف شيء تلقائياً.", 4);
-        if (newFlags > 0) post(c, CH_ADMIN, 42, "🚩 بلاغات جديدة", newFlags + " بلاغ «ليس إعلان وظيفة» بانتظار مراجعتك", 4);
-        if (r.optInt("newReports") > 0) post(c, CH_ADMIN, 45, "🐞 تقارير أخطاء جديدة", r.optInt("newReports") + " تقرير انهيار أو فشل دخول بانتظار مراجعتك", 4);
+        if (r.optJSONObject("systemic") != null) post(c, CH_ADMIN, 44, "⚠️ عطل عام في الجلب", "أغلب المصادر فشلت معاً (غالباً حجب أو عطل شبكة). لم يُوقف شيء تلقائياً.", 5);
+        if (newFlags > 0) post(c, CH_ADMIN, 42, "🚩 بلاغات جديدة", newFlags + " بلاغ «ليس إعلان وظيفة» بانتظار مراجعتك", 5);
+        if (r.optInt("newReports") > 0) post(c, CH_ADMIN, 45, "🐞 تقارير أخطاء جديدة", r.optInt("newReports") + " تقرير انهيار أو فشل دخول بانتظار مراجعتك", 5);
     }
 
     /** مزامنة كاملة (من الخلفية ومن زر المزامنة). يعيد عدد الفرص الجديدة المطابقة. */
@@ -420,7 +420,7 @@ public final class Sync {
         if (now - upd < months * 30L * Store.DAY) return;
         if (now - sp.getLong("cv_reminded", 0) < 30L * Store.DAY) return;
         sp.edit().putLong("cv_reminded", now).apply();
-        post(c, CH_REMIND, 60, "📄 حان وقت تحديث سيرتك الذاتية؟", "مرّ أكثر من " + months + " أشهر على آخر تحديث. ارفع النسخة الجديدة لتحصل على اقتراحات أدق.", 4);
+        post(c, CH_REMIND, 60, "📄 حان وقت تحديث سيرتك الذاتية؟", "مرّ أكثر من " + months + " أشهر على آخر تحديث. ارفع النسخة الجديدة لتحصل على اقتراحات أدق.", 5);
     }
 
     static void post(Context c, String ch, int id, String title, String text, int tab) {

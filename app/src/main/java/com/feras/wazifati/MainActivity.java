@@ -55,8 +55,8 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private FrameLayout content;
     private TextView status, syncIcon, bell;
-    static final int T_JOBS = 0, T_TENDERS = 1, T_SAVED = 2, T_FILTER = 3, T_MORE = 4;
-    private final TextView[] tabs = new TextView[5];
+    static final int T_JOBS = 0, T_TENDERS = 1, T_LEARN = 2, T_SAVED = 3, T_FILTER = 4, T_MORE = 5;
+    private final TextView[] tabs = new TextView[6];
     private boolean tenderMode = false;
     private String quickCat = null;
     // مسودة الفلتر (لا تُطبّق إلا بزر التأكيد)
@@ -468,8 +468,8 @@ public class MainActivity extends Activity {
         LinearLayout nav = row(this);
         nav.setBackgroundColor(CARD);
         nav.setElevation(dp(this, 8));
-        String[] names = {"🔎\nالفرص", "📑\nالمناقصات", "⭐\nالمحفوظة", "🎯\nفلتري", "☰\nالمزيد"};
-        for (int i = 0; i < 5; i++) {
+        String[] names = {"🔎\nالفرص", "📑\nالمناقصات", "🎓\nتعلّم", "⭐\nالمحفوظة", "🎯\nفلتري", "☰\nالمزيد"};
+        for (int i = 0; i < 6; i++) {
             final int k = i;
             TextView t = text(this, names[i], 12, MUTED, false);
             t.setGravity(Gravity.CENTER);
@@ -477,6 +477,7 @@ public class MainActivity extends Activity {
             t.setOnClickListener(v -> show(k));
             tabs[i] = t;
             if (i == T_TENDERS && !Store.flag(this, "tenders")) t.setVisibility(View.GONE);
+            if (i == T_LEARN && !Store.flag(this, "learn_tab")) t.setVisibility(View.GONE);
             nav.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
         }
         root.addView(nav);
@@ -551,9 +552,10 @@ public class MainActivity extends Activity {
             return;
         }
         if (k == T_TENDERS && !Store.flag(this, "tenders")) { show(T_JOBS); return; }
+        if (k == T_LEARN && !Store.flag(this, "learn_tab")) { show(T_JOBS); return; }
         if (k != T_FILTER) { draft = null; draftDirty = false; }
         tab = k;
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 6; i++) {
             tabs[i].setTextColor(i == k ? PRIMARY : MUTED);
             tabs[i].setTypeface(i == k ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
         }
@@ -562,6 +564,7 @@ public class MainActivity extends Activity {
         setStatus();
         if (k == T_JOBS) content.addView(jobsScreen(false));
         else if (k == T_TENDERS) content.addView(jobsScreen(true));
+        else if (k == T_LEARN) content.addView(learnScreen());
         else if (k == T_SAVED) content.addView(guest() ? gateScreen("⭐ الفرص المحفوظة", "احفظ الفرص التي تهمك، وسنذكّرك قبل يوم من إغلاق التقديم، وتتابع ما قدّمت عليه.", false) : savedScreen());
         else if (k == T_FILTER) content.addView(guest() ? gateScreen("🎯 فلتري والإشعارات", "اختر اختصاصك ومحافظتك ليصلك إشعار بكل فرصة تناسبك، وارفع سيرتك الذاتية لتعرف نسبة مناسبتك لكل وظيفة.", false) : filterScreen());
         else content.addView(guest() ? guestMore() : moreScreen());
@@ -1354,6 +1357,153 @@ public class MainActivity extends Activity {
         catch (Exception e) { Toast.makeText(this, "لا يوجد تطبيق لفتح الرابط", Toast.LENGTH_SHORT).show(); }
     }
 
+
+    // ===== تبويب التعلّم (2.7): دورات وورشات تُجمع من نفس المصادر =====
+    private JSONArray learnItems = new JSONArray();
+    private int learnLocked = 0;
+    private boolean learnFree = true, learnLangAr = true, learnLangEn = true, learnForMe = true, learnLoading = false;
+    private String learnQuery = "";
+    private LinearLayout learnList;
+
+    private View learnScreen() {
+        ScrollView sv = new ScrollView(this);
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(dp(this, 12), dp(this, 8), dp(this, 12), dp(this, 16));
+        sv.addView(l);
+        try { learnItems = new JSONArray(Store.p(this).getString("learn_json", "[]")); } catch (Exception e) { learnItems = new JSONArray(); }
+        learnLocked = Store.p(this).getInt("learn_locked", 0);
+
+        EditText q = input("🔍 ابحث: مجال، مهارة، منصة…");
+        q.setSingleLine(true);
+        q.setText(learnQuery);
+        l.addView(q, lpm(this, -1, -2, 0, 6));
+
+        LinearLayout chips = row(this);
+        TextView cMe = chip(this, "✨ مقترح لي", learnForMe), cFree = chip(this, "🆓 مجاني فقط", learnFree),
+                cAr = chip(this, "عربي", learnLangAr), cEn = chip(this, "English", learnLangEn);
+        cMe.setOnClickListener(v -> { learnForMe = !learnForMe; setChip(this, cMe, learnForMe); fillLearn(); });
+        cFree.setOnClickListener(v -> { learnFree = !learnFree; setChip(this, cFree, learnFree); fillLearn(); });
+        cAr.setOnClickListener(v -> { learnLangAr = !learnLangAr; setChip(this, cAr, learnLangAr); fillLearn(); });
+        cEn.setOnClickListener(v -> { learnLangEn = !learnLangEn; setChip(this, cEn, learnLangEn); fillLearn(); });
+        chips.addView(cMe); chips.addView(cFree); chips.addView(cAr); chips.addView(cEn);
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        hs.addView(chips);
+        l.addView(hs, lpm(this, -1, -2, 0, 8));
+
+        LinearLayout guide = card(this);
+        guide.addView(text(this, "📚 دليل المهارات المنتقى + بحث في يوتيوب وتيليغرام وريديت ولينكدإن", 14, PRIMARY, true));
+        guide.setOnClickListener(v -> learnDialog(null));
+        l.addView(guide, lpm(this, -1, -2, 0, 8));
+
+        learnList = new LinearLayout(this);
+        learnList.setOrientation(LinearLayout.VERTICAL);
+        l.addView(learnList);
+        q.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(android.text.Editable e) { learnQuery = e.toString().trim(); fillLearn(); }
+        });
+        fillLearn();
+        if (!learnLoading) {
+            learnLoading = true;
+            Context app = getApplicationContext();
+            new Thread(() -> {
+                try {
+                    JSONObject r = Api.get("/learn");
+                    JSONArray a = r.optJSONArray("items");
+                    if (a != null) Store.p(app).edit().putString("learn_json", a.toString()).putInt("learn_locked", r.optInt("locked")).apply();
+                } catch (Throwable ignored) { }
+                ui.post(() -> {
+                    learnLoading = false;
+                    if (isFinishing() || tab != T_LEARN) return;
+                    try { learnItems = new JSONArray(Store.p(this).getString("learn_json", "[]")); } catch (Exception e) { }
+                    learnLocked = Store.p(this).getInt("learn_locked", 0);
+                    fillLearn();
+                });
+            }).start();
+        }
+        return sv;
+    }
+
+    private void fillLearn() {
+        if (learnList == null) return;
+        learnList.removeAllViews();
+        String qn = Search.light(learnQuery).trim();
+        String cv = "";
+        Match.Profile pf = Match.profile(this);
+        if (pf != null) cv = Search.light(String.join(" ", pf.skills) + " " + String.join(" ", pf.titles) + " " + String.join(" ", pf.words));
+        JSONArray sk = Skills.list(this);
+        List<Object[]> rows = new ArrayList<>();
+        String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(new java.util.Date());
+        for (int i = 0; i < learnItems.length(); i++) {
+            JSONObject it = learnItems.optJSONObject(i);
+            if (it == null) continue;
+            boolean ar = "ar".equals(it.optString("l"));
+            if ((ar && !learnLangAr) || (!ar && !learnLangEn)) continue;
+            if (learnFree && it.optInt("f") != 1) continue;
+            String dl = it.optString("d");
+            if (!dl.isEmpty() && dl.compareTo(today) < 0) continue;
+            String hay = Search.light(it.optString("t") + " " + it.optString("p") + " " + it.optString("x"));
+            if (!qn.isEmpty()) {
+                boolean ok = true;
+                for (String w : qn.split("\\s+")) if (!w.isEmpty() && !hay.contains(w)) { ok = false; break; }
+                if (!ok) continue;
+            }
+            int score = 0;
+            if (learnForMe && pf != null) {
+                String ids = "," + it.optString("s") + ",";
+                for (int k = 0; k < sk.length(); k++) {
+                    JSONObject s = sk.optJSONObject(k);
+                    if (s == null || !ids.contains("," + s.optString("id") + ",")) continue;
+                    JSONArray al = s.optJSONArray("al");
+                    if (al != null) for (int m = 0; m < al.length(); m++) if (Skills.hit(cv, al.optString(m))) { score += 3; break; }
+                }
+                for (String w : pf.titleWords) if (w.length() > 3 && hay.contains(Search.light(w))) { score += 1; if (score > 8) break; }
+            }
+            rows.add(new Object[]{it, score});
+        }
+        if (learnForMe && pf != null) java.util.Collections.sort(rows, (a, b) -> (int) b[1] - (int) a[1]);
+        int shown = 0;
+        for (Object[] r : rows) {
+            JSONObject it = (JSONObject) r[0];
+            learnList.addView(learnCard(it, (int) r[1] > 0), lpm(this, -1, -2, 0, 8));
+            if (++shown >= 150) break;
+        }
+        if (shown == 0) learnList.addView(text(this, learnItems.length() == 0
+                ? "نجمع الدورات والورشات من المصادر الآن، ستظهر هنا خلال ساعات. جرّب دليل المهارات أعلاه."
+                : "لا نتائج بهذه الفلاتر. جرّب إلغاء «مجاني فقط» أو تغيير البحث.", 14, MUTED, false), lpm(this, -1, -2, 8, 8));
+        if (guest() && learnLocked > 0) {
+            LinearLayout lk = card(this);
+            lk.addView(text(this, "🔒 يوجد " + learnLocked + " عنصر تعلّم آخر. سجّل الدخول بحساب غوغل لعرضها كلها.", 14, TEXT, true));
+            learnList.addView(lk, lpm(this, -1, -2, 8, 0));
+        }
+    }
+
+    private View learnCard(JSONObject it, boolean forMe) {
+        LinearLayout c = card(this);
+        c.addView(text(this, it.optString("t"), 16, TEXT, true));
+        LinearLayout pr = row(this);
+        if (forMe) pr.addView(pill(this, "✨ يناسبك", INFO_BG));
+        if (it.optInt("f") == 1) pr.addView(pill(this, "🆓 مجاني", OK_BG));
+        if (it.optInt("c") == 1) pr.addView(pill(this, "🏅 شهادة", INFO_BG));
+        pr.addView(pill(this, "ar".equals(it.optString("l")) ? "عربي" : "English", INFO_BG));
+        if (!it.optString("d").isEmpty()) pr.addView(pill(this, "⏳ حتى " + it.optString("d"), WARN_BG));
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        hs.setHorizontalScrollBarEnabled(false);
+        hs.addView(pr);
+        c.addView(hs, lpm(this, -1, -2, 6, 0));
+        String x = it.optString("x").replace("\n", " ");
+        if (x.length() > 160) x = x.substring(0, 160) + "…";
+        if (!x.isEmpty()) c.addView(text(this, x, 13, MUTED, false), lpm(this, -1, -2, 6, 0));
+        if (!it.optString("p").isEmpty()) c.addView(text(this, "المصدر: " + it.optString("p"), 11, MUTED, false), lpm(this, -1, -2, 4, 0));
+        final String u = it.optString("a");
+        Button b = button(this, "فتح الدورة", true);
+        b.setOnClickListener(v -> { if (!u.isEmpty()) openUrl(u); });
+        c.addView(b, lpm(this, -1, -2, 8, 0));
+        return c;
+    }
 
     // =====================================================================
     // قسم التعلّم (2.6)
