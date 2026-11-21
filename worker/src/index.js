@@ -4,20 +4,57 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.4';
+const VERSION = '2.6';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
   suggest_source: true, // اقتراح المصادر
   share_job: true,      // مشاركة الفرص
   guest_mode: true,     // التصفح كضيف
-  learn_tab: false,     // قسم التعلّم (يُفعّل في 2.5)
+  learn_tab: true,      // قسم التعلّم والمراجع (2.6)
 };
 const GUEST_JOBS = 10;      // الزائر يرى أحدث 10 وظائف
 const GUEST_TENDERS = 2;    // وأحدث مناقصتين
 const RELEASE = 'https://github.com/makanona-team/wazifati/releases/latest';
 const FAIL_DAYS = 3;
 const DAY = 864e5;
+
+// مهارات مرشّحة لدليل التعلّم (المرادفات للمطابقة؛ الأدمن يعدّلها ويضيف الروابط من التطبيق)
+const SEED_SKILLS = [
+  ['excel', 'إكسل', 'Excel', 'مكتبية', ['excel', 'اكسل', 'pivot', 'vlookup', 'microsoft excel']],
+  ['english', 'اللغة الإنجليزية', 'English', 'لغات', ['english', 'انجليزي', 'اللغه الانجليزيه', 'ielts', 'toefl']],
+  ['office', 'أوفيس (وورد وباوربوينت)', 'MS Office', 'مكتبية', ['microsoft office', 'ms office', 'ms word', 'microsoft word', 'powerpoint', 'اوفيس']],
+  ['reports', 'كتابة التقارير', 'Report writing', 'مكتبية', ['report writing', 'كتابه التقارير', 'كتابه تقارير', 'technical writing', 'minutes of meeting']],
+  ['meal', 'المتابعة والتقييم MEAL', 'MEAL', 'منظمات', ['meal', 'm&e', 'monitoring and evaluation', 'monitoring & evaluation', 'المتابعه والتقييم', 'الرصد والتقييم']],
+  ['pm', 'إدارة المشاريع', 'Project management', 'إدارة', ['project management', 'pmp', 'pm4ngos', 'prince2', 'ادارة المشاريع', 'ادارة المشروع']],
+  ['proposals', 'كتابة المقترحات والمنح', 'Proposal writing', 'منظمات', ['proposal writing', 'grant writing', 'concept note', 'كتابه المقترحات', 'كتابه مقترحات', 'funding proposals']],
+  ['kobo', 'جمع البيانات KoBoToolbox', 'KoBoToolbox', 'منظمات', ['kobo', 'kobotoolbox', 'odk', 'commcare', 'mobile data collection', 'جمع البيانات']],
+  ['protection', 'الحماية وPSEA', 'Safeguarding & PSEA', 'منظمات', ['psea', 'safeguarding', 'child protection', 'gbv', 'protection officer', 'حمايه الطفل']],
+  ['procurement', 'المشتريات واللوجستيات', 'Procurement & logistics', 'منظمات', ['procurement', 'logistics', 'supply chain', 'المشتريات', 'اللوجستيات', 'لوجستيك', 'سلسله الامداد']],
+  ['autocad', 'أوتوكاد', 'AutoCAD', 'هندسة', ['autocad', 'اوتوكاد', 'cad', 'civil 3d', 'civil3d']],
+  ['primavera', 'بريمافيرا / MS Project', 'Primavera / MS Project', 'هندسة', ['primavera', 'ms project', 'microsoft project', 'p6', 'بريمافيرا']],
+  ['revit', 'ريفيت والتصميم الإنشائي', 'Revit / structural design', 'هندسة', ['revit', 'staad', 'etabs', 'sap2000', 'sketchup', '3ds max']],
+  ['maintenance', 'الصيانة والتشغيل', 'Maintenance', 'هندسة', ['maintenance', 'preventive maintenance', 'cmms', 'plc', 'scada', 'الصيانه']],
+  ['hse', 'السلامة المهنية HSE', 'HSE', 'هندسة', ['hse', 'ehs', 'osha', 'nebosh', 'iosh', 'health and safety', 'السلامه المهنيه', 'الصحه والسلامه']],
+  ['accounting', 'المحاسبة', 'Accounting', 'مالية', ['accounting', 'quickbooks', 'bookkeeping', 'erp', 'sap', 'odoo', 'tally', 'المحاسبه']],
+  ['finance', 'الإدارة المالية والموازنات', 'Financial management', 'مالية', ['financial management', 'budgeting', 'financial reporting', 'donor regulations', 'الاداره الماليه', 'الموازنات']],
+  ['data', 'تحليل البيانات (Power BI / SQL)', 'Data analysis', 'بيانات', ['power bi', 'powerbi', 'tableau', 'data analysis', 'sql', 'spss', 'stata', 'تحليل البيانات']],
+  ['gis', 'نظم المعلومات الجغرافية GIS', 'GIS', 'بيانات', ['gis', 'arcgis', 'qgis', 'remote sensing', 'نظم المعلومات الجغرافيه']],
+  ['design', 'التصميم الجرافيكي', 'Graphic design', 'تصميم وتسويق', ['photoshop', 'illustrator', 'canva', 'indesign', 'graphic design', 'premiere', 'after effects', 'فوتوشوب']],
+  ['marketing', 'التسويق الرقمي', 'Digital marketing', 'تصميم وتسويق', ['digital marketing', 'social media', 'seo', 'content creation', 'media buying', 'التسويق الالكتروني', 'التسويق الرقمي']],
+  ['hr', 'الموارد البشرية', 'Human resources', 'إدارة', ['human resources', 'hr', 'recruitment', 'payroll', 'الموارد البشريه']],
+  ['programming', 'البرمجة', 'Programming', 'برمجة', ['python', 'javascript', 'java', 'php', 'react', 'web development', 'flutter', 'برمجه']],
+  ['training', 'التدريب والتدريس', 'Training & teaching', 'مهارات', ['training of trainers', 'tot', 'curriculum', 'lesson planning', 'teaching', 'تدريب المدربين', 'المناهج']],
+  ['soft', 'مهارات التواصل والتفاوض', 'Communication & negotiation', 'مهارات', ['communication skills', 'negotiation', 'presentation skills', 'public speaking', 'مهارات التواصل', 'التفاوض']],
+];
+const nrm = (s) => String(s || '').toLowerCase().replace(/[ً-ْـ]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي');
+const aliasHit = (text, al) => {
+  const a = nrm(al).trim();
+  if (!a) return false;
+  if (/^[a-z0-9 .+#&-]+$/.test(a)) return new RegExp('(^|[^a-z0-9])' + a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])').test(text);
+  return text.includes(a);
+};
+
 const KEEP_DAYS = 60;
 const FIRST_DAYS = 30;
 const MAX_TEXT = 3500;
@@ -104,7 +141,9 @@ export class Db {
     this.run(`CREATE TABLE IF NOT EXISTS accounts (
       email TEXT PRIMARY KEY, name TEXT, photo TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
       prefs TEXT, prefs_updated INTEGER DEFAULT 0, created INTEGER, last_seen INTEGER, model TEXT, ver TEXT)`);
-    for (const col of ['cv_text TEXT', 'cv_profile TEXT', 'cv_name TEXT', 'cv_updated INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE accounts ADD COLUMN ${col}`);
+    for (const col of ['cv_text TEXT', 'cv_profile TEXT', 'cv_name TEXT', 'cv_updated INTEGER DEFAULT 0', 'last_sync INTEGER']) this.tryRun(`ALTER TABLE accounts ADD COLUMN ${col}`);
+    this.run(`CREATE TABLE IF NOT EXISTS skills (id TEXT PRIMARY KEY, ar TEXT, en TEXT, cat TEXT, aliases TEXT, links TEXT, updated INTEGER)`);
+    this.run(`CREATE TABLE IF NOT EXISTS link_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, skill TEXT, url TEXT, email TEXT, created INTEGER, UNIQUE(skill, url, email))`);
     this.run(`CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, email TEXT, created INTEGER, dev TEXT)`);
     this.run(`CREATE TABLE IF NOT EXISTS fixes (
       id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, email TEXT, specs TEXT, govs TEXT, sector TEXT, note TEXT,
@@ -196,6 +235,7 @@ export class Db {
           return json({ items: this.q(`SELECT id,text,created FROM announcements WHERE id > ? ORDER BY id DESC LIMIT 20`, +url.searchParams.get('since') || 0) });
         }
         if (p === '/labels') return json(LABELS);
+        if (p === '/skills') return this.skillsPublic();
       }
 
       // ----- مستخدم مسجّل -----
@@ -213,6 +253,7 @@ export class Db {
         if (p === '/flag') return this.flag(me, b);
         if (p === '/cv/delete') { this.run(`UPDATE accounts SET cv_text=NULL, cv_profile=NULL, cv_name=NULL, cv_updated=0 WHERE email=?`, me.email); return json({ ok: true }); }
         if (p === '/account/delete') return this.deleteAccount(me, b);
+        if (p === '/link/report') return this.reportLink(me, b);
       }
 
       // ----- أدمن -----
@@ -225,6 +266,8 @@ export class Db {
         if (p === '/admin/pending') return json(this.pending(+url.searchParams.get('since') || 0));
         if (p === '/admin/stats') return json(this.stats());
         if (p === '/admin/features') return json({ flags: this.flagsObj() });
+        if (p === '/admin/skills/top') return this.skillsTop();
+        if (p === '/admin/link-reports') return json({ reports: this.q(`SELECT skill, url, COUNT(*) AS n, MAX(created) AS last FROM link_reports GROUP BY skill, url ORDER BY last DESC LIMIT 100`) });
         if (p === '/admin/reports') return this.getReports(url);
         if (p === '/admin/flags') return json({ flags: this.q(`SELECT j.id, j.title, j.src, j.url, j.hidden, COUNT(f.email) AS n, GROUP_CONCAT(f.email, '، ') AS who, MAX(f.created) AS last
           FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2 GROUP BY j.id ORDER BY last DESC LIMIT 100`) });
@@ -248,6 +291,9 @@ export class Db {
         if (p === '/admin/minver') return this.setMinVer(b);
         if (p === '/admin/flags/decide') return this.decideFlag(b);
         if (p === '/admin/features') return this.setFeature(b);
+        if (p === '/admin/skills/save') return this.saveSkill(b);
+        if (p === '/admin/skills/delete') { this.run(`DELETE FROM skills WHERE id=?`, String(b.id || '')); return json({ ok: true }); }
+        if (p === '/admin/link-reports/clear') { if (b.all) this.run(`DELETE FROM link_reports`); else this.run(`DELETE FROM link_reports WHERE skill=? AND url=?`, String(b.skill || ''), String(b.url || '')); return json({ ok: true }); }
         if (p === '/admin/reports/clear') return this.clearReports(b);
       }
       return json({ error: 'not found' }, 404);
@@ -292,7 +338,10 @@ export class Db {
     const a = this.one(`SELECT * FROM accounts WHERE email=?`, s.email);
     if (!a) throw new HttpErr(401, 'الحساب غير موجود');
     if (a.status === 'blocked') throw new HttpErr(403, 'هذا الحساب موقوف. تواصل مع مدير التطبيق.');
-    if (!a.last_seen || Date.now() - a.last_seen > 600e3) this.run(`UPDATE accounts SET last_seen=? WHERE email=?`, Date.now(), a.email);
+    // «آخر فتح» لا يتحدّث من مزامنة الخلفية (ترسل X-Bg)، و«آخر مزامنة» يتحدّث من أي طلب
+    const nowMs = Date.now(), bg = req.headers.get('X-Bg') === '1';
+    if (!a.last_sync || nowMs - a.last_sync > 600e3) this.run(`UPDATE accounts SET last_sync=? WHERE email=?`, nowMs, a.email);
+    if (!bg && (!a.last_seen || nowMs - a.last_seen > 600e3)) this.run(`UPDATE accounts SET last_seen=? WHERE email=?`, nowMs, a.email);
     return a;
   }
 
@@ -605,7 +654,7 @@ export class Db {
 
   // ===== المستخدمون =====
   users() {
-    return this.q(`SELECT a.email, a.name, a.photo, a.role, a.status, a.created, a.last_seen, a.model, a.ver,
+    return this.q(`SELECT a.email, a.name, a.photo, a.role, a.status, a.created, a.last_seen, a.last_sync, a.model, a.ver,
       (SELECT COUNT(*) FROM sources s WHERE s.added_by=a.email) AS contrib,
       (SELECT COUNT(*) FROM jobs j WHERE j.shared_by=a.email) AS shares
       FROM accounts a ORDER BY a.last_seen DESC`);
@@ -793,6 +842,7 @@ export class Db {
     this.run(`DELETE FROM sessions WHERE email=?`, me.email);
     this.run(`DELETE FROM flags WHERE email=?`, me.email);
     this.run(`DELETE FROM fixes WHERE email=?`, me.email);
+    this.run(`DELETE FROM link_reports WHERE email=?`, me.email);
     this.run(`UPDATE jobs SET shared_by='deleted' WHERE shared_by=?`, me.email);
     this.run(`UPDATE jobs SET edited_by='deleted' WHERE edited_by=?`, me.email);
     this.run(`UPDATE sources SET added_by='deleted' WHERE added_by=?`, me.email);
@@ -800,9 +850,70 @@ export class Db {
     return json({ ok: true });
   }
 
+
+  // ===== دليل المهارات والتعلّم (2.6) =====
+  jarr(s) { try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } }
+
+  skillsPublic() {
+    const out = [];
+    for (const r of this.q(`SELECT id, ar, en, cat, aliases, links FROM skills ORDER BY cat, ar`)) {
+      const links = this.jarr(r.links);
+      if (!links.length) continue;
+      out.push({ id: r.id, ar: r.ar, en: r.en, cat: r.cat, al: this.jarr(r.aliases), links });
+    }
+    const upd = this.one(`SELECT MAX(updated) AS u FROM skills`);
+    return json({ skills: out, updated: (upd && upd.u) || 0 });
+  }
+
+  skillsTop() {
+    const jobs = this.q(`SELECT title, text FROM jobs WHERE hidden=0 AND COALESCE(kind,'job')<>'tender' ORDER BY id DESC LIMIT 1500`);
+    const texts = jobs.map(j => nrm((j.title || '') + ' ' + (j.text || '')));
+    const saved = new Map(this.q(`SELECT id, ar, en, cat, aliases, links FROM skills`).map(r => [r.id, r]));
+    const list = [];
+    const seen = new Set();
+    const add = (id, ar, en, cat, aliases) => {
+      const sv = saved.get(id);
+      const al = sv ? this.jarr(sv.aliases) : aliases;
+      let n = 0;
+      for (const t of texts) if (al.some(a => aliasHit(t, a))) n++;
+      list.push({ id, ar: sv ? sv.ar : ar, en: sv ? sv.en : en, cat: sv ? sv.cat : cat, aliases: al, n, links: sv ? this.jarr(sv.links) : [], saved: !!sv });
+      seen.add(id);
+    };
+    for (const [id, ar, en, cat, al] of SEED_SKILLS) add(id, ar, en, cat, al);
+    for (const [id, r] of saved) if (!seen.has(id)) add(id, r.ar, r.en, r.cat, this.jarr(r.aliases));
+    list.sort((a, b) => b.n - a.n);
+    return json({ scanned: jobs.length, skills: list });
+  }
+
+  saveSkill(b) {
+    let id = String(b.id || '').trim().toLowerCase();
+    if (!/^[a-z0-9_-]{2,40}$/.test(id)) id = 's' + Date.now().toString(36);
+    const ar = String(b.ar || '').trim().slice(0, 80), en = String(b.en || '').trim().slice(0, 80);
+    if (!ar && !en) throw new HttpErr(400, 'اكتب اسم المهارة');
+    const cat = String(b.cat || 'أخرى').trim().slice(0, 30) || 'أخرى';
+    const aliases = (Array.isArray(b.aliases) ? b.aliases : []).map(x => String(x).trim().slice(0, 40)).filter(Boolean).slice(0, 30);
+    const now = Date.now();
+    const types = ['course', 'video', 'playlist', 'channel', 'telegram', 'doc', 'site'];
+    const links = [];
+    for (const l of (Array.isArray(b.links) ? b.links : []).slice(0, 20)) {
+      const u = String(l.u || '').trim();
+      if (!/^https?:\/\//i.test(u)) continue;
+      links.push({ t: String(l.t || '').trim().slice(0, 100) || u.slice(0, 60), u: u.slice(0, 500), l: l.l === 'en' ? 'en' : 'ar', ty: types.includes(l.ty) ? l.ty : 'site', c: +l.c || now });
+    }
+    this.run(`INSERT OR REPLACE INTO skills(id, ar, en, cat, aliases, links, updated) VALUES(?,?,?,?,?,?,?)`, id, ar, en, cat, JSON.stringify(aliases), JSON.stringify(links), now);
+    return json({ ok: true, id });
+  }
+
+  reportLink(me, b) {
+    const skill = String(b.skill || '').slice(0, 60), url = String(b.url || '').slice(0, 500);
+    if (!skill || !url) throw new HttpErr(400, 'بيانات ناقصة');
+    this.run(`INSERT OR IGNORE INTO link_reports(skill, url, email, created) VALUES(?,?,?,?)`, skill, url, me.email, Date.now());
+    return json({ ok: true });
+  }
+
   // ===== النسخ الاحتياطي والاسترجاع (2.4) =====
   exportBackup() {
-    const names = ['jobs', 'sources', 'accounts', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons'];
+    const names = ['jobs', 'sources', 'accounts', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons', 'skills'];
     const tables = {};
     for (const t of names) tables[t] = this.q(`SELECT * FROM ${t}`);
     return json({ exported_at: Date.now(), version: VERSION, tables });
@@ -811,7 +922,7 @@ export class Db {
   restoreBackup(b) {
     const tables = b && b.tables;
     if (!tables || typeof tables !== 'object') throw new HttpErr(400, 'ملف نسخة احتياطية غير صالح');
-    const allowed = ['jobs', 'sources', 'accounts', 'sessions', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons'];
+    const allowed = ['jobs', 'sources', 'accounts', 'sessions', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons', 'skills'];
     const counts = {};
     for (const t of allowed) {
       const rows = tables[t];

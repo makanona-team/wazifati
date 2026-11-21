@@ -46,6 +46,9 @@ public final class Api {
         return call("POST", path, body);
     }
 
+    /** يُضبط في خيط المزامنة الخلفية فقط. */
+    public static final ThreadLocal<Boolean> BG = new ThreadLocal<>();
+
     static JSONObject call(String method, String path, JSONObject body) throws Exception {
         if (base().isEmpty()) throw new Exception("عنوان الخادم غير مضبوط في هذه النسخة");
         HttpURLConnection con = (HttpURLConnection) new URL(base() + path).openConnection();
@@ -55,6 +58,7 @@ public final class Api {
         con.setRequestProperty("User-Agent", "Wazifati-Android");
         con.setRequestProperty("Accept", "application/json");
         if (token != null && !token.isEmpty()) con.setRequestProperty("Authorization", "Bearer " + token);
+        if (Boolean.TRUE.equals(BG.get())) con.setRequestProperty("X-Bg", "1");   // مزامنة خلفية: لا تُعدّ «فتحاً» للتطبيق
         if (body != null) {
             con.setDoOutput(true);
             con.setRequestProperty("Content-Type", "application/json; charset=utf-8");

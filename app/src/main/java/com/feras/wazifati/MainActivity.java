@@ -1243,6 +1243,17 @@ public class MainActivity extends Activity {
             r1.addView(ap, weight());
         }
         if (r1.getChildCount() > 0) l.addView(r1, lpm(this, -1, -2, 0, 8));
+        if (Store.flag(this, "learn_tab") && !j.tender()) {
+            boolean[] hc = new boolean[1];
+            List<JSONObject> ms = Skills.missingFor(this, j, hc);
+            if (!ms.isEmpty()) {
+                Set<String> ids = new HashSet<>();
+                for (JSONObject m : ms) ids.add(m.optString("id"));
+                Button lb = button(this, "🎓 " + (hc[0] ? "تعلّم ما ينقصك" : "مهارات مطلوبة في الوظيفة") + " (" + ms.size() + ")", false);
+                lb.setOnClickListener(v -> learnDialog(ids));
+                l.addView(lb, lpm(this, -1, -2, 0, 8));
+            }
+        }
 
         String id = String.valueOf(j.id);
         LinearLayout r2 = row(this);
@@ -1341,6 +1352,269 @@ public class MainActivity extends Activity {
     private void openUrl(String u) {
         try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u))); }
         catch (Exception e) { Toast.makeText(this, "لا يوجد تطبيق لفتح الرابط", Toast.LENGTH_SHORT).show(); }
+    }
+
+
+    // =====================================================================
+    // قسم التعلّم (2.6)
+    // =====================================================================
+    private boolean learnAr = true;
+
+    private void learnDialog(Set<String> only) {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog(only == null ? "🎓 تعلّم: مراجع وكورسات" : "🎓 تعلّم ما ينقصك", dh);
+        dh[0].show();
+        renderLearn(l, only);
+        Context app = getApplicationContext();
+        new Thread(() -> {
+            Skills.refresh(app, true);
+            ui.post(() -> { if (dh[0].isShowing() && !isFinishing()) renderLearn(l, only); });
+        }).start();
+    }
+
+    private void renderLearn(LinearLayout l, Set<String> only) {
+        l.removeAllViews();
+        EditText q = input(only == null ? "🔍 ابحث عن مهارة أو موضوع: إكسل، MEAL، أوتوكاد…" : "موضوع البحث الخارجي");
+        q.setSingleLine(true);
+        String first = "";
+        if (only != null) {
+            JSONArray all = Skills.list(this);
+            for (int i = 0; i < all.length() && first.isEmpty(); i++) {
+                JSONObject sk = all.optJSONObject(i);
+                if (sk != null && only.contains(sk.optString("id"))) first = learnAr && !sk.optString("ar").isEmpty() ? sk.optString("ar") : sk.optString("en");
+            }
+            q.setText(first);
+        }
+        l.addView(q, lpm(this, -1, -2, 0, 8));
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout lr = row(this);
+        TextView cAr = chip(this, "عربي", learnAr), cEn = chip(this, "English", !learnAr);
+        cAr.setOnClickListener(v -> { learnAr = true; setChip(this, cAr, true); setChip(this, cEn, false); fillSkills(body, only, q.getText().toString()); });
+        cEn.setOnClickListener(v -> { learnAr = false; setChip(this, cAr, false); setChip(this, cEn, true); fillSkills(body, only, q.getText().toString()); });
+        lr.addView(text(this, "لغة المصادر:  ", 13, MUTED, false));
+        lr.addView(cAr);
+        lr.addView(cEn, lpm(this, -2, -2, 0, 0));
+        l.addView(lr, lpm(this, -1, -2, 0, 8));
+        l.addView(body);
+        fillSkills(body, only, q.getText().toString());
+        if (only == null) q.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
+            @Override public void afterTextChanged(android.text.Editable e) { fillSkills(body, null, e.toString()); }
+        });
+
+        LinearLayout ex = card(this);
+        ex.addView(text(this, "🔎 لم تجد ما تبحث عنه؟ ابحث في:", 15, TEXT, true));
+        String[][] sites = {
+                {"▶️ يوتيوب", "https://www.youtube.com/results?search_query="},
+                {"🔎 غوغل", "https://www.google.com/search?q="},
+                {"✈️ تيليغرام", "https://www.google.com/search?q=site%3At.me+"},
+                {"💬 ريديت", "https://www.reddit.com/search/?q="},
+                {"💼 لينكدإن", "https://www.linkedin.com/search/results/content/?keywords="},
+                {"📘 فيسبوك", "https://www.facebook.com/search/posts/?q="},
+        };
+        for (int i = 0; i < sites.length; i += 2) {
+            LinearLayout rr = row(this);
+            for (int k = i; k < i + 2 && k < sites.length; k++) {
+                final String[] st = sites[k];
+                Button b = button(this, st[0], false);
+                b.setOnClickListener(v -> {
+                    String t = q.getText().toString().trim();
+                    if (t.isEmpty()) { Toast.makeText(this, "اكتب الموضوع أولاً", Toast.LENGTH_SHORT).show(); return; }
+                    try { openUrl(st[1] + java.net.URLEncoder.encode(t + (learnAr ? " دورة شرح" : " course tutorial"), "UTF-8")); } catch (Exception ignored) { }
+                });
+                LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, -2, 1);
+                bp.setMargins(dp(this, 3), dp(this, 3), dp(this, 3), 0);
+                rr.addView(b, bp);
+            }
+            ex.addView(rr);
+        }
+        l.addView(ex, lpm(this, -1, -2, 8, 8));
+    }
+
+    private void fillSkills(LinearLayout body, Set<String> only, String query) {
+        body.removeAllViews();
+        JSONArray all = Skills.list(this);
+        String qn = Search.light(query).trim();
+        String lastCat = null;
+        int shown = 0;
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject sk = all.optJSONObject(i);
+            if (sk == null) continue;
+            if (only != null && !only.contains(sk.optString("id"))) continue;
+            if (only == null && !qn.isEmpty()) {
+                StringBuilder hay = new StringBuilder(sk.optString("ar") + " " + sk.optString("en"));
+                JSONArray al = sk.optJSONArray("al");
+                if (al != null) for (int k = 0; k < al.length(); k++) hay.append(' ').append(al.optString(k));
+                if (!Search.light(hay.toString()).contains(qn)) continue;
+            }
+            String cat = sk.optString("cat");
+            if (!cat.equals(lastCat)) { body.addView(section(cat.isEmpty() ? "أخرى" : cat)); lastCat = cat; }
+            body.addView(skillCard(sk), lpm(this, -1, -2, 0, 8));
+            shown++;
+        }
+        if (shown == 0) body.addView(text(this, all.length() == 0
+                ? "نجهّز الآن مصادر وكورسات لأكثر المهارات طلباً في الوظائف. في الأثناء ابحث بالأزرار أدناه."
+                : "لا نتائج في الدليل لهذا البحث. جرّب الأزرار أدناه.", 14, MUTED, false), lpm(this, -1, -2, 8, 8));
+    }
+
+    private View skillCard(JSONObject sk) {
+        LinearLayout c = card(this);
+        String ar = sk.optString("ar"), en = sk.optString("en");
+        c.addView(text(this, ar + (!ar.isEmpty() && !en.isEmpty() ? "  •  " : "") + en, 16, TEXT, true));
+        JSONArray ls = sk.optJSONArray("links");
+        if (ls == null) return c;
+        String want = learnAr ? "ar" : "en";
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < ls.length(); i++) {
+                JSONObject lk = ls.optJSONObject(i);
+                if (lk == null) continue;
+                boolean match = want.equals(lk.optString("l", "ar"));
+                if ((pass == 0) != match) continue;
+                final String u = lk.optString("u");
+                String ty = lk.optString("ty", "site");
+                String icon = ty.equals("course") ? "🎓" : ty.equals("video") ? "▶️" : ty.equals("playlist") ? "📺" : ty.equals("channel") ? "📡" : ty.equals("telegram") ? "✈️" : ty.equals("doc") ? "📄" : "🌐";
+                LinearLayout r = row(this);
+                r.setPadding(0, dp(this, 8), 0, dp(this, 2));
+                LinearLayout tx = new LinearLayout(this);
+                tx.setOrientation(LinearLayout.VERTICAL);
+                tx.addView(text(this, icon + " " + lk.optString("t"), 14, PRIMARY, true));
+                tx.addView(text(this, "en".equals(lk.optString("l")) ? "English" : "عربي", 11, MUTED, false));
+                tx.setOnClickListener(v -> openUrl(u));
+                r.addView(tx, new LinearLayout.LayoutParams(0, -2, 1));
+                TextView rep = text(this, "⚠", 16, MUTED, false);
+                rep.setPadding(dp(this, 12), dp(this, 6), dp(this, 4), dp(this, 6));
+                rep.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("الإبلاغ عن أن هذا الرابط لا يعمل أو لم يعد مناسباً؟")
+                        .setPositiveButton("إبلاغ", (d, w) -> {
+                            if (guest()) { Toast.makeText(this, "سجّل الدخول لتتمكن من الإبلاغ", Toast.LENGTH_SHORT).show(); return; }
+                            post("/link/report", jo("skill", sk.optString("id"), "url", u), x -> Toast.makeText(this, "شكراً، سنراجع الرابط", Toast.LENGTH_SHORT).show());
+                        }).setNegativeButton("إلغاء", null).show());
+                r.addView(rep);
+                c.addView(r);
+            }
+        }
+        return c;
+    }
+
+    // ===== الأدمن: دليل المهارات =====
+    private void adminSkills() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("دليل المهارات", dh);
+        l.addView(text(this, "جارٍ التحميل…", 14, MUTED, false));
+        dh[0].show();
+        get("/admin/skills/top", r -> {
+            l.removeAllViews();
+            JSONArray a = r.optJSONArray("skills");
+            if (a == null) return;
+            l.addView(text(this, "المهارات مرتّبة حسب ظهورها في آخر " + r.optInt("scanned") + " إعلان وظيفة. اضغط مهارة لإضافة روابطها؛ لا تظهر للمستخدمين إلا بعد إضافة رابط واحد على الأقل.", 13, MUTED, false));
+            Button nw = button(this, "➕ مهارة جديدة", true);
+            nw.setOnClickListener(v -> skillEditor(null, dh[0]));
+            l.addView(nw, lpm(this, -1, -2, 8, 0));
+            Button rp = button(this, "🚩 روابط مبلَّغ عنها", false);
+            rp.setOnClickListener(v -> adminLinkReports());
+            l.addView(rp, lpm(this, -1, -2, 6, 8));
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject it = a.optJSONObject(i);
+                if (it == null) continue;
+                int nl = it.optJSONArray("links") == null ? 0 : it.optJSONArray("links").length();
+                LinearLayout c = card(this);
+                c.addView(text(this, it.optInt("n") + "×  " + it.optString("ar") + (it.optString("en").isEmpty() ? "" : "  •  " + it.optString("en")), 15, TEXT, true));
+                c.addView(text(this, (nl > 0 ? "✅ " + nl + " رابط" : "➕ بلا روابط") + "  •  " + it.optString("cat"), 12, nl > 0 ? GREEN : MUTED, false));
+                c.setOnClickListener(v -> skillEditor(it, dh[0]));
+                l.addView(c, lpm(this, -1, -2, 6, 0));
+            }
+        });
+    }
+
+    private void skillEditor(JSONObject it, Dialog parent) {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog(it == null ? "مهارة جديدة" : "تعديل المهارة", dh);
+        EditText ar = input("الاسم بالعربية"), en = input("الاسم بالإنجليزية"), cat = input("التصنيف (هندسة، منظمات، مالية…)");
+        EditText al = input("كلمات المطابقة مع نص الوظيفة، مفصولة بفواصل (excel, اكسل…)");
+        EditText ln = input("كل رابط في سطر:\nعنوان | الرابط | ar أو en | النوع\nالنوع: course video playlist channel telegram doc site");
+        for (EditText e : new EditText[]{al, ln}) { e.setSingleLine(false); e.setMinLines(e == ln ? 6 : 3); e.setGravity(Gravity.TOP | Gravity.START); }
+        ln.setTextDirection(View.TEXT_DIRECTION_LTR);
+        java.util.HashMap<String, Long> checked = new java.util.HashMap<>();
+        if (it != null) {
+            ar.setText(it.optString("ar")); en.setText(it.optString("en")); cat.setText(it.optString("cat"));
+            JSONArray aa = it.optJSONArray("aliases");
+            StringBuilder sb = new StringBuilder();
+            if (aa != null) for (int i = 0; i < aa.length(); i++) sb.append(i > 0 ? ", " : "").append(aa.optString(i));
+            al.setText(sb);
+            JSONArray la = it.optJSONArray("links");
+            StringBuilder lb = new StringBuilder();
+            if (la != null) for (int i = 0; i < la.length(); i++) {
+                JSONObject k = la.optJSONObject(i);
+                if (k == null) continue;
+                lb.append(k.optString("t")).append(" | ").append(k.optString("u")).append(" | ").append(k.optString("l", "ar")).append(" | ").append(k.optString("ty", "site")).append('\n');
+                checked.put(k.optString("u"), k.optLong("c"));
+            }
+            ln.setText(lb);
+        }
+        l.addView(ar, lpm(this, -1, -2, 0, 6)); l.addView(en, lpm(this, -1, -2, 0, 6)); l.addView(cat, lpm(this, -1, -2, 0, 6));
+        l.addView(text(this, "كلمات المطابقة (تربط الوظيفة بالمهارة؛ العربية تُطبَّع تلقائياً)", 12, MUTED, false));
+        l.addView(al, lpm(this, -1, -2, 2, 8));
+        l.addView(text(this, "الروابط (تأكد أن كل رابط يعمل ومجاني قبل إضافته)", 12, MUTED, false));
+        l.addView(ln, lpm(this, -1, -2, 2, 8));
+        Button save = button(this, "💾 حفظ", true);
+        save.setOnClickListener(v -> {
+            JSONArray aliases = new JSONArray();
+            for (String x : al.getText().toString().split("[,،\n]")) if (!x.trim().isEmpty()) aliases.put(x.trim());
+            JSONArray links = new JSONArray();
+            for (String line : ln.getText().toString().split("\n")) {
+                String[] p = line.split("\\|");
+                String t = "", u = "", lg = "ar", ty = "site";
+                if (p.length == 1 && p[0].trim().startsWith("http")) u = p[0].trim();
+                else if (p.length >= 2) { t = p[0].trim(); u = p[1].trim(); if (p.length >= 3) lg = p[2].trim().toLowerCase().startsWith("en") ? "en" : "ar"; if (p.length >= 4) ty = p[3].trim().toLowerCase(); }
+                if (!u.startsWith("http")) continue;
+                Long ck = checked.get(u);
+                links.put(jo("t", t, "u", u, "l", lg, "ty", ty, "c", ck == null ? 0 : ck));
+            }
+            post("/admin/skills/save", jo("id", it == null ? "" : it.optString("id"), "ar", ar.getText().toString(), "en", en.getText().toString(),
+                    "cat", cat.getText().toString(), "aliases", aliases, "links", links), r -> {
+                Toast.makeText(this, "✅ تم الحفظ", Toast.LENGTH_SHORT).show();
+                dh[0].dismiss(); parent.dismiss(); adminSkills();
+                Skills.refresh(getApplicationContext(), true);
+            });
+        });
+        l.addView(save, lpm(this, -1, -2, 0, 0));
+        if (it != null && it.optBoolean("saved")) {
+            Button del = button(this, "🗑 حذف المهارة من الدليل", false);
+            del.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage("حذف «" + it.optString("ar") + "» وروابطها؟")
+                    .setPositiveButton("حذف", (d, w) -> post("/admin/skills/delete", jo("id", it.optString("id")), r -> { dh[0].dismiss(); parent.dismiss(); adminSkills(); }))
+                    .setNegativeButton("إلغاء", null).show());
+            l.addView(del, lpm(this, -1, -2, 8, 0));
+        }
+        dh[0].show();
+    }
+
+    private void adminLinkReports() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("روابط مبلَّغ عنها", dh);
+        l.addView(text(this, "جارٍ التحميل…", 14, MUTED, false));
+        dh[0].show();
+        get("/admin/link-reports", r -> {
+            l.removeAllViews();
+            JSONArray a = r.optJSONArray("reports");
+            if (a == null || a.length() == 0) { l.addView(text(this, "لا بلاغات 👌", 15, MUTED, false)); return; }
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject it = a.optJSONObject(i);
+                if (it == null) continue;
+                LinearLayout c = card(this);
+                c.addView(text(this, "🚩 " + it.optInt("n") + " بلاغ • مهارة: " + it.optString("skill"), 14, TEXT, true));
+                c.addView(text(this, it.optString("url"), 12, PRIMARY, false));
+                LinearLayout rr = row(this);
+                Button op = button(this, "فتح", false);
+                op.setOnClickListener(v -> openUrl(it.optString("url")));
+                Button ok = button(this, "تمت المعالجة", true);
+                ok.setOnClickListener(v -> post("/admin/link-reports/clear", jo("skill", it.optString("skill"), "url", it.optString("url")), x -> { dh[0].dismiss(); adminLinkReports(); }));
+                rr.addView(op, new LinearLayout.LayoutParams(0, -2, 1));
+                rr.addView(ok, new LinearLayout.LayoutParams(0, -2, 1));
+                c.addView(rr, lpm(this, -1, -2, 6, 0));
+                l.addView(c, lpm(this, -1, -2, 6, 0));
+            }
+        });
     }
 
     // ===== تعديل العنوان =====
@@ -1705,6 +1979,12 @@ public class MainActivity extends Activity {
 
         if (Store.flag(this, "cv_match")) l.addView(cvCard(), lpm(this, -1, -2, 0, 12));
 
+        if (Store.flag(this, "learn_tab")) {
+            Button ln = button(this, "🎓 تعلّم: مراجع وكورسات", false);
+            ln.setOnClickListener(v -> learnDialog(null));
+            l.addView(ln, lpm(this, -1, -2, 0, 12));
+        }
+
         if (!guest()) {
             Button pw = button(this, (powerScore() < 3 ? "⚠ " : "✅ ") + "ضمان وصول الإشعارات", powerScore() < 3);
             pw.setOnClickListener(v -> powerDialog());
@@ -1740,7 +2020,9 @@ public class MainActivity extends Activity {
             brp.setOnClickListener(v -> adminReports());
             Button bt = button(this, "📊 الإحصائيات", false);
             bt.setOnClickListener(v -> adminStats());
-            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
+            Button bsk = button(this, "🎓 دليل المهارات (التعلّم)", false);
+            bsk.setOnClickListener(v -> adminSkills());
+            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, bsk, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
             l.addView(ad, lpm(this, -1, -2, 0, 12));
         }
 
@@ -2186,8 +2468,9 @@ public class MainActivity extends Activity {
                 c.addView(oneLine(text(this, (blocked ? "⛔ " : isAdmin ? "🛠 " : "👤 ") + (name.isEmpty() ? email : name), 15, TEXT, true)));
                 c.addView(oneLine(text(this, email, 12, MUTED, false)));
                 String model = str(u, "model"), ver = str(u, "ver");
-                c.addView(text(this, "🕒 آخر نشاط: " + (u.optLong("last_seen") > 0 ? ago(u.optLong("last_seen")) : "—")
-                        + " • مصادر: " + u.optInt("contrib") + " • مشاركات: " + u.optInt("shares")
+                c.addView(text(this, "🕒 آخر فتح: " + (u.optLong("last_seen") > 0 ? ago(u.optLong("last_seen")) : "—")
+                        + "  •  🔄 آخر مزامنة: " + (u.optLong("last_sync") > 0 ? ago(u.optLong("last_sync")) : "—")
+                        + "\nمصادر: " + u.optInt("contrib") + " • مشاركات: " + u.optInt("shares")
                         + (model.isEmpty() ? "" : "\n📱 " + model + (ver.isEmpty() ? "" : " • v" + ver + (!latest.isEmpty() && Updater.cmp(latest, ver) > 0 ? " 🟠 قديم" : ""))), 12, MUTED, false));
                 if (!email.equals("eng.feras8585@gmail.com") && !email.equals(meEmail)) {
                     LinearLayout r2 = row(this);
@@ -2557,7 +2840,7 @@ public class MainActivity extends Activity {
                     {"suggest_source", "➕ اقتراح المصادر من المستخدمين"},
                     {"share_job", "🤝 بطاقة مشاركة الفرص"},
                     {"guest_mode", "👀 التصفّح كضيف بدون حساب"},
-                    {"learn_tab", "📚 قسم التعلّم والمراجع (جاهز لـ 2.5)"},
+                    {"learn_tab", "📚 قسم التعلّم والمراجع"},
             };
             for (String[] it : items) {
                 LinearLayout c = card(this);

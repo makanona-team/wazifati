@@ -210,7 +210,7 @@ public final class Store extends SQLiteOpenHelper {
 
     /** قراءة حالة ميزة؛ تعمل افتراضياً عند غياب القيمة (عدا قسم التعلّم المؤجّل لـ 2.5). */
     public static boolean flag(Context c, String key) {
-        boolean def = !"learn_tab".equals(key);
+        boolean def = true;
         try {
             String raw = c.getSharedPreferences("w_id", Context.MODE_PRIVATE).getString("feature_flags", "");
             if (raw.isEmpty()) return def;

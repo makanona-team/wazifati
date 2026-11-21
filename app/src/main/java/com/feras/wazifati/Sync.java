@@ -250,12 +250,14 @@ public final class Sync {
     /** مزامنة كاملة (من الخلفية ومن زر المزامنة). يعيد عدد الفرص الجديدة المطابقة. */
     public static int run(Context c, boolean background) throws Exception {
         init(c);
-        pingInstall(c, false);
+        Api.BG.set(background);
+        if (!background) pingInstall(c, false);
         if (!loggedIn(c)) {
             // ضيف: قراءة فقط، بلا إشعارات ولا مزامنة إعدادات
             if (!Store.guest(c) || background) return 0;
             syncGuest(c);
             try { syncAnnouncements(c, false); } catch (Throwable ignored) { }
+            Skills.refresh(c, false);
             JobsWidget.update(c);
             Updater.autoCheck(c);
             return 0;
@@ -266,6 +268,7 @@ public final class Sync {
         try { syncChanges(c); } catch (Throwable ignored) { }
         try { syncAnnouncements(c, background); } catch (Throwable ignored) { }
         try { syncAdmin(c, background); } catch (Throwable ignored) { }
+        Skills.refresh(c, false);
         deliver(c, matched);
         remindDeadlines(c);
         remindCv(c);
