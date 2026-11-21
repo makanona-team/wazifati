@@ -382,7 +382,7 @@ export function tenderInfo(text, c) {
 }
 
 // ---------- التعلّم: دورات، ورشات، ويبينارات، شهادات ----------
-const LEARN_STRONG = /(\bcourse\b|\bcourses\b|webinar|workshop|bootcamp|\bcertificate\b|certification|scholarship|masterclass|training program|free training|online training|e-?learning|\bmooc\b|tutorial|دوره|دورات|كورس|كورسات|ورشه|ورشات|ورشة عمل|ويبينار|محاضره مجانيه|تدريب مجاني|برنامج تدريبي|منصه تعليميه|تعلم|شهاده معتمده|منحه تدريبيه|بوت كامب)/i;
+const LEARN_STRONG = /(منحه|منح دراسيه|منحه دراسيه|تعليم مجاني|كتاب مجاني|how to\b|\bguide\b|\blearn\b|learning path|handbook|roadmap|free ebook|\bcourse\b|\bcourses\b|webinar|workshop|bootcamp|\bcertificate\b|certification|scholarship|masterclass|training program|free training|online training|e-?learning|\bmooc\b|tutorial|دوره|دورات|كورس|كورسات|ورشه|ورشات|ورشة عمل|ويبينار|محاضره مجانيه|تدريب مجاني|برنامج تدريبي|منصه تعليميه|تعلم|شهاده معتمده|منحه تدريبيه|بوت كامب)/i;
 const LEARN_VETO = /(مطلوب|نعلن عن حاجه|تعلن .* عن حاجتها|vacanc|we are hiring|job opening|apply for the position|شاغر|التوظيف)/i;
 const FREE_RE = /(مجان|بدون رسوم|free\b|100% ?off|no fees|\bfree of charge)/i;
 const PAID_RE = /(رسوم التسجيل|بمبلغ|\$\s?\d{2,}|سعر الدوره|paid course|registration fee)/i;

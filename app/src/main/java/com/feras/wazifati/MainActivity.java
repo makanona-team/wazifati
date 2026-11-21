@@ -1253,7 +1253,7 @@ public class MainActivity extends Activity {
                 Set<String> ids = new HashSet<>();
                 for (JSONObject m : ms) ids.add(m.optString("id"));
                 Button lb = button(this, "🎓 " + (hc[0] ? "تعلّم ما ينقصك" : "مهارات مطلوبة في الوظيفة") + " (" + ms.size() + ")", false);
-                lb.setOnClickListener(v -> learnDialog(ids));
+                lb.setOnClickListener(v -> { d.dismiss(); learnOnly = ids; learnMode = 1; show(T_LEARN); });
                 l.addView(lb, lpm(this, -1, -2, 0, 8));
             }
         }
@@ -1361,6 +1361,8 @@ public class MainActivity extends Activity {
     // ===== تبويب التعلّم (2.7): دورات وورشات تُجمع من نفس المصادر =====
     private JSONArray learnItems = new JSONArray();
     private int learnLocked = 0;
+    private int learnMode = 0;            // 0 دورات جديدة، 1 دليل المهارات
+    private Set<String> learnOnly = null; // مهارات وظيفة محددة (من تفاصيل الوظيفة)
     private boolean learnFree = true, learnLangAr = true, learnLangEn = true, learnForMe = true, learnLoading = false;
     private String learnQuery = "";
     private LinearLayout learnList;
@@ -1371,6 +1373,28 @@ public class MainActivity extends Activity {
         l.setOrientation(LinearLayout.VERTICAL);
         l.setPadding(dp(this, 12), dp(this, 8), dp(this, 12), dp(this, 16));
         sv.addView(l);
+        LinearLayout seg = row(this);
+        TextView mNew = chip(this, "🆕 دورات جديدة", learnMode == 0), mGuide = chip(this, "📚 دليل المهارات", learnMode == 1);
+        mNew.setOnClickListener(v -> { learnMode = 0; learnOnly = null; show(T_LEARN); });
+        mGuide.setOnClickListener(v -> { learnMode = 1; learnOnly = null; show(T_LEARN); });
+        seg.addView(mNew, new LinearLayout.LayoutParams(0, -2, 1));
+        seg.addView(mGuide, new LinearLayout.LayoutParams(0, -2, 1));
+        mNew.setGravity(Gravity.CENTER); mGuide.setGravity(Gravity.CENTER);
+        l.addView(seg, lpm(this, -1, -2, 0, 10));
+        if (learnMode == 1) {
+            LinearLayout g = new LinearLayout(this);
+            g.setOrientation(LinearLayout.VERTICAL);
+            l.addView(g);
+            final Set<String> only = learnOnly;
+            renderLearn(g, only);
+            Context app = getApplicationContext();
+            final boolean empty = Skills.list(this).length() == 0;
+            new Thread(() -> {
+                Skills.refresh(app, empty);
+                if (empty) ui.post(() -> { if (!isFinishing() && tab == T_LEARN && learnMode == 1 && Skills.list(this).length() > 0) renderLearn(g, only); });
+            }).start();
+            return sv;
+        }
         try { learnItems = new JSONArray(Store.p(this).getString("learn_json", "[]")); } catch (Exception e) { learnItems = new JSONArray(); }
         learnLocked = Store.p(this).getInt("learn_locked", 0);
 
@@ -1392,14 +1416,14 @@ public class MainActivity extends Activity {
         hs.addView(chips);
         l.addView(hs, lpm(this, -1, -2, 0, 8));
 
-        LinearLayout guide = card(this);
-        guide.addView(text(this, "📚 دليل المهارات المنتقى + بحث في يوتيوب وتيليغرام وريديت ولينكدإن", 14, PRIMARY, true));
-        guide.setOnClickListener(v -> learnDialog(null));
-        l.addView(guide, lpm(this, -1, -2, 0, 8));
 
         learnList = new LinearLayout(this);
         learnList.setOrientation(LinearLayout.VERTICAL);
         l.addView(learnList);
+        TextView more = text(this, "🔎 لم تجد ما تريد؟ ابحث في يوتيوب وتيليغرام وريديت ولينكدإن ←", 14, PRIMARY, true);
+        more.setPadding(0, dp(this, 12), 0, dp(this, 8));
+        more.setOnClickListener(v -> { learnMode = 1; learnOnly = null; show(T_LEARN); });
+        l.addView(more);
         q.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
@@ -2129,12 +2153,6 @@ public class MainActivity extends Activity {
 
         if (Store.flag(this, "cv_match")) l.addView(cvCard(), lpm(this, -1, -2, 0, 12));
 
-        if (Store.flag(this, "learn_tab")) {
-            Button ln = button(this, "🎓 تعلّم: مراجع وكورسات", false);
-            ln.setOnClickListener(v -> learnDialog(null));
-            l.addView(ln, lpm(this, -1, -2, 0, 12));
-        }
-
         if (!guest()) {
             Button pw = button(this, (powerScore() < 3 ? "⚠ " : "✅ ") + "ضمان وصول الإشعارات", powerScore() < 3);
             pw.setOnClickListener(v -> powerDialog());
@@ -2468,7 +2486,14 @@ public class MainActivity extends Activity {
     private void suggest(EditText in) {
         String v = in.getText().toString().trim();
         if (v.length() < 4) { Toast.makeText(this, "أدخل رابطاً صحيحاً", Toast.LENGTH_SHORT).show(); return; }
-        post("/suggest", jo("value", v), r -> {
+        new AlertDialog.Builder(this).setTitle("نوع المصدر")
+                .setItems(new String[]{"💼 وظائف ومناقصات (والدورات فيه تُلتقط تلقائياً)", "🎓 تعلّم فقط: دورات، ورشات، شروحات، منح"},
+                        (dd, w) -> suggestSend(in, v, w == 1 ? "learn" : "jobs"))
+                .setNegativeButton("إلغاء", null).show();
+    }
+
+    private void suggestSend(EditText in, String v, String purpose) {
+        post("/suggest", jo("value", v, "purpose", purpose), r -> {
             if (r.optBoolean("dup")) {
                 String nm = r.isNull("name") ? "" : r.optString("name", "");
                 String msg = r.optBoolean("pending") ? "⚠️ هذا المصدر مقترح مسبقاً وينتظر الموافقة"
@@ -2559,13 +2584,25 @@ public class MainActivity extends Activity {
         String st;
         if (kind.equals("manual")) st = "فيسبوك/لينكدإن — بالمشاركة فقط";
         else if (!err.isEmpty()) st = "❌ " + err;
-        else if (s.optLong("last_ok", 0) > 0) st = "✅ " + ago(s.optLong("last_ok")) + " • أضاف " + s.optInt("total") + " إعلاناً";
+        else if (s.optLong("last_ok", 0) > 0) st = "✅ " + ago(s.optLong("last_ok")) + " • أضاف " + s.optInt("total") + " إعلاناً" + (s.optInt("learn_total") > 0 ? " و" + s.optInt("learn_total") + " دورة" : "");
         else st = "⏳ بانتظار أول جلب";
         t.addView(oneLine(text(this, st, 12, err.isEmpty() ? MUTED : RED, false)));
         int rej = s.optInt("rejected"), tot = s.optInt("total");
         if (rej > 0) {
             int pct = Math.round(100f * rej / Math.max(1, rej + tot));
             t.addView(oneLine(text(this, "🗑 رُفض " + rej + " منشوراً ليس وظيفة (" + pct + "%)", 11, pct >= 50 ? ORANGE : MUTED, false)));
+        }
+        if (!kind.equals("manual")) {
+            final boolean isLearn = "learn".equals(s.optString("purpose"));
+            TextView pu = text(this, isLearn ? "🎓 مصدر تعلّم فقط  ⇄" : "💼 مصدر وظائف (والدورات تُلتقط تلقائياً)  ⇄", 11, PRIMARY, true);
+            pu.setPadding(0, dp(this, 4), 0, dp(this, 2));
+            pu.setOnClickListener(v -> post("/admin/sources/purpose", jo("id", s.optInt("id"), "purpose", isLearn ? "jobs" : "learn"), x -> {
+                try { s.put("purpose", isLearn ? "jobs" : "learn"); } catch (Exception ignored) { }
+                pu.setText(!isLearn ? "🎓 مصدر تعلّم فقط  ⇄" : "💼 مصدر وظائف (والدورات تُلتقط تلقائياً)  ⇄");
+                Toast.makeText(this, "تم التغيير، يُطبّق من الجلب القادم", Toast.LENGTH_SHORT).show();
+                adminSources();
+            }));
+            t.addView(pu);
         }
         String by = str(s, "added_by");
         if (!by.isEmpty() && !by.equals("seed") && by.contains("@")) t.addView(oneLine(text(this, "أضافه: " + by, 11, MUTED, false)));

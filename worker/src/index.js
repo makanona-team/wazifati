@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo } from './cl
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.7';
+const VERSION = '2.7.1';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -78,9 +78,7 @@ const SEED_LEARN = [
   ['tg', 'edlibrecom', 'التعلم الحر EDLibre'],
   ['tg', 'Programmer_of_the_Arab_world', 'مبرمجين الوطن العربي'],
   ['rss', 'https://www.freecodecamp.org/news/rss/', 'freeCodeCamp'],
-  ['rss', 'https://www.classcentral.com/report/feed/', 'Class Central'],
   ['rss', 'https://reliefweb.int/training/rss.xml', 'ReliefWeb Training'],
-  ['rss', 'https://edlibre.com/feed', 'EDLibre (موقع)'],
 ];
 
 const CORS = {
@@ -154,6 +152,7 @@ export class Db {
     this.tryRun(`ALTER TABLE sources ADD COLUMN fail_since INTEGER`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN auto_off INTEGER DEFAULT 0`);
     this.tryRun(`ALTER TABLE sources ADD COLUMN purpose TEXT DEFAULT 'jobs'`);
+    this.tryRun(`ALTER TABLE sources ADD COLUMN learn_total INTEGER DEFAULT 0`);
     this.run(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`);
     this.run(`CREATE TABLE IF NOT EXISTS accounts (
       email TEXT PRIMARY KEY, name TEXT, photo TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
@@ -186,6 +185,16 @@ export class Db {
       for (const [kind, value, name] of SEED_LEARN)
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose) VALUES(?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn');
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_learn','1')`);
+    }
+    // ترحيل 2.7.1: حذف مصدرين معطّلين، وإعادة فحص ما رُفض من مصادر التعلّم
+    if (!this.one(`SELECT v FROM meta WHERE k='mig271'`)) {
+      this.run(`DELETE FROM sources WHERE added_by='seed' AND value IN ('https://www.classcentral.com/report/feed/','https://edlibre.com/feed')`);
+      for (const src of this.q(`SELECT kind, value FROM sources WHERE purpose='learn'`)) {
+        if (src.kind === 'tg') this.run(`DELETE FROM seen WHERE url LIKE ?`, 'https://t.me/' + src.value + '/%');
+        else { const h = String(src.value).replace(/^https?:\/\/(www\.)?/, '').split('/')[0]; if (h) this.run(`DELETE FROM seen WHERE url LIKE ?`, '%' + h + '%'); }
+      }
+      this.run(`UPDATE sources SET rejected=0 WHERE purpose='learn'`);
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('mig271','1')`);
     }
     // ترحيل 1.1: مفاتيح التكرار، وإزالة المصادر المكررة القديمة
     if (!this.one(`SELECT v FROM meta WHERE k='mig11'`)) {
@@ -298,6 +307,7 @@ export class Db {
       if (req.method === 'POST') {
         if (p === '/admin/sources/approve') return this.approve(b);
         if (p === '/admin/sources/toggle') { this.run(`UPDATE sources SET enabled=?, fail_since=NULL, auto_off=0 WHERE id=?`, b.enabled ? 1 : 0, +b.id); return json({ ok: true }); }
+        if (p === '/admin/sources/purpose') { this.run(`UPDATE sources SET purpose=? WHERE id=?`, b.purpose === 'learn' ? 'learn' : 'jobs', +b.id); return json({ ok: true }); }
         if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/users/role') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذا الإجراء لمطوّر التطبيق فقط'); return this.setRole(me, b); }
         if (p === '/admin/users/status') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذا الإجراء لمطوّر التطبيق فقط'); return this.setStatus(me, b); }
@@ -459,6 +469,14 @@ export class Db {
     if (url && this.q(`SELECT 1 FROM seen WHERE url=?`, url).length) return 'seen';
     const now = Date.now();
     const posted = +post.date || now;
+    if (opts.purpose === 'learn') {   // مصدر تعلّم: يُقبل كل منشور تعليمي/فيه رابط ما لم يكن إعلان وظيفة واضحاً
+      if (posted < now - 90 * DAY) { this.markSeen(url); return 'old'; }
+      const cj = classify(text, { now: new Date(), links: post.links || [] });
+      const jj = jobScore(text, cj, {});
+      const looksJob = cj.isJob && jj.verdict === 'ok' && !learnInfo(text, post.links || []);
+      if (!looksJob && !image && this.addLearn(post, text, url, posted, now, true)) return 'learn';
+      this.markSeen(url); return 'notjob';
+    }
     if (posted < now - FIRST_DAYS * DAY && !opts.force) { this.markSeen(url); return 'old'; }
     const c = classify(text, { now: new Date(), links: post.links || [], force: opts.force, deadline: post.deadline || '', sectorHint: post.sector || '', srcName: post.srcName || '' });
     if (post.title && post.title.length > 3) c.title = String(post.title).slice(0, 140);
@@ -466,9 +484,8 @@ export class Db {
     const tinfo = tenderInfo(text, c);
     const js = jobScore(text, c, { image: !!image });
     if (tinfo && js.verdict === 'reject' && js.score > -10 && (c.deadline || c.org)) js.verdict = 'ok';   // المناقصات بنية مختلفة عن الوظائف
-    if (opts.purpose === 'learn' || (!opts.force && (js.verdict === 'reject' || (!c.isJob && !image)) && !tinfo)) {
+    if (!opts.force && (js.verdict === 'reject' || (!c.isJob && !image)) && !tinfo) {
       if (!image && this.addLearn(post, text, url, posted, now)) return 'learn';
-      if (opts.purpose === 'learn') { this.markSeen(url); return 'notjob'; }
     }
     if (opts.force) { if (js.score <= -10) { this.markSeen(url); return 'notjob'; } }
     else if (js.verdict === 'reject' || (!c.isJob && !image)) { this.markSeen(url); return 'notjob'; }
@@ -491,8 +508,15 @@ export class Db {
     return 'added';
   }
 
-  addLearn(post, text, url, posted, now) {
-    const li = learnInfo(text, post.links || []);
+  addLearn(post, text, url, posted, now, lenient = false) {
+    let li = learnInfo(text, post.links || []);
+    if (!li && lenient) {
+      const links = (post.links || []).concat(String(text).match(/https?:\/\/[^\s<>"'()\]]+/g) || []);
+      if (!links.length || text.length < 25) return false;
+      const ar = (text.match(/[\u0600-\u06FF]/g) || []).length, la = (text.match(/[A-Za-z]/g) || []).length;
+      li = { free: /(مجان|free\b|بدون رسوم)/i.test(text) ? 1 : 0, lang: ar >= la ? 'ar' : 'en', cert: /(شهاد|certificate)/i.test(text) ? 1 : 0, link: links[0] };
+      if (/freecodecamp\.org|edlibre\.com/i.test(li.link)) li.free = 1;
+    }
     if (!li) return false;
     let title = String(post.title || '').trim();
     if (!title) title = (text.split('\n').map(x => x.trim()).find(x => x.length > 6) || text).replace(/^[^\p{L}\p{N}]+/u, '').slice(0, 120);
@@ -526,6 +550,7 @@ export class Db {
     const sp = b.sourceId ? (this.one(`SELECT purpose FROM sources WHERE id=?`, b.sourceId) || {}).purpose : '';
     for (const post of (b.posts || []).slice(0, 60)) { const r = this.addJob(post, sp === 'learn' ? { purpose: 'learn' } : {}); out[r] = (out[r] || 0) + 1; }
     if (b.sourceId && out.added) this.run(`UPDATE sources SET total = total + ? WHERE id=?`, out.added, b.sourceId);
+    if (b.sourceId && out.learn) this.run(`UPDATE sources SET learn_total = COALESCE(learn_total,0) + ? WHERE id=?`, out.learn, b.sourceId);
     if (b.sourceId && out.notjob) this.run(`UPDATE sources SET rejected = COALESCE(rejected,0) + ? WHERE id=?`, out.notjob, b.sourceId);
     this.cleanup();
     return json(out);
@@ -625,6 +650,7 @@ export class Db {
     if ((m = v.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(?:s\/)?([A-Za-z0-9_]{4,})/i)) || (m = v.match(/^@?([A-Za-z][A-Za-z0-9_]{3,})$/))) { kind = 'tg'; v = m[1]; }
     else if (/lnkd\.in|bit\.ly|tinyurl|t\.co\//i.test(v)) kind = 'link';
     else if (/facebook\.com|fb\.com|fb\.me|linkedin\.com|instagram\.com/i.test(v)) kind = 'manual';
+    else if (/(\/feed\/?$|\/rss|\.rss$|rss\.xml|atom\.xml|\/feeds?\/)/i.test(v)) kind = 'rss';
     else if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
     return { kind, value: v, nkey: sourceKey(kind, v) };
   }
@@ -640,8 +666,9 @@ export class Db {
       return json({ dup: true, name: isAdmin ? (ex.name || ex.value) : null, pending: !!ex.pending });
     }
     const name = String(b.name || '').trim() || s.value;
-    this.run(`INSERT INTO sources(kind,value,name,added_by,orig,nkey,pending,enabled,created) VALUES(?,?,?,?,?,?,?,?,?)`,
-      s.kind, s.value, name, me.email, raw, s.nkey, isAdmin ? 0 : 1, isAdmin ? 1 : 0, Date.now());
+    const purpose = b.purpose === 'learn' ? 'learn' : 'jobs';
+    this.run(`INSERT INTO sources(kind,value,name,added_by,orig,nkey,pending,enabled,created,purpose) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+      s.kind, s.value, name, me.email, raw, s.nkey, isAdmin ? 0 : 1, isAdmin ? 1 : 0, Date.now(), purpose);
     return json({ ok: true, pending: !isAdmin, kind: s.kind });
   }
 
