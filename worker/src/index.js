@@ -792,13 +792,17 @@ export class Db {
     this.run(`INSERT INTO deletion_reasons(reason,note,created) VALUES(?,?,?)`, reason, note, Date.now());
     this.run(`DELETE FROM sessions WHERE email=?`, me.email);
     this.run(`DELETE FROM flags WHERE email=?`, me.email);
+    this.run(`DELETE FROM fixes WHERE email=?`, me.email);
+    this.run(`UPDATE jobs SET shared_by='deleted' WHERE shared_by=?`, me.email);
+    this.run(`UPDATE jobs SET edited_by='deleted' WHERE edited_by=?`, me.email);
+    this.run(`UPDATE sources SET added_by='deleted' WHERE added_by=?`, me.email);
     this.run(`DELETE FROM accounts WHERE email=?`, me.email);
     return json({ ok: true });
   }
 
   // ===== النسخ الاحتياطي والاسترجاع (2.4) =====
   exportBackup() {
-    const names = ['jobs', 'sources', 'accounts', 'sessions', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons'];
+    const names = ['jobs', 'sources', 'accounts', 'fixes', 'announcements', 'flags', 'meta', 'feature_flags', 'client_reports', 'installs', 'deletion_reasons'];
     const tables = {};
     for (const t of names) tables[t] = this.q(`SELECT * FROM ${t}`);
     return json({ exported_at: Date.now(), version: VERSION, tables });
