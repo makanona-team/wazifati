@@ -35,7 +35,9 @@ jobs:
           VN=$(grep -oP "versionName '\K[^']+" app/build.gradle)
           echo "VERSION=$VN" >> "$GITHUB_ENV"
           PUBLISHED=false
-          if gh release view "v$VN" >/dev/null 2>&1; then PUBLISHED=true; fi
+          # يُعدّ منشوراً فقط إذا كان للإصدار ملف APK مرفق (صفحة فارغة لا تمنع النشر)
+          N=$(gh api "repos/${{ github.repository }}/releases/tags/v$VN" --jq '[.assets[]|select(.name|endswith(".apk"))]|length' 2>/dev/null || echo 0)
+          if [ "${N:-0}" -gt 0 ]; then PUBLISHED=true; fi
           git fetch -q origin config 2>/dev/null && WZ_API=$(git show origin/config:api-url.txt | tr -d '\r\n ') || WZ_API=""
           echo "WZ_API=$WZ_API" >> "$GITHUB_ENV"
           echo "api=$WZ_API"
