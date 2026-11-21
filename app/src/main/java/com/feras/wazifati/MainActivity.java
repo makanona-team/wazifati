@@ -339,16 +339,21 @@ public class MainActivity extends Activity {
         l.setGravity(Gravity.CENTER);
         l.setBackgroundColor(BG);
         l.setPadding(dp(this, 28), dp(this, 28), dp(this, 28), dp(this, 28));
-        TextView logo = text(this, "💼", 64, TEXT, false);
+        TextView logo = text(this, "💼", 44, TEXT, false);
         logo.setGravity(Gravity.CENTER);
-        l.addView(logo);
+        logo.setBackground(round(this, PRIMARY_LIGHT, 40));
+        l.addView(logo, new LinearLayout.LayoutParams(dp(this, 84), dp(this, 84)));
         TextView t = text(this, "وظيفتي", 30, PRIMARY, true);
         t.setGravity(Gravity.CENTER);
-        l.addView(t);
-        TextView s = text(this, "فرص العمل والمناقصات في سوريا من تيليغرام ومواقع التوظيف، في مكان واحد.\nنصنّفها حسب اختصاصك ومحافظتك وننبّهك بالجديد.\nتصفّح الآن بلا حساب، أو سجّل الدخول لتحفظ فرصك وتفعّل الإشعارات.", 15, MUTED, false);
+        l.addView(t, lpm(this, -2, -2, 10, 0));
+        TextView s = text(this, "فرص العمل والمناقصات في سوريا في مكان واحد", 15, MUTED, false);
         s.setGravity(Gravity.CENTER);
-        s.setPadding(0, dp(this, 8), 0, dp(this, 28));
+        s.setPadding(0, dp(this, 4), 0, dp(this, 18));
         l.addView(s);
+        LinearLayout feats = card(this);
+        String[] ft = {"🔎  تصنيف تلقائي حسب اختصاصك ومحافظتك", "🔔  إشعار فوري بما يناسبك", "⭐  احفظ فرصك وتابع تقديماتك"};
+        for (String x : ft) feats.addView(text(this, x, 14, TEXT, false), lpm(this, -1, -2, 3, 3));
+        l.addView(feats, lpm(this, -1, -2, 0, 22));
         Button g = button(this, "G   الدخول بحساب Google", true);
         g.setTextSize(17);
         g.setMinHeight(dp(this, 54));
@@ -357,7 +362,7 @@ public class MainActivity extends Activity {
         gu.setMinHeight(dp(this, 50));
         gu.setOnClickListener(v -> { Store.p(this).edit().putBoolean("guest", true).apply(); Sync.pingInstall(this, true); recreate(); });
         if (Store.flag(this, "guest_mode")) l.addView(gu, lpm(this, -1, -2, 10, 0));
-        TextView note = text(this, "بدون كلمة سر — اختر حسابك بضغطة واحدة.\nإعداداتك ومحفوظاتك تُحفظ على حسابك وتعود على أي هاتف.", 13, MUTED, false);
+        TextView note = text(this, "بلا كلمة سر — اختر حسابك بضغطة واحدة، وتعود محفوظاتك على أي هاتف.", 12, MUTED, false);
         note.setGravity(Gravity.CENTER);
         note.setPadding(0, dp(this, 16), 0, 0);
         l.addView(note);
@@ -479,15 +484,22 @@ public class MainActivity extends Activity {
     }
 
     private TextView headBtn(String icon, String label) {
-        TextView t = text(this, icon + "\n" + label, 11, Color.WHITE, false);
+        TextView t = text(this, "", 10, 0xE6FFFFFF, false);
+        t.setText(headLabel(icon, label));
         t.setGravity(Gravity.CENTER);
-        t.setPadding(dp(this, 10), dp(this, 2), dp(this, 10), dp(this, 2));
+        t.setPadding(dp(this, 8), dp(this, 2), dp(this, 8), dp(this, 2));
         return t;
+    }
+
+    private CharSequence headLabel(String icon, String label) {
+        android.text.SpannableString sp = new android.text.SpannableString(icon + "\n" + label);
+        sp.setSpan(new android.text.style.RelativeSizeSpan(1.9f), 0, icon.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return sp;
     }
 
     private void setStatus() {
         if (status == null) return;
-        if (bell != null) { int un = Sync.annUnread(this); bell.setText(un > 0 ? "🔔 " + un + "\nإشعارات" : "🔔\nإشعارات"); bell.setTextColor(un > 0 ? 0xFFFFD54F : Color.WHITE); }
+        if (bell != null) { int un = Sync.annUnread(this); bell.setText(headLabel(un > 0 ? "🔔" + un : "🔔", "إشعارات")); bell.setTextColor(un > 0 ? 0xFFFFD54F : Color.WHITE); }
         long ls = Store.p(this).getLong("last_sync", 0);
         status.setText(Ui.today() + " • " + (syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls)))));
         int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) + Store.p(this).getInt("pending_edits", 0) + Store.p(this).getInt("pending_reports", 0) : 0;
@@ -680,7 +692,7 @@ public class MainActivity extends Activity {
 
         if (!guest() && staleSync()) {
             LinearLayout sb = row(this);
-            sb.setBackground(round(this, 0xFFFFF3CD, 12));
+            sb.setBackground(round(this, WARN_BG, 12));
             sb.setPadding(dp(this, 12), dp(this, 8), dp(this, 8), dp(this, 8));
             TextView stx = text(this, "⚠ لم تعمل المزامنة في الخلفية منذ مدة، فقد تتأخر إشعاراتك. اضغط لإصلاح ذلك.", 13, TEXT, false);
             stx.setOnClickListener(v -> powerDialog());
@@ -955,13 +967,13 @@ public class MainActivity extends Activity {
                 LinearLayout card = card(c);
                 card.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
                 LinearLayout r1 = row(c);
-                h.badge = text(c, "جديد", 11, Color.WHITE, true);
-                h.badge.setBackground(round(c, ORANGE, 8));
-                h.badge.setPadding(dp(c, 6), dp(c, 1), dp(c, 6), dp(c, 1));
+                h.badge = pill(c, "جديد", ORANGE);
+                h.badge.setTextSize(11);
+                h.badge.setPadding(dp(c, 8), dp(c, 1), dp(c, 8), dp(c, 1));
                 LinearLayout.LayoutParams bp = lp(-2, -2);
                 bp.leftMargin = dp(c, 6);
                 r1.addView(h.badge, bp);
-                h.title = text(c, "", 16, TEXT, true);
+                h.title = text(c, "", 16.5f, TEXT, true);
                 h.title.setMaxLines(2);
                 h.title.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 r1.addView(h.title, new LinearLayout.LayoutParams(0, -2, 1));
@@ -974,6 +986,7 @@ public class MainActivity extends Activity {
                 r1.addView(h.match, mp);
                 card.addView(r1);
                 h.org = oneLine(text(c, "", 13, MUTED, false));
+                h.org.setPadding(0, dp(c, 3), 0, 0);
                 card.addView(h.org);
                 h.snip = text(c, "", 12, TEXT, false);
                 h.snip.setMaxLines(3);
@@ -983,8 +996,9 @@ public class MainActivity extends Activity {
                 h.tags.setMaxLines(2);
                 h.tags.setPadding(0, dp(c, 4), 0, 0);
                 card.addView(h.tags);
+                card.addView(divider(c), lpm(c, -1, -2, 8, 0));
                 LinearLayout r3 = row(c);
-                r3.setPadding(0, dp(c, 6), 0, 0);
+                r3.setPadding(0, dp(c, 8), 0, 0);
                 h.deadline = text(c, "", 12, GREEN, true);
                 r3.addView(h.deadline, new LinearLayout.LayoutParams(0, -2, 1));
                 h.meta = oneLine(text(c, "", 11, MUTED, false));
@@ -2719,15 +2733,11 @@ public class MainActivity extends Activity {
         w.addView(text(this, hi, 16, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
         Updater.Info n = Updater.newer(this);
         if (n != null) {
-            TextView up = text(this, "⬆ تحديث", 12, Color.WHITE, true);
-            up.setBackground(round(this, 0xFFE65100, 10));
-            up.setPadding(dp(this, 10), dp(this, 3), dp(this, 10), dp(this, 3));
+            TextView up = pill(this, "⬆ تحديث", ORANGE);
             up.setOnClickListener(v -> download(n));
             w.addView(up, lpm(this, -2, -2, 0, 0));
         }
-        TextView badge = text(this, roleLabel(), 12, Color.WHITE, true);
-        badge.setBackground(round(this, guest() ? MUTED : (Store.admin(this) ? GREEN : PRIMARY), 10));
-        badge.setPadding(dp(this, 10), dp(this, 3), dp(this, 10), dp(this, 3));
+        TextView badge = pill(this, roleLabel(), guest() ? MUTED : (Store.admin(this) ? GREEN : PRIMARY));
         LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-2, -2);
         bl.setMarginStart(dp(this, 6));
         w.addView(badge, bl);

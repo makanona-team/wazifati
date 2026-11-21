@@ -20,7 +20,8 @@ public final class Ui {
 
     // الألوان تتغير حسب الوضع النهاري/الليلي (Ui.apply)
     public static int PRIMARY = 0xFF1565C0, PRIMARY_LIGHT = 0xFFE3EDFB, BG = 0xFFF3F6FB, CARD = 0xFFFFFFFF, HEADER = 0xFF1565C0,
-            TEXT = 0xFF1C2333, MUTED = 0xFF6B7280, GREEN = 0xFF2E7D32, RED = 0xFFC62828, ORANGE = 0xFFE65100, LINE = 0xFFE5E9F0;
+            TEXT = 0xFF1C2333, MUTED = 0xFF5B6472, GREEN = 0xFF2E7D32, RED = 0xFFC62828, ORANGE = 0xFFE65100, LINE = 0xFFE1E6EE,
+            WARN_BG = 0xFFFFF3CD, OK_BG = 0xFFDDF3E2, INFO_BG = 0xFFE3EDFB;
     public static boolean DARK = false;
 
     /** يحدد الوضع حسب إعداد المستخدم: auto / light / dark. */
@@ -35,11 +36,13 @@ public final class Ui {
     public static void apply(Context c) {
         DARK = isDark(c);
         if (DARK) {
-            PRIMARY = 0xFF4C8DF6; PRIMARY_LIGHT = 0xFF1B2A44; BG = 0xFF101317; CARD = 0xFF1C2027; HEADER = 0xFF161A20;
-            TEXT = 0xFFE8EAED; MUTED = 0xFF9AA0A6; GREEN = 0xFF66BB6A; RED = 0xFFEF5350; ORANGE = 0xFFFFA726; LINE = 0xFF2C3138;
+            PRIMARY = 0xFF5B9BFF; PRIMARY_LIGHT = 0xFF1B2A44; BG = 0xFF0F1216; CARD = 0xFF1E232B; HEADER = 0xFF161A20;
+            TEXT = 0xFFECEEF1; MUTED = 0xFFB4BBC4; GREEN = 0xFF6FCF76; RED = 0xFFFF6B66; ORANGE = 0xFFFFA726; LINE = 0xFF343B44;
+            WARN_BG = 0xFF3A3220; OK_BG = 0xFF1F3A27; INFO_BG = 0xFF1B2A44;
         } else {
             PRIMARY = 0xFF1565C0; PRIMARY_LIGHT = 0xFFE3EDFB; BG = 0xFFF3F6FB; CARD = 0xFFFFFFFF; HEADER = 0xFF1565C0;
-            TEXT = 0xFF1C2333; MUTED = 0xFF6B7280; GREEN = 0xFF2E7D32; RED = 0xFFC62828; ORANGE = 0xFFE65100; LINE = 0xFFE5E9F0;
+            TEXT = 0xFF1C2333; MUTED = 0xFF5B6472; GREEN = 0xFF2E7D32; RED = 0xFFC62828; ORANGE = 0xFFE65100; LINE = 0xFFE1E6EE;
+            WARN_BG = 0xFFFFF3CD; OK_BG = 0xFFDDF3E2; INFO_BG = 0xFFE3EDFB;
         }
     }
 
@@ -97,11 +100,12 @@ public final class Ui {
         b.setAllCaps(false);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         b.setTextColor(filled ? Color.WHITE : PRIMARY);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33000000),
                 filled ? round(c, PRIMARY, 12) : outline(c, CARD, PRIMARY, 12), null));
-        b.setPadding(dp(c, 12), 0, dp(c, 12), 0);
-        b.setMinHeight(dp(c, 42));
-        b.setMinimumHeight(dp(c, 42));
+        b.setPadding(dp(c, 14), 0, dp(c, 14), 0);
+        b.setMinHeight(dp(c, 46));
+        b.setMinimumHeight(dp(c, 46));
         b.setStateListAnimator(null);
         return b;
     }
@@ -122,11 +126,28 @@ public final class Ui {
     public static LinearLayout card(Context c) {
         LinearLayout l = new LinearLayout(c);
         l.setOrientation(LinearLayout.VERTICAL);
-        l.setBackground(round(c, CARD, 14));
-        l.setElevation(dp(c, 1));
+        l.setBackground(outline(c, CARD, LINE, 16));
+        l.setElevation(DARK ? 0 : dp(c, 1));
         int p = dp(c, 14);
         l.setPadding(p, p, p, p);
         return l;
+    }
+
+    /** شارة صغيرة موحّدة (جديد، العضوية، تحديث…). */
+    public static TextView pill(Context c, String s, int bg) {
+        TextView t = text(c, s, 12, Color.WHITE, true);
+        t.setBackground(round(c, bg, 10));
+        t.setPadding(dp(c, 10), dp(c, 3), dp(c, 10), dp(c, 3));
+        t.setGravity(Gravity.CENTER);
+        return t;
+    }
+
+    /** سطر فاصل رفيع. */
+    public static View divider(Context c) {
+        View v = new View(c);
+        v.setBackgroundColor(LINE);
+        v.setLayoutParams(new LinearLayout.LayoutParams(-1, Math.max(1, dp(c, 1))));
+        return v;
     }
 
     public static LinearLayout.LayoutParams lp(int w, int h) {
