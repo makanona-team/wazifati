@@ -28,7 +28,16 @@ async def send(phone):
     r = await c.send_code_request(phone)
     api("/tg/secret", {"k": "login", "v": json.dumps({"s": c.session.save(), "h": r.phone_code_hash, "p": phone})})
     await c.disconnect()
-    print("✅ أُرسل رمز الدخول. افتحه في تطبيق تيليغرام (من حساب «Telegram» الرسمي) ثم شغّل المرحلة 2 بسرعة.")
+    t = type(r.type).__name__
+    where = {"SentCodeTypeApp": "داخل تطبيق تيليغرام: محادثة «Telegram» الرسمية (علامة زرقاء) على الجهاز المسجَّل بهذا الرقم",
+             "SentCodeTypeSms": "برسالة SMS إلى الرقم", "SentCodeTypeCall": "بمكالمة هاتفية",
+             "SentCodeTypeFlashCall": "بمكالمة فائتة (آخر أرقام الرقم المتصل هي الرمز)",
+             "SentCodeTypeEmailCode": "إلى البريد الإلكتروني المربوط بحساب تيليغرام",
+             "SentCodeTypeFragmentSms": "عبر Fragment (رقم مجهول)",
+             "SentCodeTypeSetUpEmailRequired": "تيليغرام يطلب ربط بريد إلكتروني بالحساب أولاً من إعدادات التطبيق"}.get(t, t)
+    nxt = type(r.next_type).__name__ if getattr(r, "next_type", None) else "—"
+    print(f"✅ أُرسل رمز الدخول — طريقة الإرسال: {where}  [{t} / التالي: {nxt}]")
+    print("ثم شغّل المرحلة 2 بسرعة. لا تطلب رمزاً جديداً أكثر من 3 مرات في الساعة حتى لا يحظر تيليغرام الطلبات مؤقتاً.")
 
 
 async def verify(code, pw):
