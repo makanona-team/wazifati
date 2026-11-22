@@ -669,6 +669,7 @@ export class Db {
   // ===== المصادر =====
   parseSource(raw) {
     let v = String(raw || '').trim(), kind = 'site', m;
+    if ((m = v.match(/^(?:https?:\/\/)?(?:www\.)?t\.me\/c\/(\d{5,})/i))) return { kind: 'tgc', value: m[1], nkey: 'tgc:' + m[1] };
     if ((m = v.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(?:\+|joinchat\/)([\w-]{6,})/i))) return { kind: 'tgp', value: 'https://t.me/+' + m[1], nkey: 'tgp:' + m[1] };
     if ((m = v.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(?:s\/)?([A-Za-z0-9_]{4,})/i)) || (m = v.match(/^@?([A-Za-z][A-Za-z0-9_]{3,})$/))) { kind = 'tg'; v = m[1]; }
     if (kind === 'tg' && /bot$/i.test(v)) kind = 'tgbot';

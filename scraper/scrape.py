@@ -270,7 +270,7 @@ def main():
             if kind == "manual":
                 api("/report", {"id": sid, "ok": True, "count": 0})
                 continue
-            if kind in ("tgp", "tgbot"):
+            if kind in ("tgp", "tgbot", "tgc"):
                 deferred.append(s)
                 continue
             if kind == "tg":

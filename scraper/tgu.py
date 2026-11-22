@@ -58,6 +58,7 @@ class Ctx:
         self.api, self.send, self.log = api, send, log
         self.t0 = time.time()
         self.joins = 0
+        self.groups = None
 
     def left(self):
         return TIME_BUDGET - (time.time() - self.t0)
@@ -66,6 +67,16 @@ class Ctx:
 # ---------- مجموعات وقنوات ----------
 async def entity_for(client, ctx, s):
     kind, value = s["kind"], s["value"]
+    if kind == "tgc":   # مجموعة/قناة خاصة الحساب عضو فيها، مضافة برابط رسالة t.me/c/<id>/<msg>
+        if ctx.groups is None:
+            ctx.groups = {}
+            async for d in client.iter_dialogs():
+                if isinstance(d.entity, (types.Channel, types.Chat)):
+                    ctx.groups[d.entity.id] = d.entity
+        ent = ctx.groups.get(int(value))
+        if not ent:
+            raise RuntimeError("الحساب الخاص ليس عضواً في هذه المجموعة؛ أضفه إليها أولاً")
+        return ent
     if kind == "tgp":
         h = value.rsplit("+", 1)[-1].rsplit("/", 1)[-1]
         inv = await client(functions.messages.CheckChatInviteRequest(h))
