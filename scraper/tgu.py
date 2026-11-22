@@ -58,6 +58,7 @@ class Ctx:
         self.api, self.send, self.log = api, send, log
         self.t0 = time.time()
         self.joins = 0
+        self.lib, self.libmap, self.no_fwd, self.dirty = None, {}, {}, False
         self.groups = None
 
     def left(self):
@@ -141,7 +142,7 @@ def collect(bot, title, msgs, path, page):
         f = file_of(m)
         if f:
             key = hashlib.md5(f"{f['name']}|{f['size']}".encode()).hexdigest()[:10]
-            out.append({"url": f"https://t.me/{bot}?f={key}", "open": f"https://t.me/{bot}", "file": f,
+            out.append({"_mid": m.id, "_key": key, "url": f"https://t.me/{bot}?f={key}", "open": f"https://t.me/{bot}", "file": f,
                         "text": f"{f['name']}\n{' • '.join(path)}", "date": int(time.time() * 1000),
                         "howto": f"افتح البوت ← اضغط: {where}", "srcName": title})
         elif len((m.message or "").strip()) > 80 and not NEXT.search(m.message or ""):
@@ -197,11 +198,82 @@ async def crawl_bot(client, ctx, s, name):
         if sub and len(path) < 3 and set(sub) != set(parent) and set(sub) != set(root):
             todo += [path + [b] for b in sub if not NAV.match(b) and b not in path]
         if posts:
+            await to_library(client, ctx, bot, posts)
+            for p in posts:
+                p.pop("_mid", None); p.pop("_key", None)
             res = ctx.send(posts, s["id"], name)
             total += len(posts)
             ctx.log(f"   🤖 {' ← '.join(path)}: {len(posts)} عنصر → {res}")
     state = {"todo": todo, "at": cycle_at if todo else time.time()}
     return total, len(todo), state
+
+
+# ---------- «مكتبة وظيفتي»: قناة عامة يُوجَّه إليها كل ملف ليصير له رابط مباشر ----------
+LIB_USERNAME = "wazifati_lib"
+
+
+async def ensure_library(client, ctx):
+    """يجد القناة أو ينشئها مرة واحدة ويحفظ بياناتها في الخادم."""
+    try:
+        ctx.lib = json.loads(ctx.api("/tg/secret?k=lib").get("v") or "{}")
+        ctx.libmap = json.loads(ctx.api("/tg/secret?k=libmap").get("v") or "{}")
+    except Exception:  # noqa
+        ctx.lib, ctx.libmap = {}, {}
+    if ctx.lib.get("username"):
+        return
+    ch = None
+    async for d in client.iter_dialogs():
+        e = d.entity
+        if isinstance(e, types.Channel) and getattr(e, "creator", False) and (e.username or "").lower() in (LIB_USERNAME, LIB_USERNAME + "_sy"):
+            ch = e
+            break
+    if not ch:
+        r = await client(functions.channels.CreateChannelRequest(
+            title="مكتبة وظيفتي 📚", about="ملفات وأدلة تدريبية مجانية يجمعها تطبيق «وظيفتي» من مصادرها، مع ذكر المصدر الأصلي.", megagroup=False))
+        ch = r.chats[0]
+        for un in (LIB_USERNAME, LIB_USERNAME + "_sy"):
+            try:
+                await client(functions.channels.UpdateUsernameRequest(ch, un))
+                ch.username = un
+                break
+            except errors.RPCError as e:  # اسم محجوز أو غير متاح
+                ctx.log(f"تعذّر حجز @{un}: {e}")
+        if not ch.username:
+            raise RuntimeError("أُنشئت القناة لكن تعذّر حجز اسم عام لها")
+        ctx.api("/tg/notify", {"text": f"📚 أُنشئت قناة «مكتبة وظيفتي»: https://t.me/{ch.username}\nسيُوجَّه إليها كل ملف من بوتات المكتبات ليصير له رابط مباشر."})
+    ctx.lib = {"id": ch.id, "username": ch.username}
+    ctx.api("/tg/secret", {"k": "lib", "v": json.dumps(ctx.lib)})
+
+
+async def to_library(client, ctx, bot, posts):
+    """يوجّه ملفات الدفعة إلى القناة (مرة واحدة لكل ملف) ويضع الرابط المباشر في open."""
+    if ctx.lib is None or ctx.no_fwd.get(bot) or not ctx.lib.get("username"):
+        return
+    un = ctx.lib["username"]
+    todo = []
+    for p in posts:
+        k = f"{bot}:{p.get('_key')}"
+        if not p.get("_mid"):
+            continue
+        if k in ctx.libmap:
+            p["open"] = f"https://t.me/{un}/{ctx.libmap[k]}"
+        else:
+            todo.append(p)
+    for i in range(0, len(todo), 20):
+        chunk = todo[i:i + 20]
+        try:
+            res = await client.forward_messages(un, [p["_mid"] for p in chunk], from_peer=bot)
+        except errors.ChatForwardsRestrictedError:
+            ctx.no_fwd[bot] = True
+            ctx.log(f"🔒 البوت {bot} يمنع التوجيه؛ تبقى ملفاته بطريقة «افتح البوت ← اضغط…»")
+            return
+        res = res if isinstance(res, list) else [res]
+        for p, m in zip(chunk, res):
+            if m:
+                ctx.libmap[f"{bot}:{p['_key']}"] = m.id
+                p["open"] = f"https://t.me/{un}/{m.id}"
+        ctx.dirty = True
+        await asyncio.sleep(4)
 
 
 # ---------- التشغيل ----------
@@ -236,6 +308,12 @@ async def run(ctx, sources, api_id, api_hash, sess):
             report_all(ctx, sources, "⏸ حساب القراءة يحتاج تسجيل دخول جديد")
             return 0
         me = await client.get_me()
+        if any(x["kind"] == "tgbot" for x in sources):
+            try:
+                await ensure_library(client, ctx)
+            except Exception as e:  # noqa — المكتبة اختيارية، لا توقف الفهرسة
+                ctx.lib = None
+                ctx.log(f"⚠️ مكتبة وظيفتي: {e}")
         ctx.api("/tg/status", {"ok": True, "name": (me.first_name or "") + (f" @{me.username}" if me.username else "")})
         # المجموعات والقنوات أولاً (سريعة)، ثم فهرسة البوتات الطويلة في ما تبقى من الوقت
         for s in sorted(sources, key=lambda x: x["kind"] == "tgbot"):
@@ -269,5 +347,10 @@ async def run(ctx, sources, api_id, api_hash, sess):
                 ctx.log(f"❌ {name}: {msg}")
             await asyncio.sleep(3)
     finally:
+        if ctx.dirty:
+            try:
+                ctx.api("/tg/secret", {"k": "libmap", "v": json.dumps(ctx.libmap)})
+            except Exception as e:  # noqa
+                ctx.log(f"تعذّر حفظ خريطة المكتبة: {e}")
         await client.disconnect()
     return added

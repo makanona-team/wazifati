@@ -200,6 +200,10 @@ export class Db {
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose,nkey) VALUES(?,?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn', sourceKey(kind, value));
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_bots','1')`);
     }
+    if (!this.one(`SELECT v FROM meta WHERE k='libcrawl'`)) {   // إعادة فهرسة البوتات مرة واحدة لتوجيه ملفاتها إلى «مكتبة وظيفتي»
+      this.run(`UPDATE sources SET state=NULL WHERE kind='tgbot'`);
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('libcrawl','1')`);
+    }
     if (!this.one(`SELECT v FROM meta WHERE k='retag282'`)) {   // إعادة وسم كل عناصر التعلّم بالقواعد الأدق
       this.run(`UPDATE learn SET hay=NULL`);
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('retag282','1')`);
@@ -283,6 +287,7 @@ export class Db {
         if (p === '/tg/secret' && req.method === 'GET') { const r = this.one(`SELECT v FROM tg_secret WHERE k=?`, url.searchParams.get('k') || 'session'); return json({ v: r ? r.v : '' }); }
         if (p === '/tg/secret') { this.run(`INSERT OR REPLACE INTO tg_secret(k,v,at) VALUES(?,?,?)`, String(b.k || 'session'), String(b.v || ''), Date.now()); return json({ ok: true }); }
         if (p === '/tg/status') return this.tgStatus(b);
+        if (p === '/tg/notify') { if (this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg(String(b.text || '').slice(0, 900))); return json({ ok: true }); }
         if (p === '/sources') return json({ sources: this.q(`SELECT * FROM sources WHERE enabled=1 AND pending=0 ORDER BY id`) });
         if (req.method === 'GET' && p === '/admin/backup') return this.exportBackup();
         if (req.method === 'POST' && p === '/admin/restore') return this.restoreBackup(b);
@@ -507,7 +512,11 @@ export class Db {
     const capt = text.length >= 30;   // صورة مع نص حقيقي (منشورات الدورات غالباً صورة + وصف)
     if (!text) text = '📷 الإعلان داخل الصورة';
     const url = String(post.url || '').slice(0, 500);
-    if (url && this.q(`SELECT 1 FROM seen WHERE url=?`, url).length) return 'seen';
+    if (url && this.q(`SELECT 1 FROM seen WHERE url=?`, url).length) {
+      // ملف مفهرس سابقاً وصار له رابط مباشر في «مكتبة وظيفتي» ← حدّث رابطه
+      if (post.file && post.open && /^https:\/\/t\.me\/wazifati_lib/.test(post.open)) this.run(`UPDATE learn SET link=? WHERE url=? AND link<>?`, post.open, url, post.open);
+      return 'seen';
+    }
     const now = Date.now();
     const posted = +post.date || now;
     if (opts.purpose === 'learn') {   // مصدر تعلّم: يُقبل كل منشور تعليمي/فيه رابط ما لم يكن إعلان وظيفة واضحاً
