@@ -7,8 +7,8 @@ on:
       step:
         description: 'المرحلة'
         type: choice
-        options: ['1 - إرسال الرمز', '2 - إدخال الرمز']
-        default: '1 - إرسال الرمز'
+        options: ['3 - دخول بمسح QR (موصى به)', '1 - إرسال الرمز', '2 - إدخال الرمز']
+        default: '3 - دخول بمسح QR (موصى به)'
       phone:
         description: 'رقم الهاتف (للمرحلة 1) مثل +9639xxxxxxxx'
         required: false
@@ -25,7 +25,7 @@ concurrency:
 jobs:
   login:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: إخفاء القيم من السجل
         env:
@@ -35,7 +35,7 @@ jobs:
         run: |
           for v in "$P1" "$P2" "$P3"; do [ -n "$v" ] && echo "::add-mask::$v"; done; true
       - uses: actions/checkout@v4
-      - run: pip install -q "telethon>=1.36,<2"
+      - run: pip install -q "telethon>=1.36,<2" segno requests
       - name: تسجيل الدخول
         env:
           SIGN_PASS: ${{ secrets.SIGN_PASS }}
@@ -43,6 +43,7 @@ jobs:
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
           TG_PHONE: ${{ secrets.TG_PHONE }}
           TG_2FA: ${{ secrets.TG_2FA }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           STEP: ${{ inputs.step }}
           PHONE: ${{ inputs.phone }}
           CODE: ${{ inputs.code }}
@@ -50,4 +51,6 @@ jobs:
         run: |
           git fetch -q origin config && export WZ_API=$(git show origin/config:api-url.txt | tr -d '\r\n ')
           export WZ_KEY=$(printf '%s' "$SIGN_PASS:wazifati-ingest" | sha256sum | cut -c1-40)
+          export TG_CHAT_ID=$(git show origin/config:tg-chat-id.txt 2>/dev/null | tr -d '\r\n ')
+          [ -z "$TG_CHAT_ID" ] && export TG_CHAT_ID=$(cat config/tg-chat-id.txt 2>/dev/null | tr -d '\r\n ')
           python3 scraper/tg_login.py
