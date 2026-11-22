@@ -1457,17 +1457,29 @@ public class MainActivity extends Activity {
             {"media", "إعلام وتواصل وترجمة"}, {"legal", "قانون"}, {"sales", "تسويق ومبيعات"}};
 
     /** اهتمامات الشخص: اختصاصات فلتري + اختصاصات سيرته + مجالاته المختارة، وكلمات من مهاراته ومسمّياته. */
+    private String learnBasis = "";
+
+    /** الأولوية: مجالاتي المختارة ← وإلا اختصاصات فلتري ← وإلا سيرتي الذاتية. الاختيار الصريح يلغي ما بعده. */
     private JSONObject learnInterests() {
-        Set<String> specs = new LinkedHashSet<>(Store.set(this, "specs"));
-        specs.addAll(Store.set(this, "learn_int"));
+        Set<String> specs = new LinkedHashSet<>(Store.set(this, "learn_int"));
         List<String> terms = new ArrayList<>();
-        Match.Profile pf = Match.profile(this);
-        if (pf != null) {
-            specs.addAll(pf.specs.keySet());
-            for (String x : pf.skills) if (terms.size() < 40) terms.add(x);
-            for (String x : pf.titles) if (terms.size() < 55) terms.add(x);
+        if (!specs.isEmpty()) learnBasis = "مجالاتي";
+        else {
+            specs.addAll(Store.set(this, "specs"));
+            specs.remove("other"); specs.remove("tender"); specs.remove("training");
+            if (!specs.isEmpty()) learnBasis = "فلتري";
+            else {
+                Match.Profile pf = Match.profile(this);
+                if (pf != null) {
+                    specs.addAll(pf.specs.keySet());
+                    for (String x : pf.skills) if (terms.size() < 40) terms.add(x);
+                    for (String x : pf.titles) if (terms.size() < 55) terms.add(x);
+                    learnBasis = "سيرتي الذاتية";
+                } else learnBasis = "";
+            }
         }
         specs.remove("other"); specs.remove("tender");
+        learnBasisSpecs = Labels.names(Labels.SPECS, String.join(",", specs));
         JSONObject b = new JSONObject();
         try {
             b.put("specs", new JSONArray(specs));
@@ -1478,7 +1490,9 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private String learnCacheKey() { return "learn_find_" + (learnAll ? "all" : "me"); }
+    private String learnBasisSpecs = "";
+
+    private String learnCacheKey() { return "learn_find_" + (learnAll ? "all" : Integer.toHexString(learnInterests().toString().hashCode())); }
 
     private void loadLearn() {
         JSONObject body = learnInterests();
@@ -1512,7 +1526,7 @@ public class MainActivity extends Activity {
         String[] names = new String[INTERESTS.length];
         boolean[] on = new boolean[INTERESTS.length];
         for (int i = 0; i < INTERESTS.length; i++) { names[i] = INTERESTS[i][1]; on[i] = cur.contains(INTERESTS[i][0]); }
-        new AlertDialog.Builder(this).setTitle("اختر مجالاتك في التعلّم")
+        new AlertDialog.Builder(this).setTitle("مجالاتك في التعلّم (إن تركتها فارغة نستخدم اختصاصات «فلتري»)")
                 .setMultiChoiceItems(names, on, (d, w, c) -> on[w] = c)
                 .setPositiveButton("حفظ", (d, w) -> {
                     Set<String> n = new LinkedHashSet<>();
@@ -1535,6 +1549,12 @@ public class MainActivity extends Activity {
             c.addView(b);
             learnList.addView(c);
             return;
+        }
+        if (learnQuery.isEmpty() && !learnAll && !learnBasis.isEmpty()) {
+            TextView bs = text(this, "🎯 نعرض حسب " + learnBasis + ": " + learnBasisSpecs + "  ← تغيير", 12, PRIMARY, true);
+            bs.setPadding(dp(this, 2), 0, dp(this, 2), dp(this, 8));
+            bs.setOnClickListener(v -> interestsDialog());
+            learnList.addView(bs);
         }
         String today = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(new java.util.Date());
         int shown = 0;

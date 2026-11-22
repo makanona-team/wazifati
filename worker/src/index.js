@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.8.1';
+const VERSION = '2.8.2';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -199,6 +199,10 @@ export class Db {
       for (const [kind, value, name] of SEED_BOTS)
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose,nkey) VALUES(?,?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn', sourceKey(kind, value));
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_bots','1')`);
+    }
+    if (!this.one(`SELECT v FROM meta WHERE k='retag282'`)) {   // إعادة وسم كل عناصر التعلّم بالقواعد الأدق
+      this.run(`UPDATE learn SET hay=NULL`);
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('retag282','1')`);
     }
     // ترحيل 2.8.1ب: حساب الاختصاصات ونص البحث لعناصر التعلّم القديمة
     for (const r of this.q(`SELECT id,title,provider,text,howto FROM learn WHERE hay IS NULL LIMIT 5000`)) {
@@ -553,7 +557,9 @@ export class Db {
   }
 
   learnTags(title, howto, prov, text) {
-    const nt = norm([title, howto, text && String(text).slice(0, 800)].join(' '));
+    // ملفات المكتبات: القسم + العنوان أدق من النص؛ وتنظيف كلمات تُربك تصنيف الوظائف («المساحات الآمنة» ليست مساحة/هندسة)
+    const src = howto ? [title, howto] : [title, text && String(text).slice(0, 800)];
+    const nt = norm(src.join(' ')).replace(/(ال)?مساح(ات|ه)( (ال)?(صديقه|امنه|امن|تعلم|تعليميه))?/g, ' ').replace(/(^|\s)(ل|و|ب)?(ال)?انشاء(\s|$)/g, ' ');
     const specs = SPECS.filter(s => s.id !== 'training' && s.re.test(nt)).map(s => s.id).join(',');
     return { specs: specs ? ',' + specs + ',' : '', hay: nrm([title, howto, prov, String(text || '').slice(0, 700)].join(' ')) };
   }
