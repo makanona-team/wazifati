@@ -1,10 +1,10 @@
 // خادم «وظيفتي» على Cloudflare Workers + Durable Object (قاعدة SQLite مجانية).
 // الدخول بحساب Google فقط. أدوار: admin / user.
-import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo } from './classify.js';
+import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm } from './classify.js';
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.8';
+const VERSION = '2.8.1';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -148,7 +148,7 @@ export class Db {
       free INTEGER DEFAULT 0, cert INTEGER DEFAULT 0, deadline TEXT, skills TEXT, text TEXT, posted INTEGER,
       created INTEGER, src TEXT, hidden INTEGER DEFAULT 0)`);
     this.run(`CREATE INDEX IF NOT EXISTS learn_k1 ON learn(k1)`);
-    for (const col of ['ftype TEXT', 'fsize TEXT', 'howto TEXT']) this.tryRun(`ALTER TABLE learn ADD COLUMN ${col}`);
+    for (const col of ['ftype TEXT', 'fsize TEXT', 'howto TEXT', 'specs TEXT', 'hay TEXT', 'reports INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE learn ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS tg_secret (k TEXT PRIMARY KEY, v TEXT, at INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT UNIQUE, name TEXT, enabled INTEGER DEFAULT 1,
@@ -199,6 +199,11 @@ export class Db {
       for (const [kind, value, name] of SEED_BOTS)
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose,nkey) VALUES(?,?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn', sourceKey(kind, value));
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_bots','1')`);
+    }
+    // ترحيل 2.8.1ب: حساب الاختصاصات ونص البحث لعناصر التعلّم القديمة
+    for (const r of this.q(`SELECT id,title,provider,text,howto FROM learn WHERE hay IS NULL LIMIT 5000`)) {
+      const t = this.learnTags(r.title, r.howto, r.provider, r.text);
+      this.run(`UPDATE learn SET specs=?, hay=? WHERE id=?`, t.specs, t.hay, r.id);
     }
     // ترحيل 2.8.1: إعادة فحص منشورات مصادر التعلّم التي فيها صورة + نص (كانت تُرفض خطأً)
     if (!this.one(`SELECT v FROM meta WHERE k='mig281'`)) {
@@ -293,6 +298,7 @@ export class Db {
         if (p === '/skills') return this.skillsPublic();
         if (p === '/learn') return this.learnList(req);
       }
+      if (p === '/learn/find' && req.method === 'POST') return this.learnFind(req, b);
 
       // ----- مستخدم مسجّل -----
       const me = this.who(req);
@@ -310,6 +316,10 @@ export class Db {
         if (p === '/cv/delete') { this.run(`UPDATE accounts SET cv_text=NULL, cv_profile=NULL, cv_name=NULL, cv_updated=0 WHERE email=?`, me.email); return json({ ok: true }); }
         if (p === '/account/delete') return this.deleteAccount(me, b);
         if (p === '/link/report') return this.reportLink(me, b);
+        if (p === '/learn/report') {   // 3 بلاغات من حسابات مختلفة تقريباً ← إخفاء تلقائي حتى يراجعه الأدمن
+          this.run(`UPDATE learn SET reports=COALESCE(reports,0)+1, hidden=CASE WHEN COALESCE(reports,0)+1>=3 THEN 1 ELSE hidden END WHERE id=?`, +b.id);
+          return json({ ok: true });
+        }
       }
 
       // ----- أدمن -----
@@ -331,6 +341,8 @@ export class Db {
       if (req.method === 'POST') {
         if (p === '/admin/sources/approve') return this.approve(b);
         if (p === '/admin/sources/toggle') { this.run(`UPDATE sources SET enabled=?, fail_since=NULL, auto_off=0 WHERE id=?`, b.enabled ? 1 : 0, +b.id); return json({ ok: true }); }
+        if (p === '/admin/learn/hide') { this.run(`UPDATE learn SET hidden=? WHERE id=?`, b.hide === false ? 0 : 1, +b.id); return json({ ok: true }); }
+        if (p === '/admin/learn/tojob') return this.learnToJob(+b.id);
         if (p === '/admin/sources/purpose') { this.run(`UPDATE sources SET purpose=? WHERE id=?`, b.purpose === 'learn' ? 'learn' : 'jobs', +b.id); return json({ ok: true }); }
         if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/users/role') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذا الإجراء لمطوّر التطبيق فقط'); return this.setRole(me, b); }
@@ -504,6 +516,12 @@ export class Db {
       if (!looksJob) { this.markSeen(url); return 'notjob'; }
     }
     if (posted < now - FIRST_DAYS * DAY && !opts.force) { this.markSeen(url); return 'old'; }
+    // منح دراسية/ممولة ليست وظائف حتى لو جاءت من مصدر وظائف
+    if (!opts.force && !post.file) {
+      const tn = nrm(text);
+      if (/(منحه دراسيه|منح دراسيه|منحه لدراسه|منحه ماجستير|منحه دكتوراه|منح ماجستير|ممول بالكامل|ممولة بالكامل|scholarship|fully funded|fellowship)/i.test(tn)
+        && !/(مطلوب|شاغر|نعلن عن حاجه|vacanc|job title|position:)/i.test(tn) && this.addLearn(post, text, url, posted, now, true)) return 'learn';
+    }
     const c = classify(text, { now: new Date(), links: post.links || [], force: opts.force, deadline: post.deadline || '', sectorHint: post.sector || '', srcName: post.srcName || '' });
     if (post.title && post.title.length > 3) c.title = String(post.title).slice(0, 140);
     if (post.org) c.org = String(post.org).slice(0, 80);
@@ -534,6 +552,63 @@ export class Db {
     return 'added';
   }
 
+  learnTags(title, howto, prov, text) {
+    const nt = norm([title, howto, text && String(text).slice(0, 800)].join(' '));
+    const specs = SPECS.filter(s => s.id !== 'training' && s.re.test(nt)).map(s => s.id).join(',');
+    return { specs: specs ? ',' + specs + ',' : '', hay: nrm([title, howto, prov, String(text || '').slice(0, 700)].join(' ')) };
+  }
+
+  /** تعلّم مخصّص: فقط ما يطابق اهتمامات الشخص (اختصاصات + كلمات من سيرته) أو بحثه. */
+  learnFind(req, b) {
+    const t = bearer(req);
+    const ses = t && this.one(`SELECT email FROM sessions WHERE token=?`, t);
+    const acc = ses && this.one(`SELECT role FROM accounts WHERE email=?`, ses.email);
+    const user = !!acc, admin = !!acc && acc.role === 'admin';
+    const specs = new Set((Array.isArray(b.specs) ? b.specs : []).map(String).slice(0, 40));
+    const terms = [...new Set((Array.isArray(b.terms) ? b.terms : []).map(x => String(x).trim()).filter(x => nrm(x).length >= 2))].slice(0, 60);
+    const qw = nrm(String(b.q || '')).split(/\s+/).filter(w => w.length >= 2).slice(0, 6);
+    const all = admin && !!b.all;
+    const now = Date.now(), okDl = new Date(now - DAY).toISOString().slice(0, 10);
+    const rows = this.q(`SELECT id,title,provider,lang,free,cert,deadline,link,url,text,posted,ftype,fsize,howto,specs,hay,reports,hidden FROM learn
+      WHERE ${all ? '' : 'hidden=0 AND '}created > ? AND (deadline IS NULL OR deadline='' OR deadline >= ?)`, now - 400 * DAY, okDl);
+    const names = LABELS.specs || {};
+    const out = [];
+    for (const r of rows) {
+      const hay = r.hay || '';
+      let score = 0;
+      const why = [];
+      if (qw.length) {
+        if (!qw.every(w => hay.includes(w))) continue;
+        score = 10;
+      } else if (!all) {
+        for (const sp of String(r.specs || '').split(',')) if (sp && specs.has(sp)) { score += 3; if (why.length < 2) why.push(names[sp] || sp); }
+        for (const tm of terms) if (aliasHit(hay, tm)) { score += 2; if (why.length < 2 && !why.includes(tm)) why.push(tm); if (score > 12) break; }
+        if (!score) continue;
+      }
+      if (r.ftype) score += 0.5;
+      out.push([score, r, why]);
+    }
+    out.sort((a, b2) => b2[0] - a[0] || (b2[1].posted || 0) - (a[1].posted || 0));
+    const cap = all ? 3000 : !user ? 10 : qw.length ? 150 : 120;
+    return json({
+      now, guest: !user, admin, total: out.length, locked: user ? 0 : Math.max(0, out.length - 10),
+      items: out.slice(0, cap).map(([sc, r, why]) => ({
+        id: r.id, t: r.title, p: r.provider, l: r.lang, f: r.free, c: r.cert, d: r.deadline || '', a: r.link || r.url, u: r.url,
+        x: String(r.text || '').slice(0, 220), d0: r.posted, ft: r.ftype || '', fs: r.fsize || '', h: r.howto || '',
+        w: why.join('، '), hid: r.hidden ? 1 : 0, rp: r.reports || 0,
+      })),
+    });
+  }
+
+  learnToJob(id) {
+    const r = this.one(`SELECT * FROM learn WHERE id=?`, id);
+    if (!r) throw new HttpErr(404, 'غير موجود');
+    this.run(`DELETE FROM seen WHERE url=?`, r.url);
+    const res = this.addJob({ url: r.url, text: r.text, date: r.posted, links: r.link ? [r.link] : [], srcName: r.provider }, { force: true });
+    this.run(`UPDATE learn SET hidden=1 WHERE id=?`, id);
+    return json({ ok: true, res });
+  }
+
   addLearn(post, text, url, posted, now, lenient = false) {
     const f = post.file && post.file.name ? post.file : null;
     let li = learnInfo(text, post.links || []);
@@ -555,9 +630,10 @@ export class Db {
     const t = nrm(title + ' ' + text);
     const skills = SEED_SKILLS.filter(([, , , , al]) => al.some(a => aliasHit(t, a))).map(x => x[0]).join(',');
     const dl = classify(text, { now: new Date() }).deadline || '';
-    this.run(`INSERT INTO learn(k1,url,link,title,provider,lang,free,cert,deadline,skills,text,posted,created,src,ftype,fsize,howto) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    const tg = this.learnTags(title, post.howto, prov, text);
+    this.run(`INSERT INTO learn(k1,url,link,title,provider,lang,free,cert,deadline,skills,text,posted,created,src,ftype,fsize,howto,specs,hay) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       k1, url, f ? (post.open || url) : li.link, title, prov, li.lang, li.free, li.cert, dl, skills, text.slice(0, 1500), posted, now, prov,
-      f ? (String(f.name).split('.').pop() || 'file').toLowerCase().slice(0, 8) : null, f ? String(f.size || '').slice(0, 20) : null, post.howto ? String(post.howto).slice(0, 200) : null);
+      f ? (String(f.name).split('.').pop() || 'file').toLowerCase().slice(0, 8) : null, f ? String(f.size || '').slice(0, 20) : null, post.howto ? String(post.howto).slice(0, 200) : null, tg.specs, tg.hay);
     return true;
   }
 
