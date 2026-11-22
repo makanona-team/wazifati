@@ -85,6 +85,20 @@ public final class Store extends SQLiteOpenHelper {
         return r;
     }
 
+    /** عمليات البحث المحفوظة (2.9): كل نص بحث يُشعَر صاحبه بكل فرصة جديدة تطابقه. */
+    public static java.util.List<String> savedSearches(Context c) {
+        java.util.ArrayList<String> out = new java.util.ArrayList<>();
+        try {
+            org.json.JSONArray a = new org.json.JSONArray(p(c).getString("saved_q", "[]"));
+            for (int i = 0; i < a.length(); i++) if (!a.optString(i).trim().isEmpty()) out.add(a.optString(i));
+        } catch (Exception ignored) { }
+        return out;
+    }
+
+    public static void putSavedSearches(Context c, java.util.List<String> l) {
+        p(c).edit().putString("saved_q", new org.json.JSONArray(l).toString()).apply();
+    }
+
     public static Set<String> set(Context c, String key) {
         String v = p(c).getString(key, "");
         LinkedHashSet<String> s = new LinkedHashSet<>();

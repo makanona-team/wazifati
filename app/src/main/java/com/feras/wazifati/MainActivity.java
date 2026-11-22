@@ -717,6 +717,27 @@ public class MainActivity extends Activity {
         clr.setVisibility(query.isEmpty() ? View.GONE : View.VISIBLE);
         clr.setOnClickListener(v -> { search.setText(""); hideKeyboard(); });
         sr.addView(clr);
+        TextView bell = text(this, "🔔", 19, MUTED, true);
+        bell.setPadding(dp(this, 8), dp(this, 6), dp(this, 6), dp(this, 6));
+        Runnable bellUi = () -> {
+            boolean on = Store.savedSearches(this).contains(query);
+            bell.setText(on ? "🔔✓" : "🔔");
+            bell.setTextColor(on ? PRIMARY : MUTED);
+            bell.setVisibility(query.isEmpty() || tenders || guest() ? View.GONE : View.VISIBLE);
+        };
+        bell.setOnClickListener(v -> {
+            List<String> ssq = Store.savedSearches(this);
+            if (ssq.remove(query)) Toast.makeText(this, "أُلغي إشعار البحث «" + query + "»", Toast.LENGTH_SHORT).show();
+            else {
+                if (ssq.size() >= 10) { Toast.makeText(this, "الحد 10 عمليات بحث محفوظة؛ احذف بعضها من «فلتري»", Toast.LENGTH_LONG).show(); return; }
+                ssq.add(query);
+                Toast.makeText(this, "🔔 سنُشعرك بكل فرصة جديدة تطابق «" + query + "» حتى لو كانت خارج فلترك", Toast.LENGTH_LONG).show();
+            }
+            Store.putSavedSearches(this, ssq);
+            bellUi.run();
+        });
+        sr.addView(bell);
+        bellUi.run();
         l.addView(sr, lp(-1, -2));
 
         HorizontalScrollView gs = new HorizontalScrollView(this);
@@ -849,10 +870,94 @@ public class MainActivity extends Activity {
         search.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
             public void onTextChanged(CharSequence s, int a, int b, int c) { }
-            public void afterTextChanged(Editable s) { query = s.toString().trim(); clr.setVisibility(query.isEmpty() ? View.GONE : View.VISIBLE); applyList(); }
+            public void afterTextChanged(Editable s) { query = s.toString().trim(); clr.setVisibility(query.isEmpty() ? View.GONE : View.VISIBLE); bellUi.run(); applyList(); }
         });
         applyList();
         return l;
+    }
+
+    // ===== 2.9: التقديم السريع — يلتقط الإيميل والواتساب والهاتف ونماذج التقديم من نص الإعلان =====
+    private String applyMessage(Store.Job j) {
+        String name = Store.p(this).getString("uname", "").trim();
+        return "السلام عليكم،\n" +
+                "أرغب بالتقدّم لشغل وظيفة «" + (j.title.isEmpty() ? "المعلن عنها" : j.title) + "»" + (j.org.isEmpty() ? "" : " لدى " + j.org) + ".\n" +
+                "أرفقت سيرتي الذاتية، وأنا جاهز لأي استفسار أو مقابلة.\n" +
+                "مع الشكر" + (name.isEmpty() ? "" : "،\n" + name);
+    }
+
+    private View quickApply(Store.Job j) {
+        String t = j.text == null ? "" : j.text;
+        StringBuilder sb = new StringBuilder();
+        for (char ch : t.toCharArray()) sb.append(ch >= '٠' && ch <= '٩' ? (char) ('0' + (ch - '٠')) : ch >= '۰' && ch <= '۹' ? (char) ('0' + (ch - '۰')) : ch);
+        String tn = sb.toString();
+        LinkedHashSet<String> mails = new LinkedHashSet<>(), was = new LinkedHashSet<>(), forms = new LinkedHashSet<>(), phones = new LinkedHashSet<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("[\\w.+-]+@[\\w-]+\\.[\\w.-]+").matcher(tn);
+        while (m.find() && mails.size() < 2) mails.add(m.group().replaceAll("[.]+$", ""));
+        m = java.util.regex.Pattern.compile("https?://[^\\s<>\"'()\\]]+").matcher(tn);
+        while (m.find()) {
+            String u = m.group().replaceAll("[.,،؛;:!?)]+$", "");
+            if (u.matches("(?i).*(wa\\.me/|api\\.whatsapp\\.com|whatsapp\\.com/send).*")) was.add(u);
+            else if (u.matches("(?i).*(docs\\.google\\.com/forms|forms\\.gle|kobotoolbox|forms\\.office\\.com|jotform|typeform|airtable\\.com|surveymonkey|forms\\.zoho).*")) forms.add(u);
+        }
+        m = java.util.regex.Pattern.compile("(?<![\\d/=])(?:\\+|00)?\\d[\\d \\-]{8,16}\\d(?![\\d/])").matcher(tn);
+        while (m.find() && phones.size() < 2) {
+            String d = m.group().replaceAll("[^\\d+]", "");
+            boolean intl = d.startsWith("+") || d.startsWith("00");
+            if (d.startsWith("00")) d = d.substring(2);
+            if (d.startsWith("+")) d = d.substring(1);
+            if (d.startsWith("09") && d.length() == 10) d = "963" + d.substring(1);
+            else if (d.startsWith("05") && d.length() == 11) d = "90" + d.substring(1);
+            if ((d.startsWith("9639") && d.length() == 12) || (d.startsWith("905") && d.length() == 12) || (intl && d.length() >= 10 && d.length() <= 13)) phones.add(d);
+        }
+        boolean waHint = tn.matches("(?is).*(واتس|وتس|whatsapp|wa\\.me).*");
+        if (mails.isEmpty() && was.isEmpty() && forms.isEmpty() && phones.isEmpty()) return null;
+        String msg = applyMessage(j);
+        LinearLayout c = card(this);
+        c.addView(text(this, "⚡ تقديم سريع", 15, TEXT, true));
+        c.addView(text(this, "التقطنا طرق التواصل من نص الإعلان، مع رسالة جاهزة يمكنك تعديلها. تأكد من إرفاق سيرتك الذاتية.", 12, MUTED, false), lpm(this, -1, -2, 2, 6));
+        for (String e : mails) {
+            Button b = button(this, "✉️ إيميل: " + e, true);
+            b.setOnClickListener(v -> {
+                try {
+                    Intent i = new Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:" + e + "?subject=" + Uri.encode("طلب توظيف: " + j.title) + "&body=" + Uri.encode(msg)));
+                    startActivity(i);
+                    Toast.makeText(this, "📎 لا تنسَ إرفاق سيرتك الذاتية", Toast.LENGTH_LONG).show();
+                } catch (Exception ex) { Toast.makeText(this, "لا يوجد تطبيق بريد", Toast.LENGTH_SHORT).show(); }
+            });
+            c.addView(b, lpm(this, -1, -2, 0, 6));
+        }
+        for (String u : was) {
+            Button b = button(this, "💬 واتساب (رابط الإعلان)", true);
+            b.setOnClickListener(v -> openUrl(u + (u.contains("?") ? "&" : "?") + "text=" + Uri.encode(msg)));
+            c.addView(b, lpm(this, -1, -2, 0, 6));
+        }
+        for (String ph : phones) {
+            LinearLayout r = row(this);
+            Button w = button(this, "💬 واتساب +" + ph, waHint);
+            w.setOnClickListener(v -> openUrl("https://wa.me/" + ph + "?text=" + Uri.encode(msg)));
+            Button call = button(this, "📞 اتصال", false);
+            call.setOnClickListener(v -> { try { startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:+" + ph))); } catch (Exception ignored) { } });
+            r.addView(w, weight());
+            r.addView(call, weight());
+            c.addView(r, lpm(this, -1, -2, 0, 6));
+        }
+        for (String u : forms) {
+            Button b = button(this, "📋 فتح نموذج التقديم", true);
+            b.setOnClickListener(v -> openUrl(u));
+            c.addView(b, lpm(this, -1, -2, 0, 6));
+        }
+        Button cp = button(this, "📋 نسخ رسالة التقديم", false);
+        cp.setOnClickListener(v -> {
+            ((android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(android.content.ClipData.newPlainText("رسالة التقديم", msg));
+            Toast.makeText(this, "نُسخت الرسالة", Toast.LENGTH_SHORT).show();
+        });
+        c.addView(cp);
+        return c;
+    }
+
+    /** إغلاق نافذة بأمان حتى لو أُعيد إنشاء الشاشة (تدوير، خروج ورجوع). */
+    private void safeDismiss(android.app.Dialog d) {
+        try { if (d != null && d.isShowing() && !isFinishing() && !isDestroyed()) d.dismiss(); } catch (Exception ignored) { }
     }
 
     private TextView emptyView(LinearLayout parent) {
@@ -1246,6 +1351,7 @@ public class MainActivity extends Activity {
             r1.addView(ap, weight());
         }
         if (r1.getChildCount() > 0) l.addView(r1, lpm(this, -1, -2, 0, 8));
+        if (!j.tender()) { View qa = quickApply(j); if (qa != null) l.addView(qa, lpm(this, -1, -2, 0, 8)); }
         if (Store.flag(this, "learn_tab") && !j.tender()) {
             boolean[] hc = new boolean[1];
             List<JSONObject> ms = Skills.missingFor(this, j, hc);
@@ -2133,6 +2239,25 @@ public class MainActivity extends Activity {
         l.setPadding(dp(this, 12), dp(this, 12), dp(this, 12), dp(this, 20));
         sv.addView(l);
         outer.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+        List<String> saved = Store.savedSearches(this);
+        if (!saved.isEmpty() && !guest()) {
+            LinearLayout ssCard = card(this);
+            ssCard.addView(text(this, "🔔 عمليات البحث المحفوظة", 15, TEXT, true));
+            ssCard.addView(text(this, "يصلك إشعار بكل فرصة جديدة تطابق أياً منها، حتى خارج الفلتر. اضغط ✕ للحذف.", 12, MUTED, false), lpm(this, -1, -2, 2, 6));
+            for (String q0 : saved) {
+                LinearLayout sqRow = row(this);
+                sqRow.setPadding(0, dp(this, 6), 0, dp(this, 6));
+                TextView sqT = text(this, "🔎 " + q0, 14, PRIMARY, true);
+                sqT.setOnClickListener(v -> { query = q0; show(T_JOBS); });
+                sqRow.addView(sqT, new LinearLayout.LayoutParams(0, -2, 1));
+                TextView sqX = text(this, "✕", 18, RED, true);
+                sqX.setPadding(dp(this, 12), 0, dp(this, 6), 0);
+                sqX.setOnClickListener(v -> { List<String> s2 = Store.savedSearches(this); s2.remove(q0); Store.putSavedSearches(this, s2); show(T_FILTER); });
+                sqRow.addView(sqX);
+                ssCard.addView(sqRow);
+            }
+            l.addView(ssCard, lpm(this, -1, -2, 0, 12));
+        }
 
         if (!Store.p(this).getBoolean("setup_done", false)) {
             LinearLayout w = card(this);
@@ -2500,7 +2625,7 @@ public class MainActivity extends Activity {
             final String fe = err;
             final JSONObject fr = r;
             ui.post(() -> {
-                pd.dismiss();
+                safeDismiss(pd);
                 if (fe != null) { new AlertDialog.Builder(this).setTitle("تعذّرت قراءة السيرة").setMessage(fe).setPositiveButton("حسناً", null).show(); return; }
                 all = Store.get(this).all();
                 show(T_MORE);
@@ -3390,8 +3515,8 @@ public class MainActivity extends Activity {
             } catch (Throwable e) { err = e.getMessage(); }
             final String fe = err;
             ui.post(() -> {
-                pd.dismiss();
-                if (fe != null) Toast.makeText(this, "فشل التحديث: " + fe, Toast.LENGTH_LONG).show();
+                safeDismiss(pd);
+                if (fe != null) Toast.makeText(getApplicationContext(), "فشل التحديث: " + fe, Toast.LENGTH_LONG).show();
             });
         }).start();
     }

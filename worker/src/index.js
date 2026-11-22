@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.8.2';
+const VERSION = '2.9';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -287,6 +287,7 @@ export class Db {
         if (p === '/tg/secret' && req.method === 'GET') { const r = this.one(`SELECT v FROM tg_secret WHERE k=?`, url.searchParams.get('k') || 'session'); return json({ v: r ? r.v : '' }); }
         if (p === '/tg/secret') { this.run(`INSERT OR REPLACE INTO tg_secret(k,v,at) VALUES(?,?,?)`, String(b.k || 'session'), String(b.v || ''), Date.now()); return json({ ok: true }); }
         if (p === '/tg/status') return this.tgStatus(b);
+        if (p === '/tg/digest') return this.digest(!!b.force);
         if (p === '/tg/notify') { if (this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg(String(b.text || '').slice(0, 900))); return json({ ok: true }); }
         if (p === '/sources') return json({ sources: this.q(`SELECT * FROM sources WHERE enabled=1 AND pending=0 ORDER BY id`) });
         if (req.method === 'GET' && p === '/admin/backup') return this.exportBackup();
@@ -1013,6 +1014,43 @@ export class Db {
     if (st.ok) st.alerted = 0;
     this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_account',?)`, JSON.stringify(st));
     return json({ ok: true });
+  }
+
+  /** الملخص اليومي للمطوّر على تيليغرام (مرة في اليوم بتوقيت دمشق). */
+  digest(force) {
+    const day = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+    const done = (this.one(`SELECT v FROM meta WHERE k='digest_day'`) || {}).v;
+    if (done === day && !force) return json({ skip: true });
+    const since = Date.now() - DAY, n = (sql, ...a) => (this.one(sql, ...a) || {}).n || 0;
+    const jobs = n(`SELECT COUNT(*) n FROM jobs WHERE created>? AND COALESCE(kind,'job')='job' AND COALESCE(hidden,0)=0`, since);
+    const tenders = n(`SELECT COUNT(*) n FROM jobs WHERE created>? AND kind='tender'`, since);
+    const learn = n(`SELECT COUNT(*) n FROM learn WHERE created>?`, since);
+    const files = n(`SELECT COUNT(*) n FROM learn WHERE created>? AND ftype IS NOT NULL`, since);
+    const newAcc = n(`SELECT COUNT(*) n FROM accounts WHERE created>?`, since);
+    const active = n(`SELECT COUNT(*) n FROM accounts WHERE last_seen>?`, since);
+    const totalAcc = n(`SELECT COUNT(*) n FROM accounts`);
+    const newInst = n(`SELECT COUNT(*) n FROM installs WHERE first_seen>?`, since);
+    const crashes = n(`SELECT COUNT(*) n FROM client_reports WHERE last_seen>? AND resolved=0`, since);
+    const pendingSrc = n(`SELECT COUNT(*) n FROM sources WHERE pending=1`);
+    const failing = this.q(`SELECT name,value,last_err FROM sources WHERE enabled=1 AND pending=0 AND kind<>'manual' AND fail_since IS NOT NULL AND fail_since>0 AND COALESCE(last_err,'') NOT LIKE '⏸%' LIMIT 5`);
+    const autoOff = this.q(`SELECT name,value FROM sources WHERE auto_off=1 AND enabled=0 LIMIT 5`);
+    const top = this.q(`SELECT src, COUNT(*) n FROM jobs WHERE created>? GROUP BY src ORDER BY n DESC LIMIT 3`, since);
+    const tg = JSON.parse((this.one(`SELECT v FROM meta WHERE k='tg_account'`) || {}).v || 'null');
+    const L = [`📊 ملخص وظيفتي — ${day}`, '',
+      `💼 فرص جديدة: ${jobs}   📑 مناقصات: ${tenders}`,
+      `🎓 تعلّم: ${learn}${files ? ` (منها ${files} ملف)` : ''}`,
+      `👥 حسابات جديدة: ${newAcc} • نشطون اليوم: ${active} • المجموع: ${totalAcc}`,
+      `📲 تثبيتات جديدة: ${newInst}`,
+      crashes ? `💥 أخطاء/انهيارات جديدة: ${crashes}` : '✅ لا أخطاء جديدة',
+      pendingSrc ? `📨 مصادر مقترحة بانتظار موافقتك: ${pendingSrc}` : '',
+      tg ? (tg.ok ? '👤 حساب القراءة: متصل' : `⚠️ حساب القراءة متوقف: ${tg.err}`) : '',
+      top.length ? '🏆 الأكثر إضافة: ' + top.map(t => `${t.src} (${t.n})`).join('، ') : '',
+      failing.length ? '❌ مصادر تفشل: ' + failing.map(f => f.name || f.value).join('، ') : '',
+      autoOff.length ? '⏸ أُوقفت تلقائياً: ' + autoOff.map(f => f.name || f.value).join('، ') : '',
+    ].filter(x => x !== '');
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('digest_day',?)`, day);
+    if (this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg(L.join('\n')));
+    return json({ ok: true, text: L.join('\n') });
   }
 
   async notifyTg(text) {

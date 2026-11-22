@@ -97,6 +97,7 @@ public final class Sync {
             ArrayList<Store.Job> matched = new ArrayList<>();
             ArrayList<Store.Job> tenders = new ArrayList<>();
             Store.TFilter tf = Store.bool(c, "t_notify") ? Store.TFilter.of(c) : null;
+            List<Search.Query> sq = savedQueries(c);
             for (int round = 0; round < 10; round++) {
                 JSONObject r = Api.get("/jobs?since=" + last + "&limit=800");
                 long max = r.optLong("max", 0);
@@ -112,7 +113,7 @@ public final class Sync {
                     Store.Job j = parseJob(arr.getJSONObject(i), first);
                     l.add(j);
                     if (j.tender()) { if (!first && tf != null && tf.match(j) && !Store.expired(j)) tenders.add(j); continue; }
-                    if (!first && !Store.expired(j) && !(j.doubt == 1 && Store.bool(c, "hide_doubt")) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) matched.add(j);
+                    if (!first && !Store.expired(j) && !(j.doubt == 1 && Store.bool(c, "hide_doubt")) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr) || savedHit(j, sq))) matched.add(j);
                 }
                 st.insert(l);
                 last = Math.max(last, r.optLong("last", last));
@@ -348,9 +349,24 @@ public final class Sync {
         Match.Profile prof = Store.bool(c, "cv_notify") ? Match.profile(c) : null;
         int thr = Store.intv(c, "cv_threshold");
         ArrayList<Store.Job> ok = new ArrayList<>();
-        for (Store.Job j : jobs) if (!Store.expired(j) && !(j.doubt == 1 && Store.bool(c, "hide_doubt")) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr))) ok.add(j);
+        List<Search.Query> sq = savedQueries(c);
+        for (Store.Job j : jobs) if (!Store.expired(j) && !(j.doubt == 1 && Store.bool(c, "hide_doubt")) && (f.match(j) || (prof != null && Match.score(c, j, prof).pct >= thr) || savedHit(j, sq))) ok.add(j);
         sp.edit().putString("queue", "").apply();
         if (!ok.isEmpty()) notifyJobs(c, ok, daily);
+    }
+
+    static List<Search.Query> savedQueries(Context c) {
+        ArrayList<Search.Query> out = new ArrayList<>();
+        if (!loggedIn(c)) return out;
+        for (String q : Store.savedSearches(c)) { Search.Query p = Search.parse(q); if (!p.isEmpty()) out.add(p); }
+        return out;
+    }
+
+    static boolean savedHit(Store.Job j, List<Search.Query> sq) {
+        if (sq == null || sq.isEmpty() || j.tender()) return false;
+        if (j.hay == null) j.hay = Search.hay(j);
+        for (Search.Query q : sq) if (q.matches(j.hay)) return true;
+        return false;
     }
 
     static void notifyJobs(Context c, List<Store.Job> jobs, boolean digest) {

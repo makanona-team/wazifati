@@ -312,6 +312,12 @@ def main():
         except Exception as e:  # noqa
             log(f"❌ حساب القراءة: {e}")
     api("/report", {"id": 0, "ok": True, "final": True})
+    # الملخص اليومي للمطوّر بعد العاشرة مساءً بتوقيت دمشق (الخادم يمنع التكرار في اليوم نفسه)
+    if datetime.now(timezone.utc).hour >= 19:
+        try:
+            api("/tg/digest", {})
+        except Exception as e:  # noqa
+            log(f"تعذّر إرسال الملخص: {e}")
     log(f"انتهى. أُضيف {added_all} إعلاناً جديداً.")
 
 
