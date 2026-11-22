@@ -224,10 +224,16 @@ async def ensure_library(client, ctx):
     ch = None
     async for d in client.iter_dialogs():
         e = d.entity
-        if isinstance(e, types.Channel) and getattr(e, "creator", False) and (e.username or "").lower() in (LIB_USERNAME, LIB_USERNAME + "_sy"):
+        if isinstance(e, types.Channel) and (e.username or "").lower() in (LIB_USERNAME, LIB_USERNAME + "_sy") \
+                and (getattr(e, "creator", False) or getattr(e, "admin_rights", None)):
             ch = e
             break
     if not ch:
+        try:   # القناة موجودة (أنشأها المالك) لكن الحساب ليس مشرفاً فيها ← لا ننشئ قناة ثانية
+            await client.get_entity(LIB_USERNAME)
+            raise RuntimeError(f"القناة @{LIB_USERNAME} موجودة لكن الحساب الخاص ليس مشرفاً فيها؛ أضفه مشرفاً بصلاحية النشر")
+        except (ValueError, errors.RPCError):
+            pass
         r = await client(functions.channels.CreateChannelRequest(
             title="مكتبة وظيفتي 📚", about="ملفات وأدلة تدريبية مجانية يجمعها تطبيق «وظيفتي» من مصادرها، مع ذكر المصدر الأصلي.", megagroup=False))
         ch = r.chats[0]
