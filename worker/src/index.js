@@ -200,9 +200,9 @@ export class Db {
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose,nkey) VALUES(?,?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn', sourceKey(kind, value));
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_bots','1')`);
     }
-    if (!this.one(`SELECT v FROM meta WHERE k='libcrawl'`)) {   // إعادة فهرسة البوتات مرة واحدة لتوجيه ملفاتها إلى «مكتبة وظيفتي»
+    if (!this.one(`SELECT v FROM meta WHERE k='libcrawl2'`)) {   // إعادة فهرسة البوتات مرة واحدة لتوجيه ملفاتها إلى «مكتبة وظيفتي»
       this.run(`UPDATE sources SET state=NULL WHERE kind='tgbot'`);
-      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('libcrawl','1')`);
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('libcrawl2','1')`);
     }
     if (!this.one(`SELECT v FROM meta WHERE k='retag282'`)) {   // إعادة وسم كل عناصر التعلّم بالقواعد الأدق
       this.run(`UPDATE learn SET hay=NULL`);
