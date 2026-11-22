@@ -200,6 +200,13 @@ export class Db {
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose,nkey) VALUES(?,?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn', sourceKey(kind, value));
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_bots','1')`);
     }
+    // ترحيل 2.8.1: إعادة فحص منشورات مصادر التعلّم التي فيها صورة + نص (كانت تُرفض خطأً)
+    if (!this.one(`SELECT v FROM meta WHERE k='mig281'`)) {
+      for (const src of this.q(`SELECT kind, value FROM sources WHERE purpose='learn' AND kind='tg'`))
+        this.run(`DELETE FROM seen WHERE url LIKE ?`, 'https://t.me/' + src.value + '/%');
+      this.run(`UPDATE sources SET rejected=0 WHERE purpose='learn'`);
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('mig281','1')`);
+    }
     // ترحيل 2.7.1: حذف مصدرين معطّلين، وإعادة فحص ما رُفض من مصادر التعلّم
     if (!this.one(`SELECT v FROM meta WHERE k='mig271'`)) {
       this.run(`DELETE FROM sources WHERE added_by='seed' AND value IN ('https://www.classcentral.com/report/feed/','https://edlibre.com/feed')`);
@@ -481,6 +488,7 @@ export class Db {
     let text = String(post.text || '').trim();
     const image = String(post.image || '').slice(0, 600);
     if (text.length < 20 && !image) return 'short';
+    const capt = text.length >= 30;   // صورة مع نص حقيقي (منشورات الدورات غالباً صورة + وصف)
     if (!text) text = '📷 الإعلان داخل الصورة';
     const url = String(post.url || '').slice(0, 500);
     if (url && this.q(`SELECT 1 FROM seen WHERE url=?`, url).length) return 'seen';
@@ -492,7 +500,7 @@ export class Db {
       const jj = jobScore(text, cj, {});
       const looksJob = cj.isJob && jj.verdict === 'ok' && !learnInfo(text, post.links || []);
       if (post.file && this.addLearn(post, text, url, posted, now, true)) return 'learn';
-      if (!looksJob && !image && this.addLearn(post, text, url, posted, now, true)) return 'learn';
+      if (!looksJob && (!image || capt) && this.addLearn(post, text, url, posted, now, true)) return 'learn';
       if (!looksJob) { this.markSeen(url); return 'notjob'; }
     }
     if (posted < now - FIRST_DAYS * DAY && !opts.force) { this.markSeen(url); return 'old'; }
@@ -503,7 +511,7 @@ export class Db {
     const js = jobScore(text, c, { image: !!image });
     if (tinfo && js.verdict === 'reject' && js.score > -10 && (c.deadline || c.org)) js.verdict = 'ok';   // المناقصات بنية مختلفة عن الوظائف
     if (!opts.force && (js.verdict === 'reject' || (!c.isJob && !image)) && !tinfo) {
-      if (!image && this.addLearn(post, text, url, posted, now)) return 'learn';
+      if ((!image || capt) && this.addLearn(post, text, url, posted, now)) return 'learn';
     }
     if (opts.force) { if (js.score <= -10) { this.markSeen(url); return 'notjob'; } }
     else if (js.verdict === 'reject' || (!c.isJob && !image)) { this.markSeen(url); return 'notjob'; }
