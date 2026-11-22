@@ -84,6 +84,9 @@ async def entity_for(client, ctx, s):
 
 async def chat_posts(client, ctx, s):
     ent = await entity_for(client, ctx, s)
+    # حماية الخصوصية: لا نقرأ أبداً محادثة شخصية مع مستخدم أو بوت، فقط قنوات ومجموعات
+    if isinstance(ent, types.User):
+        raise RuntimeError("⛔ هذا حساب شخص وليس قناة أو مجموعة؛ لا تُقرأ المحادثات الخاصة")
     uname = getattr(ent, "username", None)
     posts = []
     async for m in client.iter_messages(ent, limit=60):
@@ -139,6 +142,9 @@ def collect(bot, title, msgs, path, page):
 
 async def crawl_bot(client, ctx, s, name):
     bot = s["value"]
+    ent = await client.get_entity(bot)
+    if not (isinstance(ent, types.User) and getattr(ent, "bot", False)):
+        raise RuntimeError("⛔ هذا المعرّف ليس بوتاً؛ الفهرسة للبوتات فقط")
     st = {}
     try:
         st = json.loads(s.get("state") or "{}")
