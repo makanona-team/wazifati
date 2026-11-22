@@ -237,7 +237,8 @@ async def run(ctx, sources, api_id, api_hash, sess):
             return 0
         me = await client.get_me()
         ctx.api("/tg/status", {"ok": True, "name": (me.first_name or "") + (f" @{me.username}" if me.username else "")})
-        for s in sources:
+        # المجموعات والقنوات أولاً (سريعة)، ثم فهرسة البوتات الطويلة في ما تبقى من الوقت
+        for s in sorted(sources, key=lambda x: x["kind"] == "tgbot"):
             if ctx.left() < 60:
                 ctx.log("⏱ انتهى وقت حساب القراءة لهذا التشغيل؛ الباقي في التشغيل القادم")
                 break
