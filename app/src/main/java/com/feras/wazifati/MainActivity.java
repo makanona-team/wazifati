@@ -123,14 +123,17 @@ public class MainActivity extends Activity {
     private void checkMinAsync() {
         Context app = getApplicationContext();
         new Thread(() -> {
+            final String fb = flagsRaw(app);
             try {
                 JSONObject r = Api.get("/api");
                 Store.p(app).edit().putString("min_ver", r.optString("minVer", "")).putString("min_msg", r.optString("minMsg", "")).apply();
                 if (r.has("flags")) Store.saveFlags(app, r.optJSONObject("flags"));
             } catch (Throwable ignored) { return; }
-            ui.post(() -> { if (!isFinishing() && outdated()) recreate(); });
+            ui.post(() -> { if (!isFinishing() && (outdated() || !fb.equals(flagsRaw(app)))) recreate(); });
         }).start();
     }
+
+    static String flagsRaw(Context c) { return c.getSharedPreferences("w_id", Context.MODE_PRIVATE).getString("feature_flags", ""); }
 
     private View forceScreen() {
         LinearLayout l = new LinearLayout(this);
@@ -519,6 +522,7 @@ public class MainActivity extends Activity {
             boolean auth = false;
             int n = 0;
             boolean wasSetup = Store.p(app).getBoolean("setup_done", false);
+            final String flagsBefore = flagsRaw(app);
             try { n = Sync.run(app, false); }
             catch (Api.AuthException e) { auth = true; err = e.getMessage(); }
             catch (Throwable e) { err = e.getMessage(); }
@@ -530,7 +534,7 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 syncing = false;
                 if (syncIcon != null) syncIcon.setAlpha(1f);
-                if (outdated()) { recreate(); return; }
+                if (outdated() || !flagsBefore.equals(flagsRaw(app))) { recreate(); return; }   // تغيّر مفتاح ميزة ← أعد بناء الواجهة (إخفاء/إظهار التبويبات)
                 if (fa) { signedOut(fe == null ? "سجّل الدخول من جديد" : fe); return; }
                 all = l;
                 setStatus();
@@ -1920,6 +1924,7 @@ public class MainActivity extends Activity {
     private void adminReleases() {
         Dialog[] dh = new Dialog[1];
         LinearLayout l = fullDialog("الإصدارات والنسخ القديمة", dh);
+        dh[0].show();
         LinearLayout rc = card(this);
         rc.addView(text(this, "📦 الإصدارات", 16, TEXT, true));
         TextView info = text(this, "⏳ جارٍ التحقق من GitHub…", 14, MUTED, false);
