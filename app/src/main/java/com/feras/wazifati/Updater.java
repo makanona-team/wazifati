@@ -32,6 +32,7 @@ public final class Updater {
 
     public static class Info {
         public String version = "", notes = "", apkUrl = "", page = "";
+        public boolean pre;
     }
 
     public interface Progress { void on(int pct); }
@@ -56,7 +57,10 @@ public final class Updater {
     }
 
     /** أحدث إصدار رقمي (يتجاهل أي إصدار اسمه ليس رقماً مثل «adhan»، والتجريبية والمسودات). */
-    public static Info fetch() throws Exception {
+    public static Info fetch(Context c) throws Exception {
+        boolean pre = c != null && Store.admin(c);   // الأدمن يرى النسخ التجريبية، والمستخدم يرى المنشورة فقط
+        String cur = c != null ? current(c) : "0";
+        java.util.TreeMap<String, String> notesByVer = new java.util.TreeMap<>((a, b) -> cmp(b, a));
         HttpURLConnection con = open("https://api.github.com/repos/" + REPO + "/releases?per_page=30");
         con.setRequestProperty("Accept", "application/vnd.github+json");
         int code = con.getResponseCode();
@@ -67,9 +71,11 @@ public final class Updater {
         Info best = null;
         for (int r = 0; r < arr.length(); r++) {
             JSONObject j = arr.getJSONObject(r);
-            if (j.optBoolean("draft") || j.optBoolean("prerelease")) continue;
+            if (j.optBoolean("draft")) continue;
             String tag = j.optString("tag_name", "");
             if (!tag.matches("[vV]?\\d+(\\.\\d+)*")) continue;
+            notesByVer.put(tag.replaceFirst("^[vV]", ""), j.optString("body", ""));
+            if (j.optBoolean("prerelease") && !pre) continue;
             Info i = new Info();
             i.version = tag.replaceFirst("^[vV]", "");
             i.notes = j.optString("body", "");
@@ -86,7 +92,48 @@ public final class Updater {
             if (best == null || cmp(i.version, best.version) > 0) best = i;
         }
         if (best == null) throw new Exception("لا يوجد إصدار منشور بعد");
+        best.pre = isPre(arr, best.version);
+        // «ما الجديد» مجمّعاً: كل النسخ بين المثبّتة والمعروضة (حتى التجريبية التي لم تصل المستخدم)
+        StringBuilder sb = new StringBuilder();
+        int n = 0;
+        for (java.util.Map.Entry<String, String> e : notesByVer.entrySet()) {
+            if (cmp(e.getKey(), best.version) > 0 || cmp(e.getKey(), cur) <= 0) continue;
+            String body = e.getValue().split("\n---\n")[0].trim();
+            if (body.isEmpty()) continue;
+            if (sb.length() > 0) sb.append("\n\n");
+            sb.append("— ").append(e.getKey()).append(" —\n").append(body);
+            if (++n >= 8) break;
+        }
+        if (n > 1) best.notes = sb.toString();
         return best;
+    }
+
+    static boolean isPre(JSONArray arr, String ver) {
+        for (int r = 0; r < arr.length(); r++) {
+            JSONObject j = arr.optJSONObject(r);
+            if (j != null && j.optString("tag_name").replaceFirst("^[vV]", "").equals(ver)) return j.optBoolean("prerelease");
+        }
+        return false;
+    }
+
+    /** للأدمن: آخر نسخة منشورة للمستخدمين، وأحدث نسخة تجريبية. */
+    public static String[] channels() throws Exception {
+        HttpURLConnection con = open("https://api.github.com/repos/" + REPO + "/releases?per_page=30");
+        con.setRequestProperty("Accept", "application/vnd.github+json");
+        if (con.getResponseCode() != 200) throw new Exception("HTTP " + con.getResponseCode());
+        String body;
+        try (InputStream in = con.getInputStream()) { body = readAll(in); }
+        JSONArray arr = new JSONArray(body);
+        String stable = "", pre = "";
+        for (int r = 0; r < arr.length(); r++) {
+            JSONObject j = arr.getJSONObject(r);
+            String v = j.optString("tag_name").replaceFirst("^[vV]", "");
+            if (j.optBoolean("draft") || !v.matches("\\d+(\\.\\d+)*")) continue;
+            if (j.optBoolean("prerelease")) { if (pre.isEmpty() || cmp(v, pre) > 0) pre = v; }
+            else if (stable.isEmpty() || cmp(v, stable) > 0) stable = v;
+        }
+        if (!pre.isEmpty() && !stable.isEmpty() && cmp(pre, stable) <= 0) pre = "";
+        return new String[]{stable, pre};
     }
 
     public static String current(Context c) {
@@ -125,7 +172,7 @@ public final class Updater {
         long now = System.currentTimeMillis();
         if (!force && now - p.getLong("upd_chk", 0) < 3 * 3_600_000L) return stored(c);
         try {
-            Info i = fetch();
+            Info i = fetch(c);
             if (!i.version.isEmpty()) p.edit().putLong("upd_chk", now).putString("upd_ver", i.version).putString("upd_notes", i.notes).putString("upd_apk", i.apkUrl).apply();
             return stored(c);
         } catch (Throwable e) { return stored(c); }

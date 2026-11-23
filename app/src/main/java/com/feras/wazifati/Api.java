@@ -37,6 +37,8 @@ public final class Api {
     }
 
     public static String token = "";
+    /** رقم نسخة التطبيق؛ يُرسل مع كل طلب («بصمة» تميّز النسخ 3.0+ عن القديمة). */
+    public static String VER = "";
 
     public static JSONObject get(String path) throws Exception {
         return call("GET", path, null);
@@ -58,7 +60,8 @@ public final class Api {
         con.setRequestProperty("User-Agent", "Wazifati-Android");
         con.setRequestProperty("Accept", "application/json");
         if (token != null && !token.isEmpty()) con.setRequestProperty("Authorization", "Bearer " + token);
-        if (Boolean.TRUE.equals(BG.get())) con.setRequestProperty("X-Bg", "1");   // مزامنة خلفية: لا تُعدّ «فتحاً» للتطبيق
+        if (Boolean.TRUE.equals(BG.get())) con.setRequestProperty("X-Bg", "1");
+        if (!VER.isEmpty()) con.setRequestProperty("X-App-Ver", VER);   // مزامنة خلفية: لا تُعدّ «فتحاً» للتطبيق
         if (body != null) {
             con.setDoOutput(true);
             con.setRequestProperty("Content-Type", "application/json; charset=utf-8");

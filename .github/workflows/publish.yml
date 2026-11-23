@@ -1,0 +1,34 @@
+name: نشر الإصدار للمستخدمين
+
+# يحوّل أحدث نسخة تجريبية (أو نسخة تحددها) إلى «آخر إصدار» فيصل إشعار التحديث لكل المستخدمين.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'رقم النسخة (اتركه فارغاً = أحدث نسخة تجريبية)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: نشر
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VER: ${{ inputs.version }}
+        run: |
+          set -e
+          if [ -z "$VER" ]; then
+            TAG=$(gh api "repos/$REPO/releases?per_page=30" --jq '[.[] | select(.prerelease and (.draft|not)) | select(any(.assets[]; .name|endswith(".apk")))] | sort_by(.created_at) | last | .tag_name // empty')
+          else
+            TAG="v${VER#v}"
+          fi
+          [ -z "$TAG" ] && { echo "❌ لا توجد نسخة تجريبية للنشر"; exit 1; }
+          ID=$(gh api "repos/$REPO/releases/tags/$TAG" --jq .id)
+          gh api -X PATCH "repos/$REPO/releases/$ID" -F prerelease=false -f make_latest=true --jq '.tag_name + " • prerelease=" + (.prerelease|tostring)'
+          echo "✅ نُشرت $TAG للمستخدمين؛ سيظهر لهم التحديث خلال ساعات (أو فوراً عند ضغط «البحث عن تحديث»)."

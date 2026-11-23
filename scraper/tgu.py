@@ -16,8 +16,9 @@ DOC_EXT = re.compile(r"\.(pdf|docx?|pptx?|xlsx?|epub)$", re.I)
 NAV = re.compile(r"^\W*(go back|back|main menu|menu|home|رجوع|عودة|العودة|القائمة الرئيسية|الرئيسية|تواصل معنا|اتصل بنا|حول\b.*|about\b.*|contact\b.*|help|مساعدة|⬅|🔙|🏠)\W*$", re.I)
 NEXT = re.compile(r"(?i)(next|التالي|الصفحة التالية|المزيد|more)[^\n/]*?(/[A-Za-z0-9_]+)")
 TIME_BUDGET = 9 * 60          # أقصى وقت لحساب القراءة في كل تشغيل
-BOT_ACTIONS = 70              # أقصى عدد ضغطات لكل بوت في التشغيل الواحد (يُكمل في التشغيل التالي)
-BOT_CYCLE_DAYS = 6            # إعادة فهرسة البوت كل أسبوع تقريباً
+BOT_ACTIONS = 30              # أقصى عدد ضغطات لكل بوت في التشغيل الواحد (يُكمل في التشغيل التالي)
+PAUSE_H = 12                  # توقف عند بطء البوت أو عدم رده
+BOT_CYCLE_DAYS = 90           # إعادة الفهرسة كل 3 أشهر (أو يدوياً من زر الأدمن)
 MAX_JOINS = 2                 # انضمامات جديدة في كل تشغيل (تجنّب الاشتباه)
 DEAD = (errors.AuthKeyUnregisteredError, errors.SessionRevokedError, errors.UserDeactivatedError,
         errors.UserDeactivatedBanError, errors.AuthKeyDuplicatedError)
@@ -118,20 +119,21 @@ async def chat_posts(client, ctx, s):
 
 
 # ---------- بوتات المكتبات ----------
-async def say(client, bot, text):
+async def say(client, bot, text, timeout=60):
+    """يرسل نصاً للبوت وينتظر ردوده حتى تهدأ (البوتات البطيئة مثل Manybot قد تتأخر)."""
     sent = await client.send_message(bot, text)
     got, quiet, t0 = [], 0, time.time()
     await asyncio.sleep(2)
-    while time.time() - t0 < 25:
+    while time.time() - t0 < timeout:
         ms = [m for m in await client.get_messages(bot, min_id=sent.id, limit=100) if not m.out]
         if len(ms) == len(got):
             quiet += 1
         else:
             quiet, got = 0, ms
-        if (got and quiet >= 2) or quiet >= 4:
+        if got and quiet >= 2:
             break
-        await asyncio.sleep(1.5)
-    await asyncio.sleep(1.5)
+        await asyncio.sleep(2)
+    await asyncio.sleep(3)   # تمهّل بين الضغطات
     return sorted(got, key=lambda m: m.id)
 
 
@@ -152,6 +154,10 @@ def collect(bot, title, msgs, path, page):
     return out
 
 
+class BotQuiet(Exception):
+    pass
+
+
 async def crawl_bot(client, ctx, s, name):
     bot = s["value"]
     ent = await client.get_entity(bot)
@@ -162,50 +168,107 @@ async def crawl_bot(client, ctx, s, name):
         st = json.loads(s.get("state") or "{}")
     except Exception:  # noqa
         pass
+    now = time.time()
+    if st.get("pause_until", 0) > now:
+        return 0, None, st   # متوقف مؤقتاً بعد بطء البوت
     todo, cycle_at = st.get("todo") or [], st.get("at", 0)
-    if not todo and cycle_at and time.time() - cycle_at < BOT_CYCLE_DAYS * 86400:
+    if not todo and cycle_at and now - cycle_at < BOT_CYCLE_DAYS * 86400:
         return 0, None, st   # فُهرس مؤخراً
-    root = menu_of(await say(client, bot, "/start"))
+    st.pop("pause_until", None)
+    first = await say(client, bot, "/start")
+    if not first:
+        st["pause_until"] = now + PAUSE_H * 3600
+        st["note"] = "البوت لم يرد خلال دقيقة؛ توقف 12 ساعة"
+        return 0, -1, st
+    # بوتات Manybot لا تعيد لوحة الأزرار مع كل /start: نحفظ القائمة الرئيسية أول مرة
+    root = menu_of(first) or st.get("root")
+    if not root:   # لم تُحفظ بعد: جرّب أزرار العودة المعتادة لاستدعاء اللوحة
+        for cmd in ("Main Menu", "القائمة الرئيسية", "/menu"):
+            root = menu_of(await say(client, bot, cmd, timeout=30))
+            if root:
+                break
+    if not root and todo:   # استكمال دورة قائمة: الأقسام المتبقية تكفي للمتابعة
+        root = list(dict.fromkeys(p[0] for p in todo))
     if not root:
-        raise RuntimeError("البوت لم يُظهر لوحة أزرار بعد /start")
+        raise RuntimeError("البوت لم يُظهر لوحة أزرار ولا توجد قائمة محفوظة: " + (first[-1].message or "")[:80])
+    st["root"] = root
     if not todo:
         todo, cycle_at = [[b] for b in root if not NAV.match(b)], 0
+        st["files"] = 0
     actions, total = 1, 0
-    while todo and actions < BOT_ACTIONS and ctx.left() > 60:
-        path = todo.pop(0)
-        parent = root
-        await say(client, bot, "/start")
-        actions += 1
-        msgs = []
-        for i, step in enumerate(path):
-            if i == len(path) - 1:
-                parent = menu_of(msgs) or parent if msgs else parent
-            msgs = await say(client, bot, step)
-            actions += 1
-        posts, page = collect(bot, name, msgs, path, 1), 1
-        while actions < BOT_ACTIONS and page < 40:
-            nx = None
-            for m in msgs:
-                mm = NEXT.search(m.message or "")
-                if mm:
-                    nx = mm.group(2)
-            if not nx:
+    try:
+        while todo and actions < BOT_ACTIONS and ctx.left() > 90:
+            path = todo[0]
+            parent = root
+            rs = st.get("resume") or {}
+            if rs.get("path") == path and rs.get("cmd"):   # استكمال قسم طويل من الصفحة التي توقف عندها
+                page = rs.get("page", 2)
+                msgs = await say(client, bot, rs["cmd"])
+                actions += 1
+                if not msgs:
+                    raise BotQuiet()
+                posts = collect(bot, name, msgs, path, page)
+            else:
+                if not await say(client, bot, "/start"):
+                    raise BotQuiet()
+                actions += 1
+                msgs = []
+                for i, step in enumerate(path):
+                    if i == len(path) - 1:
+                        parent = (menu_of(msgs) or parent) if msgs else parent
+                    msgs = await say(client, bot, step)
+                    actions += 1
+                    if not msgs:
+                        raise BotQuiet()
+                posts, page = collect(bot, name, msgs, path, 1), 1
+            st.pop("resume", None)
+            unfinished = None
+            while page < 60:
+                nx = None
+                for m in msgs:
+                    mm = NEXT.search(m.message or "")
+                    if mm:
+                        nx = mm.group(2)
+                if not nx:
+                    break
+                if actions >= BOT_ACTIONS or ctx.left() < 90:
+                    unfinished = {"path": path, "cmd": nx, "page": page + 1}
+                    break
+                nx = None
+                for m in msgs:
+                    mm = NEXT.search(m.message or "")
+                    if mm:
+                        nx = mm.group(2)
+                msgs = await say(client, bot, nx)
+                actions, page = actions + 1, page + 1
+                if not msgs:
+                    raise BotQuiet()
+                posts += collect(bot, name, msgs, path, page)
+            if unfinished:
+                st["resume"] = unfinished
+            else:
+                todo.pop(0)   # القسم اكتمل
+            sub = None if unfinished else menu_of(msgs)
+            if sub and len(path) < 3 and set(sub) != set(parent) and set(sub) != set(root):
+                todo += [path + [b] for b in sub if not NAV.match(b) and b not in path]
+            if posts:
+                await to_library(client, ctx, bot, posts)
+                for p in posts:
+                    p.pop("_mid", None); p.pop("_key", None)
+                res = ctx.send(posts, s["id"], name)
+                total += len(posts)
+                st["files"] = st.get("files", 0) + sum(1 for p in posts if p.get("file"))
+                ctx.log(f"   🤖 {' ← '.join(path)}: {len(posts)} عنصر → {res}")
+            if unfinished:
                 break
-            msgs = await say(client, bot, nx)
-            actions, page = actions + 1, page + 1
-            posts += collect(bot, name, msgs, path, page)
-        sub = menu_of(msgs)
-        if sub and len(path) < 3 and set(sub) != set(parent) and set(sub) != set(root):
-            todo += [path + [b] for b in sub if not NAV.match(b) and b not in path]
-        if posts:
-            await to_library(client, ctx, bot, posts)
-            for p in posts:
-                p.pop("_mid", None); p.pop("_key", None)
-            res = ctx.send(posts, s["id"], name)
-            total += len(posts)
-            ctx.log(f"   🤖 {' ← '.join(path)}: {len(posts)} عنصر → {res}")
-    state = {"todo": todo, "at": cycle_at if todo else time.time()}
-    return total, len(todo), state
+    except BotQuiet:
+        st["pause_until"] = time.time() + PAUSE_H * 3600
+        st["note"] = "البوت توقف عن الرد وسط الفهرسة؛ توقف 12 ساعة ثم يكمل من حيث وقف"
+    st.update({"todo": todo, "at": cycle_at if todo else time.time()})
+    st["fwd"] = sum(1 for k in ctx.libmap if k.startswith(bot + ":"))
+    if not todo:
+        st.pop("note", None)
+    return total, len(todo), st
 
 
 # ---------- «مكتبة وظيفتي»: قناة عامة يُوجَّه إليها كل ملف ليصير له رابط مباشر ----------
@@ -330,7 +393,7 @@ async def run(ctx, sources, api_id, api_hash, sess):
             try:
                 if s["kind"] == "tgbot":
                     n, left, state = await crawl_bot(client, ctx, s, name)
-                    note = "فُهرس مؤخراً" if left is None else (f"باقٍ {left} قسم" if left else "اكتملت الفهرسة")
+                    note = (state.get("note") or "فُهرس مؤخراً") if left is None else ("⏸ " + state.get("note", "") if left == -1 or state.get("pause_until") else (f"باقٍ {left} قسم" if left else "اكتملت الفهرسة"))
                     ctx.api("/report", {"id": sid, "ok": True, "count": n, "state": json.dumps(state, ensure_ascii=False)})
                     ctx.log(f"🤖 {name}: {n} عنصر ({note})")
                 else:

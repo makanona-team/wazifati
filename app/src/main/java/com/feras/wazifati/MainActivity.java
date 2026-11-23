@@ -81,6 +81,7 @@ public class MainActivity extends Activity {
         Ui.apply(this);
         setTheme(Ui.themeRes());
         super.onCreate(b);
+        if (Api.VER.isEmpty()) Api.VER = Updater.current(this);
         getWindow().setStatusBarColor(HEADER);
         getWindow().setNavigationBarColor(CARD);
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
@@ -155,7 +156,7 @@ public class MainActivity extends Activity {
             new Thread(() -> {
                 Updater.Info info = null;
                 String err = null;
-                try { info = Updater.fetch(); } catch (Throwable x) { err = x.getMessage(); }
+                try { info = Updater.fetch(getApplicationContext()); } catch (Throwable x) { err = x.getMessage(); }
                 final Updater.Info fi = info;
                 final String fe = err;
                 ui.post(() -> {
@@ -259,8 +260,8 @@ public class MainActivity extends Activity {
                         String err = null;
                         try {
                             if (!v.isEmpty()) {
-                                Updater.Info latest = Updater.fetch();
-                                if (Updater.cmp(v, latest.version) > 0) throw new Exception("الحد (" + v + ") أعلى من آخر إصدار منشور (" + latest.version + ")، سيُحجب الجميع بلا تحديث متاح");
+                                String stable = Updater.channels()[0];   // المنشورة للمستخدمين فقط، لا التجريبية
+                                if (stable.isEmpty() || Updater.cmp(v, stable) > 0) throw new Exception("الحد (" + v + ") أعلى من آخر إصدار منشور للمستخدمين (" + stable + ")، سيُحجب الجميع بلا تحديث متاح. انشر النسخة للمستخدمين أولاً.");
                             }
                             Api.post("/admin/minver", jo("ver", v, "msg", m));
                             Store.p(app).edit().putString("min_ver", v).putString("min_msg", m).apply();
@@ -1915,6 +1916,78 @@ public class MainActivity extends Activity {
     }
 
     // ===== الأدمن: دليل المهارات =====
+    // ===== 3.0: قناة الإصدارات (تجريبي/منشور) + إيقاف النسخ القديمة =====
+    private void adminReleases() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("الإصدارات والنسخ القديمة", dh);
+        LinearLayout rc = card(this);
+        rc.addView(text(this, "📦 الإصدارات", 16, TEXT, true));
+        TextView info = text(this, "⏳ جارٍ التحقق من GitHub…", 14, MUTED, false);
+        rc.addView(info, lpm(this, -1, -2, 6, 8));
+        Button pub = button(this, "📢 نشر للمستخدمين", true);
+        pub.setVisibility(View.GONE);
+        rc.addView(pub);
+        rc.addView(text(this, "كل نسخة جديدة تُبنى «تجريبية»: تصلك أنت والأدمنية فقط. حين تقرر، اضغط «نشر للمستخدمين» ثم في صفحة GitHub اضغط Run workflow؛ فيصل التحديث للجميع مرة واحدة مع «ما الجديد» مجمّعاً.", 12, MUTED, false), lpm(this, -1, -2, 8, 0));
+        l.addView(rc, lpm(this, -1, -2, 0, 12));
+        new Thread(() -> {
+            String[] ch = null;
+            try { ch = Updater.channels(); } catch (Throwable ignored) { }
+            final String[] fc = ch;
+            ui.post(() -> {
+                if (fc == null) { info.setText("تعذّر الاتصال بـ GitHub"); return; }
+                info.setText("👥 عند المستخدمين: " + (fc[0].isEmpty() ? "—" : fc[0]) + "\n🧪 أحدث تجريبية: " + (fc[1].isEmpty() ? "لا يوجد (المنشورة هي الأحدث)" : fc[1]) + "\n📱 المثبّتة عندك: " + Updater.current(this));
+                info.setTextColor(TEXT);
+                if (!fc[1].isEmpty()) {
+                    pub.setText("📢 نشر " + fc[1] + " للمستخدمين");
+                    pub.setVisibility(View.VISIBLE);
+                    pub.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("نشر " + fc[1] + " للمستخدمين؟")
+                            .setMessage("ستُفتح صفحة GitHub: اضغط «Run workflow» ثم الزر الأخضر. خلال دقيقة يظهر التحديث لكل المستخدمين.")
+                            .setPositiveButton("متابعة", (d, w) -> openUrl("https://github.com/makanona-team/wazifati/actions/workflows/publish.yml"))
+                            .setNegativeButton("إلغاء", null).show());
+                }
+            });
+        }).start();
+
+        LinearLayout lc = card(this);
+        lc.addView(text(this, "🧓 النسخ القديمة (أقدم من 3.0)", 16, TEXT, true));
+        TextView ls = text(this, "⏳", 13, MUTED, false);
+        lc.addView(ls, lpm(this, -1, -2, 6, 8));
+        String[] modes = {"لا إيقاف", "إيقاف 1.8 وأقدم (لا تملك التحديث الإجباري) — المعروفة من حسابها فقط", "إيقاف كل نسخة أقدم من 3.0"};
+        LinearLayout ml = new LinearLayout(this);
+        ml.setOrientation(LinearLayout.VERTICAL);
+        lc.addView(ml);
+        lc.addView(text(this, "الموقوفة لا تصلها الفرص، بل بطاقة واحدة وإعلان يدعوانها لتحميل النسخة الجديدة. الترتيب الآمن: انشر النسخة للمستخدمين ← فعّل التحديث الإجباري (أدنى نسخة) ← بعد يوم أو يومين «إيقاف كل نسخة أقدم من 3.0».", 12, MUTED, false), lpm(this, -1, -2, 8, 0));
+        l.addView(lc);
+        Res[] show = new Res[1];
+        show[0] = r -> {
+            int mode = r.optInt("mode");
+            JSONObject bv = r.optJSONObject("byVer");
+            StringBuilder sb = new StringBuilder("أجهزة قديمة اتصلت خلال 7 أيام: " + r.optInt("total") + " (حسابات " + r.optInt("users") + " • زوار " + r.optInt("guests") + ")");
+            if (bv != null && bv.length() > 0) {
+                sb.append("\nحسب النسخة: ");
+                java.util.Iterator<String> it = bv.keys();
+                while (it.hasNext()) { String k = it.next(); sb.append(k).append(" ×").append(bv.optInt(k)).append(it.hasNext() ? "، " : ""); }
+            }
+            ls.setText(sb.toString());
+            ml.removeAllViews();
+            for (int i = 0; i < modes.length; i++) {
+                final int mi = i;
+                TextView o = text(this, (i == mode ? "🔘 " : "⚪ ") + modes[i], 14, i == mode ? PRIMARY : TEXT, i == mode);
+                o.setPadding(0, dp(this, 8), 0, dp(this, 8));
+                o.setOnClickListener(v -> {
+                    if (mi == mode) return;
+                    Runnable go = () -> post("/admin/legacy", jo("mode", mi), show[0]);
+                    if (mi == 2) new AlertDialog.Builder(this).setTitle("إيقاف كل النسخ الأقدم من 3.0؟")
+                            .setMessage("تأكد أنك نشرت 3.0 للمستخدمين وفعّلت التحديث الإجباري، وإلا سيُوقف من لم يصله التحديث بعد.")
+                            .setPositiveButton("إيقاف", (d, w) -> go.run()).setNegativeButton("إلغاء", null).show();
+                    else go.run();
+                });
+                ml.addView(o);
+            }
+        };
+        post("/admin/legacy", new JSONObject(), show[0]);
+    }
+
     private void adminSkills() {
         Dialog[] dh = new Dialog[1];
         LinearLayout l = fullDialog("دليل المهارات", dh);
@@ -2452,7 +2525,9 @@ public class MainActivity extends Activity {
             bt.setOnClickListener(v -> adminStats());
             Button bsk = button(this, "🎓 دليل المهارات (التعلّم)", false);
             bsk.setOnClickListener(v -> adminSkills());
-            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, bsk, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
+            Button brl = button(this, "📦 الإصدارات والنسخ القديمة", false);
+            brl.setOnClickListener(v -> adminReleases());
+            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, bsk, brl, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
             l.addView(ad, lpm(this, -1, -2, 0, 12));
         }
 
@@ -2867,6 +2942,25 @@ public class MainActivity extends Activity {
         if (rej > 0) {
             int pct = Math.round(100f * rej / Math.max(1, rej + tot));
             t.addView(oneLine(text(this, "🗑 رُفض " + rej + " منشوراً ليس وظيفة (" + pct + "%)", 11, pct >= 50 ? ORANGE : MUTED, false)));
+        }
+        if (kind.equals("tgbot")) {
+            JSONObject bst = null;
+            try { bst = new JSONObject(s.optString("state", "{}")); } catch (Exception ignored) { }
+            if (bst != null) {
+                int todo = bst.optJSONArray("todo") != null ? bst.optJSONArray("todo").length() : 0;
+                long at = (long) (bst.optDouble("at", 0) * 1000), pause = (long) (bst.optDouble("pause_until", 0) * 1000);
+                String line = "📚 حُوّل " + bst.optInt("fwd") + " ملفاً للقناة"
+                        + (todo > 0 ? " • باقٍ " + todo + " قسم" : at > 0 ? " • آخر فهرسة كاملة: " + ago(at) + " • القادمة بعد 3 أشهر" : "")
+                        + (pause > System.currentTimeMillis() ? "\n⏸ " + bst.optString("note", "متوقف مؤقتاً") : "");
+                t.addView(text(this, line, 11, PRIMARY, false));
+            }
+            TextView rc = text(this, "🔄 أعد الفهرسة الآن", 11, PRIMARY, true);
+            rc.setPadding(0, dp(this, 4), 0, dp(this, 2));
+            rc.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("إعادة فهرسة البوت؟")
+                    .setMessage("تبدأ من الجلب القادم على دفعات بطيئة. الملفات المحوّلة سابقاً لا تُكرّر في القناة.")
+                    .setPositiveButton("ابدأ", (dd, w) -> post("/admin/sources/recrawl", jo("id", s.optInt("id")), x -> Toast.makeText(this, "ستبدأ الفهرسة من الجلب القادم", Toast.LENGTH_SHORT).show()))
+                    .setNegativeButton("إلغاء", null).show());
+            t.addView(rc);
         }
         if (!kind.equals("manual")) {
             final boolean isLearn = "learn".equals(s.optString("purpose"));
@@ -3438,7 +3532,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             Updater.Info info = null;
             String err = null;
-            try { info = Updater.fetch(); } catch (Throwable e) { err = e.getMessage(); }
+            try { info = Updater.fetch(getApplicationContext()); } catch (Throwable e) { err = e.getMessage(); }
             final Updater.Info fi = info;
             final String fe = err;
             ui.post(() -> {

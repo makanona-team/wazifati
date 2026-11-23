@@ -250,6 +250,7 @@ public final class Sync {
 
     /** مزامنة كاملة (من الخلفية ومن زر المزامنة). يعيد عدد الفرص الجديدة المطابقة. */
     public static int run(Context c, boolean background) throws Exception {
+        if (Api.VER.isEmpty()) Api.VER = Updater.current(c);
         init(c);
         Api.BG.set(background);
         if (!background) pingInstall(c, false);

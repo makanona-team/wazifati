@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '2.9';
+const VERSION = '3.0';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -16,6 +16,11 @@ const DEFAULT_FLAGS = {
 const GUEST_JOBS = 10;      // الزائر يرى أحدث 10 وظائف
 const GUEST_TENDERS = 2;    // وأحدث مناقصتين
 const RELEASE = 'https://github.com/makanona-team/wazifati/releases/latest';
+function cmpVer(a, b) {
+  const x = String(a).split(/\D+/), y = String(b).split(/\D+/);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const p = +x[i] || 0, q = +y[i] || 0; if (p !== q) return p < q ? -1 : 1; }
+  return 0;
+}
 const FAIL_DAYS = 3;
 const DAY = 864e5;
 
@@ -150,6 +155,7 @@ export class Db {
     this.run(`CREATE INDEX IF NOT EXISTS learn_k1 ON learn(k1)`);
     for (const col of ['ftype TEXT', 'fsize TEXT', 'howto TEXT', 'specs TEXT', 'hay TEXT', 'reports INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE learn ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS tg_secret (k TEXT PRIMARY KEY, v TEXT, at INTEGER)`);
+    this.run(`CREATE TABLE IF NOT EXISTS legacy_seen (k TEXT PRIMARY KEY, ver TEXT, last INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT UNIQUE, name TEXT, enabled INTEGER DEFAULT 1,
       added_by TEXT, last_try INTEGER, last_ok INTEGER, last_err TEXT, last_count INTEGER DEFAULT 0, total INTEGER DEFAULT 0, orig TEXT)`);
@@ -298,10 +304,12 @@ export class Db {
       if (req.method === 'GET') {
         let m;
         if ((m = p.match(/^\/j\/(\d+)$/))) return this.jobPage(+m[1]);
-        if (p === '/jobs') return this.jobs(url, req);
+        if (p === '/jobs') { const lg = this.legacy(req); if (lg) return lg.jobs; return this.jobs(url, req); }
         if (p === '/changes') return this.changes(url);
         if (p === '/announce') {
           if (url.searchParams.get('all')) return json({ items: this.q(`SELECT id,text,created FROM announcements ORDER BY id DESC LIMIT 50`), ...this.minInfo(), flags: this.flagsObj() });
+          const lg = this.legacy(req);
+          if (lg) return lg.ann;
           return json({ items: this.q(`SELECT id,text,created FROM announcements WHERE id > ? ORDER BY id DESC LIMIT 20`, +url.searchParams.get('since') || 0) });
         }
         if (p === '/labels') return json(LABELS);
@@ -368,6 +376,18 @@ export class Db {
         if (p === '/admin/announce') return this.announce(me, b);
         if (p === '/admin/announce/delete') { this.run(`DELETE FROM announcements WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/minver') return this.setMinVer(b);
+        if (p === '/admin/legacy') {
+          if (b.mode != null) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('legacy_block',?)`, String(Math.max(0, Math.min(2, +b.mode || 0))));
+          if (b.msg != null) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('legacy_msg',?)`, String(b.msg).trim().slice(0, 300));
+          return json(this.legacyStats());
+        }
+        if (p === '/admin/sources/recrawl') {   // دورة جديدة مع الإبقاء على القائمة الرئيسية المحفوظة (بوتات Manybot لا تعيدها)
+          const r = this.one(`SELECT state FROM sources WHERE id=? AND kind='tgbot'`, +b.id);
+          let root = null;
+          try { root = JSON.parse((r && r.state) || '{}').root || null; } catch (e) { /* حالة تالفة */ }
+          this.run(`UPDATE sources SET state=? WHERE id=? AND kind='tgbot'`, root ? JSON.stringify({ root }) : null, +b.id);
+          return json({ ok: true });
+        }
         if (p === '/admin/flags/decide') return this.decideFlag(b);
         if (p === '/admin/features') return this.setFeature(b);
         if (p === '/admin/skills/save') return this.saveSkill(b);
@@ -477,6 +497,50 @@ export class Db {
       lockedJobs: Math.max(0, cnt('job') - GUEST_JOBS), lockedTenders: Math.max(0, cnt('tender') - GUEST_TENDERS),
       jobs: rows.map(r => this.jobRow(r)),
     });
+  }
+
+  /**
+   * النسخ القديمة (بلا ترويسة X-App-Ver، أي أقدم من 3.0): تُسجَّل للعدّاد، وحسب مفتاح الأدمن legacy_block:
+   * 0 لا شيء • 1 إيقاف الحسابات المعروف أن نسختها أقدم من 1.9 (لا تملك التحديث الإجباري) • 2 إيقاف كل نسخة بلا بصمة.
+   * الموقوفة لا تصلها الفرص، بل بطاقة واحدة مثبّتة وإعلان يدعوان لتحميل النسخة الجديدة.
+   */
+  legacy(req) {
+    if (req.headers.get('X-App-Ver')) return null;
+    const t = bearer(req);
+    const ses = t && this.one(`SELECT email FROM sessions WHERE token=?`, t);
+    const acc = ses && this.one(`SELECT ver FROM accounts WHERE email=?`, ses.email);
+    const ver = (acc && acc.ver) || '';
+    const ip = req.headers.get('CF-Connecting-IP') || '';
+    const key = ses ? 'u:' + ses.email : 'g:' + ip + '|' + (req.headers.get('User-Agent') || '').slice(0, 40);
+    const now = Date.now();
+    const prev = this.one(`SELECT last FROM legacy_seen WHERE k=?`, key);
+    if (!prev || now - prev.last > 3600e3) this.run(`INSERT OR REPLACE INTO legacy_seen(k,ver,last) VALUES(?,?,?)`, key, ver, now);
+    const mode = +((this.one(`SELECT v FROM meta WHERE k='legacy_block'`) || {}).v || 0);
+    const veryOld = ver && /^\d/.test(ver) && cmpVer(ver, '1.9') < 0;
+    if (!(mode === 2 || (mode === 1 && veryOld))) return null;
+    const msg = (this.one(`SELECT v FROM meta WHERE k='legacy_msg'`) || {}).v
+      || 'نسختك من «وظيفتي» قديمة ولم تعد تستقبل الفرص الجديدة. حمّل النسخة الجديدة مجاناً من الرابط ثم ثبّتها فوق القديمة (بياناتك تبقى كما هي).';
+    const ID = 2000000000;
+    const row = { id: ID, title: '⚠️ حدّث تطبيق وظيفتي لتستمر الفرص بالوصول', org: 'وظيفتي', specs: '', govs: 'all', sector: '', deadline: '',
+      posted: now, src: 'وظيفتي', srcs: '', url: RELEASE, apply: RELEASE, text: msg + '\n\n' + RELEASE, image: '', doubt: 0, kind: 'job' };
+    return {
+      jobs: json({ now, last: ID, max: ID, more: false, total: 1, locked: 0, jobs: [this.jobRow(row)] }),
+      ann: json({ items: [{ id: ID, text: '⚠️ ' + msg + ' ' + RELEASE, created: now }] }),
+    };
+  }
+
+  legacyStats() {
+    const since = Date.now() - 7 * DAY;
+    const rows = this.q(`SELECT k, ver FROM legacy_seen WHERE last > ?`, since);
+    const byVer = {};
+    let users = 0, guests = 0;
+    for (const r of rows) {
+      if (r.k.startsWith('u:')) users++; else guests++;
+      const v = r.ver || 'غير معروف';
+      byVer[v] = (byVer[v] || 0) + 1;
+    }
+    return { mode: +((this.one(`SELECT v FROM meta WHERE k='legacy_block'`) || {}).v || 0), total: rows.length, users, guests, byVer,
+      msg: (this.one(`SELECT v FROM meta WHERE k='legacy_msg'`) || {}).v || '' };
   }
 
   jobs(url, req) {
