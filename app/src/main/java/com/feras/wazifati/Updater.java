@@ -98,10 +98,10 @@ public final class Updater {
         int n = 0;
         for (java.util.Map.Entry<String, String> e : notesByVer.entrySet()) {
             if (cmp(e.getKey(), best.version) > 0 || cmp(e.getKey(), cur) <= 0) continue;
-            String body = e.getValue().split("\n---\n")[0].trim();
-            if (body.isEmpty()) continue;
+            String nb = e.getValue().split("\n---\n")[0].trim();
+            if (nb.isEmpty()) continue;
             if (sb.length() > 0) sb.append("\n\n");
-            sb.append("— ").append(e.getKey()).append(" —\n").append(body);
+            sb.append("— ").append(e.getKey()).append(" —\n").append(nb);
             if (++n >= 8) break;
         }
         if (n > 1) best.notes = sb.toString();
@@ -202,7 +202,7 @@ public final class Updater {
         Context app = c.getApplicationContext();
         new Thread(() -> {
             try {
-                Info i = fetch();
+                Info i = fetch(app);
                 if (!i.version.isEmpty() && cmp(i.version, current(app)) > 0 && !i.version.equals(p.getString("upd_notified", ""))) {
                     p.edit().putString("upd_notified", i.version).apply();
                     notifyUpdate(app, i);

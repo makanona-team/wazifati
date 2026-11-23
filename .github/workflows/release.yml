@@ -76,6 +76,7 @@ jobs:
         run: |
           chmod +x gradlew
           if [ -n "$WZ_KEYSTORE" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
+          set -o pipefail   # بدونه يُخفي tee فشل الترجمة
           ./gradlew --no-daemon $TASK 2>&1 | tee build.log
 
       - name: حفظ نتيجة البناء (report)
