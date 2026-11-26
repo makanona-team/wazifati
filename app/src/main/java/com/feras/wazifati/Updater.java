@@ -105,6 +105,17 @@ public final class Updater {
             if (++n >= 8) break;
         }
         if (n > 1) best.notes = sb.toString();
+        if (pre) {   // الأدمن: أضف ملاحظات المطوّر للنسخة المعروضة من المستودع
+            try {
+                HttpURLConnection rc = open("https://raw.githubusercontent.com/" + REPO + "/main/changelogs/" + best.version + ".md");
+                if (rc.getResponseCode() == 200) {
+                    String md;
+                    try (InputStream in = rc.getInputStream()) { md = readAll(in); }
+                    String dev = part(md, "## للمطوّر");
+                    if (!dev.isEmpty()) best.notes = best.notes + "\n\n🔧 للمطوّر (" + best.version + "):\n" + dev;
+                }
+            } catch (Throwable ignored) { }
+        }
         return best;
     }
 
@@ -283,12 +294,30 @@ public final class Updater {
             for (String v : vs) {
                 String t;
                 try (InputStream in = c.getAssets().open(v + ".md")) { t = readAll(in); }
-                sb.append("📌 الإصدار ").append(v).append("\n").append(clean(t)).append("\n\n");
+                String sec = section(t, Store.admin(c));
+                if (sec.isEmpty()) continue;
+                sb.append("📌 الإصدار ").append(v).append("\n").append(sec).append("\n\n");
             }
             return sb.toString().trim();
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /** «ما الجديد» بقسمين: المستخدم يرى قسم «للمستخدمين» (أو عبارة عامة)، والأدمن يرى معه «🔧 للمطوّر». */
+    static String section(String md, boolean admin) {
+        if (!md.contains("## للمستخدمين")) return clean(md);
+        String user = part(md, "## للمستخدمين"), dev = part(md, "## للمطوّر");
+        if (user.isEmpty()) user = "• تحسينات في الأداء والاستقرار";
+        return admin && !dev.isEmpty() ? user + "\n\n🔧 للمطوّر:\n" + dev : user;
+    }
+
+    static String part(String md, String head) {
+        int i = md.indexOf(head);
+        if (i < 0) return "";
+        String rest = md.substring(i + head.length());
+        int j = rest.indexOf("\n## ");
+        return clean(j >= 0 ? rest.substring(0, j) : rest);
     }
 
     static String clean(String s) {

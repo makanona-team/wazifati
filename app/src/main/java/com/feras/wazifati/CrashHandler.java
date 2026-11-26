@@ -74,8 +74,9 @@ public final class CrashHandler {
         if (raw.isEmpty()) return;
         new Thread(() -> {
             try {
-                Api.post("/client/report", new JSONObject(raw));
+                JSONObject r = Api.post("/client/report", new JSONObject(raw));
                 sp(app).edit().remove("pending_crash").apply();
+                saveTip(app, r);
             } catch (Throwable ignored) { }
         }).start();
     }
@@ -94,8 +95,14 @@ public final class CrashHandler {
                 j.put("code", code == null ? "unknown" : code);
                 j.put("msg", msg == null ? "" : msg);
                 j.put("trace", "");
-                Api.post("/client/report", j);
+                saveTip(app, Api.post("/client/report", j));
             } catch (Throwable ignored) { }
         }).start();
+    }
+
+    /** نصيحة من «قاموس الحلول» للمستخدم (مثل: أغلق التطبيق وافتحه) تُعرض مرة واحدة عند فتح التطبيق. */
+    static void saveTip(Context app, JSONObject r) {
+        String tip = r == null ? "" : r.optString("tip", "");
+        if (!tip.isEmpty()) Store.p(app).edit().putString("crash_tip", tip).apply();
     }
 }

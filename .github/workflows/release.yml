@@ -104,7 +104,15 @@ jobs:
         if: success() && steps.check.outputs.skip != 'true' && steps.check.outputs.signed == 'true' && steps.check.outputs.published == 'false'
         run: |
           F="changelogs/$VERSION.md"
-          if [ -f "$F" ]; then cp "$F" "$RUNNER_TEMP/notes.md"; else echo "تحسينات وإصلاحات." > "$RUNNER_TEMP/notes.md"; fi
+          # صفحة الإصدار تعرض قسم «للمستخدمين» فقط؛ قسم «للمطوّر» يبقى في المستودع
+          if [ -f "$F" ]; then
+            if grep -q '^## للمستخدمين' "$F"; then
+              awk '/^## للمستخدمين/{f=1;next} /^## /{f=0} f' "$F" | sed '/^[[:space:]]*$/d' > "$RUNNER_TEMP/notes.md"
+            else
+              grep -v '^#' "$F" > "$RUNNER_TEMP/notes.md"
+            fi
+          fi
+          [ -s "$RUNNER_TEMP/notes.md" ] || echo "- تحسينات في الأداء والاستقرار" > "$RUNNER_TEMP/notes.md"
           {
             echo ""
             echo "---"

@@ -1269,6 +1269,11 @@ public class MainActivity extends Activity {
         super.onResume();
         if (powerDlg != null) buildPower();
         if (pendingUpd != null && getPackageManager().canRequestPackageInstalls()) { Updater.Info u = pendingUpd; pendingUpd = null; download(u); }
+        String tip = Store.p(this).getString("crash_tip", "");
+        if (!tip.isEmpty()) {
+            Store.p(this).edit().remove("crash_tip").apply();
+            new AlertDialog.Builder(this).setTitle("💡 ملاحظة").setMessage(tip).setPositiveButton("حسناً", null).show();
+        }
     }
 
     @Override
@@ -3133,7 +3138,42 @@ public class MainActivity extends Activity {
                         + "\n👀 زوار بدون حساب: " + gst + " (" + gstPct + "%)"
                         + "\n🕒 نشطون آخر 7 أيام: " + ins.optInt("active7")
                         + (ins.optInt("rooted") > 0 ? "\n🔓 أجهزة عليها روت: " + ins.optInt("rooted") : ""), 14, TEXT, false));
-                JSONArray mods = ins.optJSONArray("topModels");
+                ic.addView(text(this, "🆕 جديد: اليوم " + ins.optInt("new1") + " • آخر 7 أيام " + ins.optInt("new7")
+                        + (ins.optInt("legacy30") > 0 ? "\n🧓 أجهزة بنسخ قديمة جداً (بلا بصمة) خلال 30 يوماً: " + ins.optInt("legacy30") : ""), 13, TEXT, false), lpm(this, -1, -2, 6, 0));
+                JSONArray daily = ins.optJSONArray("daily");
+                if (daily != null && daily.length() > 0) {
+                    int mx = 1;
+                    for (int i = 0; i < daily.length(); i++) mx = Math.max(mx, daily.optJSONObject(i).optInt("n"));
+                    StringBuilder sp = new StringBuilder("تثبيتات آخر 30 يوماً: ");
+                    String bars = "▁▂▃▄▅▆▇█";
+                    for (int i = 0; i < daily.length(); i++) sp.append(bars.charAt(Math.min(7, daily.optJSONObject(i).optInt("n") * 7 / mx)));
+                    ic.addView(text(this, sp.toString(), 13, PRIMARY, false), lpm(this, -1, -2, 4, 0));
+                }
+                JSONArray brs = ins.optJSONArray("brands");
+                if (brs != null && brs.length() > 0) {
+                    StringBuilder bs = new StringBuilder("\nحسب الشركة والطراز:");
+                    for (int i = 0; i < brs.length(); i++) {
+                        JSONObject b2 = brs.optJSONObject(i);
+                        bs.append("\n▪ ").append(str(b2, "brand")).append(" — ").append(b2.optInt("n"));
+                        JSONArray ms2 = b2.optJSONArray("models");
+                        if (ms2 != null) for (int j = 0; j < ms2.length(); j++) {
+                            JSONObject m2 = ms2.optJSONObject(j);
+                            bs.append("\n     • ").append(str(m2, "model")).append(" (").append(m2.optInt("n")).append(")");
+                        }
+                    }
+                    ic.addView(text(this, bs.toString(), 13, TEXT, false));
+                }
+                JSONArray avs2 = ins.optJSONArray("appVers");
+                if (avs2 != null && avs2.length() > 0) {
+                    StringBuilder vs = new StringBuilder("\nنسخ التطبيق على الهواتف: ");
+                    for (int i = 0; i < avs2.length(); i++) {
+                        JSONObject a3 = avs2.optJSONObject(i);
+                        if (i > 0) vs.append(" • ");
+                        vs.append(str(a3, "v")).append(" (").append(a3.optInt("n")).append(")");
+                    }
+                    ic.addView(text(this, vs.toString(), 12, MUTED, false));
+                }
+                JSONArray mods = brs != null && brs.length() > 0 ? null : ins.optJSONArray("topModels");
                 if (mods != null && mods.length() > 0) {
                     StringBuilder ms = new StringBuilder("\nأكثر الهواتف انتشاراً:");
                     for (int i = 0; i < mods.length(); i++) {
@@ -3426,6 +3466,57 @@ public class MainActivity extends Activity {
     // =====================================================================
     private boolean reportsAll = false;
 
+    // ===== 3.0.3: قاموس الحلول =====
+    private void adminKb() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("📚 قاموس الحلول", dh);
+        dh[0].show();
+        Button add = button(this, "➕ حل جديد", true);
+        add.setOnClickListener(v -> kbEditor(null, "", () -> { dh[0].dismiss(); adminKb(); }));
+        l.addView(add, lpm(this, -1, -2, 0, 8));
+        l.addView(text(this, "كل خطأ يطابق «النمط» يظهر تحته الحل تلقائياً في شاشة الأخطاء وفي رسالة البوت، و«رسالة المستخدم» تظهر لصاحب الهاتف بعد الخطأ.", 12, MUTED, false), lpm(this, -1, -2, 0, 8));
+        get("/admin/kb", r -> {
+            JSONArray a = r.optJSONArray("kb");
+            if (a == null) return;
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject k = a.optJSONObject(i);
+                LinearLayout c = card(this);
+                c.addView(text(this, "💡 " + str(k, "title") + (k.optInt("needs_code") == 1 ? "  🛠" : "  👤"), 14, TEXT, true));
+                c.addView(text(this, "النمط: " + str(k, "match"), 11, MUTED, false));
+                if (!str(k, "fix").isEmpty()) c.addView(text(this, "الحل: " + str(k, "fix"), 12, TEXT, false));
+                if (!str(k, "user_msg").isEmpty()) c.addView(text(this, "👤 للمستخدم: " + str(k, "user_msg"), 12, PRIMARY, false));
+                c.setOnClickListener(v -> kbEditor(k, null, () -> { dh[0].dismiss(); adminKb(); }));
+                l.addView(c, lpm(this, -1, -2, 0, 8));
+            }
+        });
+    }
+
+    private void kbEditor(JSONObject k, String match, Runnable done) {
+        LinearLayout f = new LinearLayout(this);
+        f.setOrientation(LinearLayout.VERTICAL);
+        f.setPadding(dp(this, 18), dp(this, 6), dp(this, 18), 0);
+        EditText m = input("النمط: كلمة من الخطأ (أكثر من واحدة بينها |)"), t = input("العنوان المختصر"), cs = input("السبب (بلغة بسيطة)"),
+                fx = input("الحل"), um = input("رسالة للمستخدم (اختياري)");
+        m.setText(k != null ? str(k, "match") : (match == null ? "" : match));
+        if (k != null) { t.setText(str(k, "title")); cs.setText(str(k, "cause")); fx.setText(str(k, "fix")); um.setText(str(k, "user_msg")); }
+        CheckBox nc = new CheckBox(this);
+        nc.setText("🛠 يحتاج إصلاحاً في الكود");
+        nc.setChecked(k != null && k.optInt("needs_code") == 1);
+        for (View v : new View[]{m, t, cs, fx, um, nc}) f.addView(v, lpm(this, -1, -2, 4, 0));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(f);
+        AlertDialog.Builder bd = new AlertDialog.Builder(this).setTitle(k == null ? "إضافة حل" : "تعديل الحل").setView(sv)
+                .setPositiveButton("حفظ", (d, w) -> {
+                    JSONObject b = jo("match", m.getText().toString().trim(), "title", t.getText().toString().trim(), "cause", cs.getText().toString().trim(),
+                            "fix", fx.getText().toString().trim(), "user_msg", um.getText().toString().trim(), "needs_code", nc.isChecked());
+                    try { if (k != null) b.put("id", k.optLong("id")); } catch (Exception ignored) { }
+                    post("/admin/kb/save", b, r -> { Toast.makeText(this, "✅ حُفظ في القاموس", Toast.LENGTH_SHORT).show(); done.run(); });
+                })
+                .setNegativeButton("إلغاء", null);
+        if (k != null) bd.setNeutralButton("حذف", (d, w) -> post("/admin/kb/delete", jo("id", k.optLong("id")), r -> done.run()));
+        bd.show();
+    }
+
     private void adminReports() {
         Dialog[] dh = new Dialog[1];
         LinearLayout l = fullDialog("الأخطاء وفشل الدخول", dh);
@@ -3444,6 +3535,9 @@ public class MainActivity extends Activity {
             l.addView(fr, lpm(this, -1, -2, 0, 8));
             JSONArray a = r.optJSONArray("reports");
             if (a == null || a.length() == 0) { l.addView(text(this, reportsAll ? "لا توجد تقارير أخطاء." : "لا توجد أخطاء جديدة ✅", 15, MUTED, false)); return; }
+            Button kbBtn = button(this, "📚 قاموس الحلول", false);
+            kbBtn.setOnClickListener(v -> adminKb());
+            l.addView(kbBtn, lpm(this, -1, -2, 0, 8));
             if (!reportsAll) {
                 Button clrAll = button(this, "✔ تعليم الكل كمحلول", false);
                 clrAll.setOnClickListener(v -> post("/admin/reports/clear", jo("all", true), x -> { dh[0].dismiss(); adminReports(); refreshPending(); }));
@@ -3466,11 +3560,42 @@ public class MainActivity extends Activity {
                     mt.setTextIsSelectable(true);
                     c.addView(mt);
                 }
+                JSONObject kb = o.optJSONObject("kb");
+                if (kb != null) {
+                    LinearLayout kc = new LinearLayout(this);
+                    kc.setOrientation(LinearLayout.VERTICAL);
+                    kc.setBackground(round(this, OK_BG, 10));
+                    kc.setPadding(dp(this, 10), dp(this, 8), dp(this, 10), dp(this, 8));
+                    kc.addView(text(this, "💡 " + str(kb, "title") + (kb.optInt("needs_code") == 1 ? "  • 🛠 يحتاج إصلاح كود" : "  • 👤 لا يحتاج كوداً"), 13, TEXT, true));
+                    if (!str(kb, "cause").isEmpty()) kc.addView(text(this, "السبب: " + str(kb, "cause"), 12, TEXT, false));
+                    if (!str(kb, "fix").isEmpty()) kc.addView(text(this, "الحل: " + str(kb, "fix"), 12, TEXT, false));
+                    kc.setOnClickListener(v -> kbEditor(kb, null, () -> { dh[0].dismiss(); adminReports(); }));
+                    c.addView(kc, lpm(this, -1, -2, 6, 0));
+                } else {
+                    TextView add = text(this, "📝 خطأ غير معروف — أضف حله للقاموس", 12, PRIMARY, true);
+                    add.setPadding(0, dp(this, 6), 0, 0);
+                    String guess = str(o, "err_code").isEmpty() ? str(o, "msg") : str(o, "err_code");
+                    add.setOnClickListener(v -> kbEditor(null, guess, () -> { dh[0].dismiss(); adminReports(); }));
+                    c.addView(add);
+                }
                 String tr = str(o, "trace");
                 LinearLayout r2 = row(this);
                 if (!tr.isEmpty()) {
                     Button showTr = button(this, "📄 السجل", false);
-                    showTr.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("تفاصيل السجل").setMessage(tr).setPositiveButton("إغلاق", null).show());
+                    String full = str(o, "err_code") + ": " + str(o, "msg") + "\n📱 " + str(o, "model") + " • Android " + str(o, "android_ver") + " • v" + str(o, "app_ver") + "\n\n" + tr;
+                    showTr.setOnClickListener(v -> {
+                        TextView tv = text(this, full, 12, TEXT, false);
+                        tv.setTextIsSelectable(true);
+                        tv.setPadding(dp(this, 18), dp(this, 8), dp(this, 18), dp(this, 8));
+                        ScrollView sv = new ScrollView(this);
+                        sv.addView(tv);
+                        new AlertDialog.Builder(this).setTitle("تفاصيل السجل").setView(sv)
+                                .setNeutralButton("📋 نسخ", (d, w) -> {
+                                    ((android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(android.content.ClipData.newPlainText("سجل الخطأ", full));
+                                    Toast.makeText(this, "نُسخ السجل — الصقه في أي محادثة", Toast.LENGTH_SHORT).show();
+                                })
+                                .setPositiveButton("إغلاق", null).show();
+                    });
                     r2.addView(showTr, weight());
                 }
                 if (o.optInt("resolved") == 0) {

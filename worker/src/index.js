@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '3.0';
+const VERSION = '3.0.3';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -92,6 +92,27 @@ const SEED_BOTS = [
   ['tgbot', 'TakeyourpartsyBot', 'روبوت حقك تاخد دورك'],
 ];
 
+// قاموس الحلول الأولي: [نمط (أجزاء يفصلها |)، العنوان، السبب، الحل، رسالة للمستخدم (اختياري)، يحتاج إصلاح كود؟]
+const SEED_KB = [
+  ['NoClassDefFoundError|ClassNotFoundException', 'ملف ناقص بعد تحديث التطبيق',
+    'تحدّث التطبيق بينما النسخة القديمة ما زالت تعمل في الذاكرة، فبحثت عن ملف تغيّر من تحتها. يُسجَّل برقم النسخة الجديدة.',
+    'لا يحتاج كوداً: يغلق المستخدم التطبيق تماماً ثم يفتحه. إن تكرر بعد إعادة الفتح فهي مشكلة حقيقية في البناء.',
+    'يبدو أن التطبيق تحدّث للتو أثناء عمله. أغلقه تماماً ثم افتحه من جديد وكل شيء سيعمل.', 0],
+  ['not attached to window manager', 'إغلاق نافذة بعد إعادة إنشاء الشاشة',
+    'نافذة (مثل شريط تنزيل التحديث) حاولت أن تُغلق بعد تدوير الشاشة أو الخروج والعودة.',
+    'أُصلح في 2.9 (safeDismiss). إن ظهر في نسخة أحدث فهناك نافذة أخرى تحتاج نفس الإصلاح.', '', 1],
+  ['NoCredentialException|no credentials available|No credentials', 'لا يوجد حساب غوغل على الهاتف',
+    'الهاتف ليس عليه حساب Google مضاف، أو خدمات Google معطّلة.',
+    'يضيف المستخدم حساب Google من إعدادات الهاتف ← الحسابات، ثم يعيد المحاولة.',
+    'لا يوجد حساب Google على هاتفك. أضفه من إعدادات الهاتف ← الحسابات ثم حاول الدخول مجدداً، أو تابع كزائر.', 0],
+  ['GetCredentialCancellationException|cancelled|canceled', 'المستخدم ألغى نافذة الدخول', 'أُغلقت نافذة اختيار الحساب قبل الإكمال.', 'لا شيء؛ ليس خطأ.', '', 0],
+  ['UnknownHostException|SocketTimeoutException|ConnectException|SSLHandshake|timeout', 'مشكلة اتصال بالإنترنت',
+    'الإنترنت ضعيف أو مقطوع، أو حجب مؤقت للخادم.', 'لا يحتاج كوداً عادةً؛ إن تكرر عند كثيرين في نفس الوقت فافحص السيرفر.',
+    'يبدو أن الاتصال بالإنترنت ضعيف. تحقق من الشبكة ثم أعد المحاولة.', 0],
+  ['OutOfMemoryError', 'نفاد الذاكرة', 'الهاتف ضعيف الذاكرة أو صورة/ملف كبير جداً.', 'يحتاج تقليل حجم الصور أو القوائم في الكود.', 'أغلق بعض التطبيقات المفتوحة ثم أعد فتح وظيفتي.', 1],
+  ['DeadObjectException|TransactionTooLargeException', 'خطأ من نظام أندرويد', 'خدمة في النظام توقفت أو بيانات كبيرة جداً بين الشاشات.', 'غالباً عابر؛ إن تكرر كثيراً نراجع حجم البيانات المحفوظة في الشاشة.', '', 1],
+];
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
@@ -156,6 +177,9 @@ export class Db {
     for (const col of ['ftype TEXT', 'fsize TEXT', 'howto TEXT', 'specs TEXT', 'hay TEXT', 'reports INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE learn ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS tg_secret (k TEXT PRIMARY KEY, v TEXT, at INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS legacy_seen (k TEXT PRIMARY KEY, ver TEXT, last INTEGER)`);
+    // قاموس الحلول (3.0.3): نمط يطابق الخطأ ← السبب والحل ورسالة للمستخدم
+    this.run(`CREATE TABLE IF NOT EXISTS kb (id INTEGER PRIMARY KEY AUTOINCREMENT, match TEXT, title TEXT, cause TEXT, fix TEXT,
+      user_msg TEXT, needs_code INTEGER DEFAULT 0, updated INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS sources (
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, value TEXT UNIQUE, name TEXT, enabled INTEGER DEFAULT 1,
       added_by TEXT, last_try INTEGER, last_ok INTEGER, last_err TEXT, last_count INTEGER DEFAULT 0, total INTEGER DEFAULT 0, orig TEXT)`);
@@ -205,6 +229,11 @@ export class Db {
       for (const [kind, value, name] of SEED_BOTS)
         this.run(`INSERT OR IGNORE INTO sources(kind,value,name,added_by,orig,purpose,nkey) VALUES(?,?,?,?,?,?,?)`, kind, value, name, 'seed', value, 'learn', sourceKey(kind, value));
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('seed_bots','1')`);
+    }
+    this.tryRun(`ALTER TABLE client_reports ADD COLUMN notified INTEGER DEFAULT 0`);
+    if (!this.one(`SELECT v FROM meta WHERE k='kb_seed'`)) {
+      for (const k of SEED_KB) this.run(`INSERT INTO kb(match,title,cause,fix,user_msg,needs_code,updated) VALUES(?,?,?,?,?,?,?)`, ...k, Date.now());
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('kb_seed','1')`);
     }
     if (!this.one(`SELECT v FROM meta WHERE k='libcrawl2'`)) {   // إعادة فهرسة البوتات مرة واحدة لتوجيه ملفاتها إلى «مكتبة وظيفتي»
       this.run(`UPDATE sources SET state=NULL WHERE kind='tgbot'`);
@@ -353,6 +382,7 @@ export class Db {
         if (p === '/admin/skills/top') return this.skillsTop();
         if (p === '/admin/link-reports') return json({ reports: this.q(`SELECT skill, url, COUNT(*) AS n, MAX(created) AS last FROM link_reports GROUP BY skill, url ORDER BY last DESC LIMIT 100`) });
         if (p === '/admin/reports') return this.getReports(url);
+        if (p === '/admin/kb') return json({ kb: this.q(`SELECT * FROM kb ORDER BY id DESC`) });
         if (p === '/admin/flags') return json({ flags: this.q(`SELECT j.id, j.title, j.src, j.url, j.hidden, COUNT(f.email) AS n, GROUP_CONCAT(f.email, '، ') AS who, MAX(f.created) AS last
           FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2 GROUP BY j.id ORDER BY last DESC LIMIT 100`) });
       }
@@ -376,6 +406,15 @@ export class Db {
         if (p === '/admin/announce') return this.announce(me, b);
         if (p === '/admin/announce/delete') { this.run(`DELETE FROM announcements WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/minver') return this.setMinVer(b);
+        if (p === '/admin/kb/save') {
+          const f = [String(b.match || '').trim().slice(0, 300), String(b.title || '').trim().slice(0, 120), String(b.cause || '').trim().slice(0, 600),
+            String(b.fix || '').trim().slice(0, 600), String(b.user_msg || '').trim().slice(0, 300), b.needs_code ? 1 : 0];
+          if (!f[0] || !f[1]) throw new HttpErr(400, 'النمط والعنوان مطلوبان');
+          if (b.id) this.run(`UPDATE kb SET match=?,title=?,cause=?,fix=?,user_msg=?,needs_code=?,updated=? WHERE id=?`, ...f, Date.now(), +b.id);
+          else this.run(`INSERT INTO kb(match,title,cause,fix,user_msg,needs_code,updated) VALUES(?,?,?,?,?,?,?)`, ...f, Date.now());
+          return json({ ok: true });
+        }
+        if (p === '/admin/kb/delete') { this.run(`DELETE FROM kb WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/legacy') {
           if (b.mode != null) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('legacy_block',?)`, String(Math.max(0, Math.min(2, +b.mode || 0))));
           if (b.msg != null) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('legacy_msg',?)`, String(b.msg).trim().slice(0, 300));
@@ -527,6 +566,21 @@ export class Db {
       jobs: json({ now, last: ID, max: ID, more: false, total: 1, locked: 0, jobs: [this.jobRow(row)] }),
       ann: json({ items: [{ id: ID, text: '⚠️ ' + msg + ' ' + RELEASE, created: now }] }),
     };
+  }
+
+  installBrands() {
+    const by = {};
+    for (const r of this.q(`SELECT model, COUNT(*) AS n FROM installs WHERE model<>'' GROUP BY model`)) {
+      const parts = String(r.model).trim().split(/\s+/);
+      let brand = (parts[0] || '?').toLowerCase();
+      if (/^(sm-|galaxy)/i.test(brand)) brand = 'samsung';
+      if (/^(redmi|poco|mi)$/i.test(brand)) brand = 'xiaomi';
+      brand = brand.charAt(0).toUpperCase() + brand.slice(1);
+      const model = parts.length > 1 ? parts.slice(1).join(' ') : r.model;
+      (by[brand] = by[brand] || { brand, n: 0, models: [] }).n += r.n;
+      by[brand].models.push({ model, n: r.n });
+    }
+    return Object.values(by).sort((a, b) => b.n - a.n).map(x => ({ ...x, models: x.models.sort((a, b) => b.n - a.n) }));
   }
 
   legacyStats() {
@@ -1013,6 +1067,12 @@ export class Db {
         active7: this.one(`SELECT COUNT(*) AS n FROM installs WHERE last_seen > ?`, now - 7 * DAY).n,
         rooted: this.one(`SELECT COUNT(*) AS n FROM installs WHERE rooted=1`).n,
         topModels: this.q(`SELECT model, COUNT(*) AS n FROM installs WHERE model<>'' GROUP BY model ORDER BY n DESC LIMIT 10`),
+        brands: this.installBrands(),
+        appVers: this.q(`SELECT app_ver AS v, COUNT(*) AS n FROM installs WHERE app_ver<>'' GROUP BY app_ver ORDER BY n DESC LIMIT 15`),
+        new1: this.one(`SELECT COUNT(*) AS n FROM installs WHERE first_seen > ?`, now - DAY).n,
+        new7: this.one(`SELECT COUNT(*) AS n FROM installs WHERE first_seen > ?`, now - 7 * DAY).n,
+        daily: this.q(`SELECT CAST((first_seen + 3*3600000) / 86400000 AS INTEGER) AS d, COUNT(*) AS n FROM installs WHERE first_seen > ? GROUP BY d ORDER BY d`, now - 30 * DAY),
+        legacy30: this.one(`SELECT COUNT(*) AS n FROM legacy_seen WHERE last > ?`, now - 30 * DAY).n,
         androidVers: this.q(`SELECT android_ver AS v, COUNT(*) AS n FROM installs WHERE android_ver<>'' GROUP BY android_ver ORDER BY n DESC LIMIT 8`),
       },
       deletions: {
@@ -1052,18 +1112,37 @@ export class Db {
     const first = (msg || trace.split('\n')[0] || '').slice(0, 100);
     const sig = `${kind}|${ver}|${code}|${first}`;
     const now = Date.now();
-    const ex = this.one(`SELECT id FROM client_reports WHERE sig=?`, sig);
+    const ex = this.one(`SELECT id, notified FROM client_reports WHERE sig=?`, sig);
     if (ex) {
       this.run(`UPDATE client_reports SET count=count+1, last_seen=?, model=?, android_ver=?, rooted=?, resolved=0 WHERE id=?`, now, model, android, rooted, ex.id);
     } else {
       this.run(`INSERT INTO client_reports(kind,sig,app_ver,android_ver,model,rooted,err_code,msg,trace,count,first_seen,last_seen,resolved) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,0)`,
         kind, sig, ver, android, model, rooted, code, msg, trace, now, now);
     }
-    if (kind === 'auth_fail' && this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) {
-      const txt = `⚠️ فشل تسجيل دخول في وظيفتي (v${ver})\n📱 ${model || 'غير معروف'} (Android ${android || '?'})${rooted ? '\n🔓 الجهاز عليه روت (Root)' : ''}\n❌ ${code}: ${msg}`;
+    const kb = this.kbFor(`${kind} ${code} ${msg} ${trace}`);
+    // 3.0.3: الانهيارات تصل للبوت أيضاً — أول ظهور، ثم مرة كل 12 ساعة لنفس الخطأ
+    const row = this.one(`SELECT id, notified, count FROM client_reports WHERE sig=?`, sig);
+    if (kind === 'crash' && row && now - (row.notified || 0) > 12 * 3600e3 && this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) {
+      this.run(`UPDATE client_reports SET notified=? WHERE id=?`, now, row.id);
+      const top = trace.split('\n').filter(x => x.trim()).slice(0, 4).join('\n');
+      const txt = `💥 ${row.count > 1 ? 'تكرر' : 'انهيار جديد'} في وظيفتي (v${ver})${row.count > 1 ? ` ×${row.count}` : ''}\n📱 ${model || '?'} (Android ${android || '?'})${rooted ? ' 🔓 روت' : ''}\n🔎 ${code}: ${msg.slice(0, 200)}\n${top.slice(0, 600)}`
+        + (kb ? `\n\n💡 معروف: ${kb.title}\n${kb.fix}` : '\n\n❓ خطأ غير معروف بعد — أضف حله من التطبيق: المزيد ← الأخطاء');
       this.ctx.waitUntil(this.notifyTg(txt));
     }
-    return json({ ok: true });
+    if (kind === 'auth_fail' && this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) {
+      const txt = `⚠️ فشل تسجيل دخول في وظيفتي (v${ver})\n📱 ${model || 'غير معروف'} (Android ${android || '?'})${rooted ? '\n🔓 الجهاز عليه روت (Root)' : ''}\n❌ ${code}: ${msg}`;
+      this.ctx.waitUntil(this.notifyTg(txt + (kb ? `\n💡 ${kb.title}: ${kb.fix}` : '')));
+    }
+    return json({ ok: true, tip: kb && kb.user_msg ? kb.user_msg : '' });
+  }
+
+  kbFor(text) {
+    const t = String(text || '').toLowerCase();
+    for (const k of this.q(`SELECT * FROM kb ORDER BY id`)) {
+      const parts = String(k.match || '').split('|').map(x => x.trim().toLowerCase()).filter(Boolean);
+      if (parts.some(x => t.includes(x))) return k;
+    }
+    return null;
   }
 
   /** حالة حساب القراءة الخاص في تيليغرام؛ تنبيه المطوّر عند التعطل (مرة كل 12 ساعة). */
@@ -1099,12 +1178,20 @@ export class Db {
     const failing = this.q(`SELECT name,value,last_err FROM sources WHERE enabled=1 AND pending=0 AND kind<>'manual' AND fail_since IS NOT NULL AND fail_since>0 AND COALESCE(last_err,'') NOT LIKE '⏸%' LIMIT 5`);
     const autoOff = this.q(`SELECT name,value FROM sources WHERE auto_off=1 AND enabled=0 LIMIT 5`);
     const top = this.q(`SELECT src, COUNT(*) n FROM jobs WHERE created>? GROUP BY src ORDER BY n DESC LIMIT 3`, since);
+    const nb = {};
+    for (const r of this.q(`SELECT model FROM installs WHERE first_seen>?`, since)) {
+      let x = (String(r.model).trim().split(/\s+/)[0] || '?').toLowerCase();
+      if (/^sm-/.test(x)) x = 'samsung';
+      x = x.charAt(0).toUpperCase() + x.slice(1);
+      nb[x] = (nb[x] || 0) + 1;
+    }
+    const newBrands = Object.entries(nb).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join('، ');
     const tg = JSON.parse((this.one(`SELECT v FROM meta WHERE k='tg_account'`) || {}).v || 'null');
     const L = [`📊 ملخص وظيفتي — ${day}`, '',
       `💼 فرص جديدة: ${jobs}   📑 مناقصات: ${tenders}`,
       `🎓 تعلّم: ${learn}${files ? ` (منها ${files} ملف)` : ''}`,
       `👥 حسابات جديدة: ${newAcc} • نشطون اليوم: ${active} • المجموع: ${totalAcc}`,
-      `📲 تثبيتات جديدة: ${newInst}`,
+      `📲 تثبيتات جديدة: ${newInst}` + (newBrands ? ` (${newBrands})` : ''),
       crashes ? `💥 أخطاء/انهيارات جديدة: ${crashes}` : '✅ لا أخطاء جديدة',
       pendingSrc ? `📨 مصادر مقترحة بانتظار موافقتك: ${pendingSrc}` : '',
       tg ? (tg.ok ? '👤 حساب القراءة: متصل' : `⚠️ حساب القراءة متوقف: ${tg.err}`) : '',
@@ -1130,6 +1217,7 @@ export class Db {
   getReports(url) {
     const all = url.searchParams.get('all') === '1';
     const rows = this.q(`SELECT * FROM client_reports ${all ? '' : 'WHERE resolved=0'} ORDER BY last_seen DESC LIMIT 100`);
+    for (const r of rows) r.kb = this.kbFor(`${r.kind} ${r.err_code} ${r.msg} ${r.trace}`);
     return json({ reports: rows });
   }
 

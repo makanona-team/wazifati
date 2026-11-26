@@ -1,0 +1,22 @@
+name: تحديث صفحات الإصدارات (ما الجديد)
+
+# يعيد كتابة «ما الجديد» في صفحات الإصدارات من قسم «للمستخدمين» في changelogs/*.md
+# (النسخ القديمة من التطبيق تقرأ هذا النص مباشرة من GitHub عند ظهور التحديث).
+on:
+  push:
+    branches: [main]
+    paths: ['changelogs/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/release-notes.sh
