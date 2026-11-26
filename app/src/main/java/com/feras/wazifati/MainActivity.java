@@ -684,6 +684,7 @@ public class MainActivity extends Activity {
         l.setPadding(dp(this, 10), dp(this, 8), dp(this, 10), 0);
 
         l.addView(welcomeCard(), lpm(this, -1, -2, 0, 8));
+        l.addView(updateBanner(), lpm(this, -1, -2, 0, 8));
 
         if (guest()) {
             LinearLayout gb = row(this);
@@ -3567,6 +3568,44 @@ public class MainActivity extends Activity {
         return Store.admin(this) ? "🔵 مشرف" : "⚪ مستخدم";
     }
 
+    /** شريط التحديث في الصفحة الرئيسية (3.0.2): نسختك + المتوفر، والضغط ينزّل ويثبّت من داخل التطبيق. */
+    private View updateBanner() {
+        String cur = Updater.current(this);
+        Updater.Info n = Updater.newer(this);
+        if (n == null) {
+            TextView ok = text(this, "✅ نسختك " + cur + " (الأحدث)", 11, MUTED, false);
+            ok.setGravity(Gravity.CENTER);
+            return ok;
+        }
+        android.content.SharedPreferences p = Store.p(this);
+        boolean snoozed = n.version.equals(p.getString("upd_snooze_v", "")) && System.currentTimeMillis() < p.getLong("upd_snooze", 0);
+        if (snoozed) {
+            TextView s = text(this, "📱 نسختك " + cur + " • متوفر " + n.version + " — اضغط للتحديث", 12, ORANGE, true);
+            s.setGravity(Gravity.CENTER);
+            s.setPadding(0, dp(this, 2), 0, dp(this, 2));
+            s.setOnClickListener(v -> download(n));
+            return s;
+        }
+        LinearLayout b = row(this);
+        b.setBackground(round(this, ORANGE, 12));
+        b.setPadding(dp(this, 12), dp(this, 10), dp(this, 12), dp(this, 10));
+        b.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout tx = new LinearLayout(this);
+        tx.setOrientation(LinearLayout.VERTICAL);
+        tx.addView(text(this, "📱 نسختك " + cur + "  •  ✨ متوفر " + n.version + (n.pre ? "  🧪 تجريبية" : ""), 14, Color.WHITE, true));
+        tx.addView(text(this, "اضغط هنا للتحديث الآن — يُنزَّل ويُثبَّت من داخل التطبيق", 12, Color.WHITE, false));
+        b.addView(tx, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView later = text(this, "لاحقاً", 12, Color.WHITE, true);
+        later.setPadding(dp(this, 10), dp(this, 6), 0, dp(this, 6));
+        later.setOnClickListener(v -> {
+            p.edit().putString("upd_snooze_v", n.version).putLong("upd_snooze", System.currentTimeMillis() + 24 * 3_600_000L).apply();
+            show(tab);
+        });
+        b.addView(later);
+        b.setOnClickListener(v -> download(n));
+        return b;
+    }
+
     private View welcomeCard() {
         LinearLayout w = row(this);
         w.setBackground(round(this, PRIMARY_LIGHT, 12));
@@ -3575,12 +3614,6 @@ public class MainActivity extends Activity {
         String first = full.isEmpty() ? "" : full.split("\\s+")[0];
         String hi = guest() || first.isEmpty() ? "مرحباً بك 👋" : "مرحباً " + first + " 👋";
         w.addView(text(this, hi, 16, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
-        Updater.Info n = Updater.newer(this);
-        if (n != null) {
-            TextView up = pill(this, "⬆ تحديث", ORANGE);
-            up.setOnClickListener(v -> download(n));
-            w.addView(up, lpm(this, -2, -2, 0, 0));
-        }
         TextView badge = pill(this, roleLabel(), guest() ? MUTED : (Store.admin(this) ? GREEN : PRIMARY));
         LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-2, -2);
         bl.setMarginStart(dp(this, 6));

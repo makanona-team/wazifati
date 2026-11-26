@@ -170,10 +170,10 @@ public final class Updater {
     public static Info refreshLatest(Context c, boolean force) {
         SharedPreferences p = Store.p(c);
         long now = System.currentTimeMillis();
-        if (!force && now - p.getLong("upd_chk", 0) < 3 * 3_600_000L) return stored(c);
+        if (!force && now - p.getLong("upd_chk", 0) < 3_600_000L) return stored(c);
         try {
             Info i = fetch(c);
-            if (!i.version.isEmpty()) p.edit().putLong("upd_chk", now).putString("upd_ver", i.version).putString("upd_notes", i.notes).putString("upd_apk", i.apkUrl).apply();
+            if (!i.version.isEmpty()) p.edit().putLong("upd_chk", now).putString("upd_ver", i.version).putString("upd_notes", i.notes).putString("upd_apk", i.apkUrl).putBoolean("upd_pre", i.pre).apply();
             return stored(c);
         } catch (Throwable e) { return stored(c); }
     }
@@ -190,6 +190,7 @@ public final class Updater {
         i.version = p.getString("upd_ver", "");
         i.notes = p.getString("upd_notes", "");
         i.apkUrl = p.getString("upd_apk", "");
+        i.pre = p.getBoolean("upd_pre", false);
         return i;
     }
 
