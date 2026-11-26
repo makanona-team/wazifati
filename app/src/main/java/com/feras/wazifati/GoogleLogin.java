@@ -34,7 +34,17 @@ public final class GoogleLogin {
         if (!configured()) { cb.err("تسجيل الدخول غير مهيأ في هذه النسخة"); return; }
         GetSignInWithGoogleOption opt = new GetSignInWithGoogleOption.Builder(BuildConfig.GOOGLE_CLIENT_ID).build();
         GetCredentialRequest req = new GetCredentialRequest.Builder().addCredentialOption(opt).build();
-        CredentialManager cm = CredentialManager.create(act);
+        CredentialManager cm;
+        try {
+            cm = CredentialManager.create(act);
+            startGet(act, cm, req, cb);
+        } catch (Throwable e) {   // مكتبة ناقصة أو خدمات Google غير متوفرة: رسالة بدل الانهيار + تقرير للمطوّر
+            CrashHandler.reportAuthFail(act, "Init:" + e.getClass().getSimpleName(), String.valueOf(e.getMessage()));
+            cb.err("تعذّر تشغيل تسجيل الدخول بحساب Google على هذا الهاتف. حدّث التطبيق و«خدمات Google Play»، أو تابع كزائر الآن.");
+        }
+    }
+
+    private static void startGet(Activity act, CredentialManager cm, GetCredentialRequest req, Cb cb) {
         cm.getCredentialAsync(act, req, new CancellationSignal(), Executors.newSingleThreadExecutor(),
                 new CredentialManagerCallback<GetCredentialResponse, GetCredentialException>() {
                     @Override

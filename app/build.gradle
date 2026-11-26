@@ -18,8 +18,8 @@ android {
         applicationId 'com.feras.wazifati'
         minSdk 26
         targetSdk 34
-        versionCode 27
-        versionName '3.0.3'
+        versionCode 28
+        versionName '3.0.4'
         buildConfigField 'String', 'API_URL', "\"${apiUrl}\""
         buildConfigField 'String', 'GOOGLE_CLIENT_ID', "\"${googleClientId}\""
     }
@@ -72,6 +72,10 @@ android {
 dependencies {
     implementation 'androidx.credentials:credentials:1.3.0'
     implementation 'androidx.credentials:credentials-play-services-auth:1.3.0'
+    // 3.0.4: صريحة — كانت androidx.core مفقودة من ملف التطبيق فينهار دخول Google على أندرويد 13 وأقدم
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.activity:activity:1.9.3'
+    implementation 'androidx.fragment:fragment:1.8.5'
     implementation 'com.google.android.libraries.identity.googleid:googleid:1.1.1'
     implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
 }

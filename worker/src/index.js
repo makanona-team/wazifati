@@ -235,6 +235,14 @@ export class Db {
       for (const k of SEED_KB) this.run(`INSERT INTO kb(match,title,cause,fix,user_msg,needs_code,updated) VALUES(?,?,?,?,?,?,?)`, ...k, Date.now());
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('kb_seed','1')`);
     }
+    if (!this.one(`SELECT v FROM meta WHERE k='kb_fix304'`)) {   // تصحيح سبب انهيار الدخول بعد اكتشافه الحقيقي
+      this.run(`UPDATE kb SET title=?, cause=?, fix=?, user_msg=?, needs_code=1, updated=? WHERE match LIKE 'NoClassDefFoundError%'`,
+        'مكتبة ناقصة: دخول Google على أندرويد 13 وأقدم',
+        'مكتبة androidx.core كانت مفقودة من ملف التطبيق منذ 1.1؛ أندرويد 14+ لا يحتاجها فيعمل الدخول، والأقدم ينهار عند «الدخول بحساب Google».',
+        'أُصلح في 3.0.4 (إضافة المكتبات صراحة + فحص تلقائي بعد كل بناء). إن ظهر في 3.0.4+ فافحص سجل البناء.',
+        'حدّث التطبيق إلى آخر نسخة ثم جرّب الدخول بحساب Google من جديد، أو تابع كزائر الآن.', Date.now());
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('kb_fix304','1')`);
+    }
     if (!this.one(`SELECT v FROM meta WHERE k='libcrawl2'`)) {   // إعادة فهرسة البوتات مرة واحدة لتوجيه ملفاتها إلى «مكتبة وظيفتي»
       this.run(`UPDATE sources SET state=NULL WHERE kind='tgbot'`);
       this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('libcrawl2','1')`);

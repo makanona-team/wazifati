@@ -78,6 +78,9 @@ jobs:
           if [ -n "$WZ_KEYSTORE" ]; then TASK=assembleRelease; else TASK=assembleDebug; fi
           set -o pipefail   # بدونه يُخفي tee فشل الترجمة
           ./gradlew --no-daemon $TASK 2>&1 | tee build.log
+          # 3.0.4: تأكد أن المكتبات الأساسية داخل ملف التطبيق فعلاً (وإلا يفشل البناء صراحة)
+          APK=$(ls app/build/outputs/apk/*/*.apk | head -1)
+          python3 scripts/check-apk.py "$APK"
 
       - name: حفظ نتيجة البناء (report)
         continue-on-error: true   # فشل حفظ السجل لا يجب أن يمنع نشر الإصدار
