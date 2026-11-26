@@ -742,7 +742,8 @@ export class Db {
       now, guest: !user, admin, total: out.length, locked: user ? 0 : Math.max(0, out.length - 10),
       items: out.slice(0, cap).map(([sc, r, why]) => ({
         id: r.id, t: r.title, p: r.provider, l: r.lang, f: r.free, c: r.cert, d: r.deadline || '', a: r.link || r.url, u: r.url,
-        x: String(r.text || '').slice(0, 220), d0: r.posted, ft: r.ftype || '', fs: r.fsize || '', h: r.howto || '',
+        x: String(r.text || '').slice(0, 220), d0: r.posted, ft: r.ftype || '', fs: r.fsize || '',
+        h: String(r.link || '').startsWith('https://t.me/wazifati_lib') ? '' : (r.howto || ''),   // ملف صار في القناة: لا حاجة لطريق البوت
         w: why.join('، '), hid: r.hidden ? 1 : 0, rp: r.reports || 0,
       })),
     });
