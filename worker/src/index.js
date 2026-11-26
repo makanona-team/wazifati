@@ -331,6 +331,12 @@ export class Db {
         if (p === '/tg/secret') { this.run(`INSERT OR REPLACE INTO tg_secret(k,v,at) VALUES(?,?,?)`, String(b.k || 'session'), String(b.v || ''), Date.now()); return json({ ok: true }); }
         if (p === '/tg/status') return this.tgStatus(b);
         if (p === '/tg/digest') return this.digest(!!b.force);
+        if (p === '/tg/libstats') return json({
+          files: this.q(`SELECT provider, COUNT(*) n, SUM(CASE WHEN link LIKE 'https://t.me/wazifati_lib%' THEN 1 ELSE 0 END) lib FROM learn WHERE ftype IS NOT NULL GROUP BY provider`),
+          sample: this.q(`SELECT title, link, url FROM learn WHERE ftype IS NOT NULL ORDER BY id DESC LIMIT 3`),
+          libmap: ((this.one(`SELECT v FROM tg_secret WHERE k='libmap'`) || {}).v || '').length,
+          lib: (this.one(`SELECT v FROM tg_secret WHERE k='lib'`) || {}).v || '',
+        });
         if (p === '/tg/notify') { if (this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg(String(b.text || '').slice(0, 900))); return json({ ok: true }); }
         if (p === '/sources') return json({ sources: this.q(`SELECT * FROM sources WHERE enabled=1 AND pending=0 ORDER BY id`) });
         if (req.method === 'GET' && p === '/admin/backup') return this.exportBackup();

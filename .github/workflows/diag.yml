@@ -1,0 +1,13 @@
+name: تشخيص المكتبة
+on: workflow_dispatch
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          SIGN_PASS: ${{ secrets.SIGN_PASS }}
+        run: |
+          git fetch -q origin config && API=$(git show origin/config:api-url.txt | tr -d '\r\n ')
+          KEY=$(printf '%s' "$SIGN_PASS:wazifati-ingest" | sha256sum | cut -c1-40)
+          curl -s -X POST "$API/tg/libstats" -H "X-Key: $KEY" -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool | sed 's/"lib": ".*/"lib": "(hidden)"/'
