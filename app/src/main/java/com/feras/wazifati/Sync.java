@@ -233,7 +233,7 @@ public final class Sync {
             if (s.optLong("created") > since) { newSrc++; who = s.optString("added_by"); }
         }
         int fixes = r.optInt("fixes"), newFixes = r.optInt("newFixes"), flags = r.optInt("flags"), newFlags = r.optInt("newFlags");
-        sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putInt("pending_edits", r.optInt("edits")).putInt("pending_reports", r.optInt("reports")).putLong("admin_check", System.currentTimeMillis()).apply();
+        sp.edit().putInt("pending_sources", nSrc).putInt("pending_fixes", fixes).putInt("pending_flags", flags).putInt("pending_edits", r.optInt("edits")).putInt("pending_reports", r.optInt("reports")).putInt("pending_chan", r.optInt("chanReview")).putLong("admin_check", System.currentTimeMillis()).apply();
         if (!notify || since == 0) return;
         if (newSrc > 0) post(c, CH_ADMIN, 40, "📡 مصدر جديد مقترح", (newSrc == 1 ? "من " + who : newSrc + " مصادر جديدة") + " — بانتظار موافقتك", 5);
         if (newFixes > 0) post(c, CH_ADMIN, 41, "🏷 تصحيحات تصنيف", newFixes + " تصحيح مقترح بانتظار موافقتك", 5);
