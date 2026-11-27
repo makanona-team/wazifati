@@ -136,6 +136,7 @@ public final class Store extends SQLiteOpenHelper {
         for (String k : SYNC_INTS) j.put(k, sp.getInt(k, defInt(k)));
         j.put("notify_mode", sp.getString("notify_mode", "instant"));
         j.put("setup_done", sp.getBoolean("setup_done", false));
+        try { j.put("apps", new JSONObject(sp.getString("apps", "{}"))); } catch (Exception ignored) { }
         return j;
     }
 
@@ -151,6 +152,7 @@ public final class Store extends SQLiteOpenHelper {
         for (String k : SYNC_BOOLS) if (j.has(k)) e.putBoolean(k, j.optBoolean(k));
         for (String k : SYNC_INTS) if (j.has(k)) e.putInt(k, j.optInt(k, defInt(k)));
         if (j.has("notify_mode")) e.putString("notify_mode", j.optString("notify_mode", "instant"));
+        if (j.optJSONObject("apps") != null) e.putString("apps", Apps.merge(p(c).getString("apps", "{}"), j.optJSONObject("apps")));
         e.putLong("prefs_updated", updated).putLong("prefs_pushed", updated).putBoolean("setup_done", true);
         e.apply();
     }

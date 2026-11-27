@@ -273,6 +273,7 @@ public final class Sync {
         Skills.refresh(c, false);
         deliver(c, matched);
         remindDeadlines(c);
+        try { Apps.remind(c); } catch (Throwable ignored) { }
         remindCv(c);
         JobsWidget.update(c);
         Updater.autoCheck(c);

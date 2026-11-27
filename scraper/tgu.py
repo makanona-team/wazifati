@@ -384,6 +384,12 @@ async def run(ctx, sources, api_id, api_hash, sess):
                 ctx.lib = None
                 ctx.log(f"⚠️ مكتبة وظيفتي: {e}")
         ctx.api("/tg/status", {"ok": True, "name": (me.first_name or "") + (f" @{me.username}" if me.username else "")})
+        try:   # إحصائيات قناتنا: مشاهدات آخر المنشورات + عدد المشتركين (قناة عامة نملكها؛ لا محادثات شخصية)
+            ch = await client.get_entity("wazifati_jobs")
+            views = {str(m.id): (m.views or 0) async for m in client.iter_messages(ch, limit=150) if m.views}
+            ctx.api("/tg/chanviews", {"views": views})
+        except Exception as e:  # noqa
+            ctx.log(f"تعذّر جلب مشاهدات القناة: {e}")
         # المجموعات والقنوات أولاً (سريعة)، ثم فهرسة البوتات الطويلة في ما تبقى من الوقت
         for s in sorted(sources, key=lambda x: x["kind"] == "tgbot"):
             if ctx.left() < 60:

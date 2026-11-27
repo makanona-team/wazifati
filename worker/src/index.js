@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '3.1.3';
+const VERSION = '3.2';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -15,7 +15,10 @@ const DEFAULT_FLAGS = {
 };
 const GUEST_JOBS = 10;      // الزائر يرى أحدث 10 وظائف
 const GUEST_TENDERS = 2;    // وأحدث مناقصتين
-const RELEASE = 'https://github.com/makanona-team/wazifati/releases/latest';
+const SITE = 'https://wazifati.eng-feras8585.workers.dev';
+const RELEASE = SITE + '/download';
+const GH_LATEST = 'https://api.github.com/repos/makanona-team/wazifati/releases/latest';
+const DEV_NAME = 'م. فراس', DEV_PHONE = '0996265003', DEV_WA = '963996265003';
 function cmpVer(a, b) {
   const x = String(a).split(/\D+/), y = String(b).split(/\D+/);
   for (let i = 0; i < Math.max(x.length, y.length); i++) { const p = +x[i] || 0, q = +y[i] || 0; if (p !== q) return p < q ? -1 : 1; }
@@ -182,6 +185,12 @@ export class Db {
     // قاموس الحلول (3.0.3): نمط يطابق الخطأ ← السبب والحل ورسالة للمستخدم
     this.run(`CREATE TABLE IF NOT EXISTS chan_posted (job_id INTEGER PRIMARY KEY, at INTEGER, msg_id INTEGER, skip INTEGER DEFAULT 0)`);
     this.run(`CREATE TABLE IF NOT EXISTS chan_review (job_id INTEGER PRIMARY KEY, state INTEGER DEFAULT 0, contact TEXT, at INTEGER, by TEXT)`);
+    for (const col of ['hl INTEGER DEFAULT 0', 'ed INTEGER DEFAULT 0', 'views INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE chan_posted ADD COLUMN ${col}`);
+    this.tryRun(`ALTER TABLE chan_review ADD COLUMN warned INTEGER DEFAULT 0`);
+    this.run(`CREATE TABLE IF NOT EXISTS ev (day TEXT, k TEXT, v TEXT, n INTEGER, PRIMARY KEY(day,k,v))`);
+    this.run(`CREATE TABLE IF NOT EXISTS job_ev (job_id INTEGER, k TEXT, n INTEGER, PRIMARY KEY(job_id,k))`);
+    this.run(`CREATE TABLE IF NOT EXISTS tg_links (tg_id TEXT PRIMARY KEY, email TEXT, at INTEGER, mute INTEGER DEFAULT 0)`);
+    this.run(`CREATE TABLE IF NOT EXISTS tg_link_req (nonce TEXT PRIMARY KEY, email TEXT, created INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS kb (id INTEGER PRIMARY KEY AUTOINCREMENT, match TEXT, title TEXT, cause TEXT, fix TEXT,
       user_msg TEXT, needs_code INTEGER DEFAULT 0, updated INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS sources (
@@ -339,6 +348,7 @@ export class Db {
         if (p === '/tg/status') return this.tgStatus(b);
         if (p === '/tg/digest') return this.digest(!!b.force);
         if (p === '/tg/channel/tick') return await this.chanTick(url.origin, false);
+        if (p === '/tg/chanviews') { for (const [id, v] of Object.entries(b.views || {})) this.run(`UPDATE chan_posted SET views=? WHERE msg_id=?`, +v || 0, +id); if (b.subs) this.evSet('chan_subs', +b.subs); return json({ ok: true }); }
         if (p === '/tg/libstats') return json({
           files: this.q(`SELECT provider, COUNT(*) n, SUM(CASE WHEN link LIKE 'https://t.me/wazifati_lib%' THEN 1 ELSE 0 END) lib FROM learn WHERE ftype IS NOT NULL GROUP BY provider`),
           sample: this.q(`SELECT title, link, url FROM learn WHERE ftype IS NOT NULL ORDER BY id DESC LIMIT 3`),
@@ -354,7 +364,10 @@ export class Db {
       // ----- قراءة عامة (تصفّح كضيف + صفحات المشاركة) -----
       if (req.method === 'GET') {
         let m;
-        if ((m = p.match(/^\/j\/(\d+)$/))) return this.jobPage(+m[1]);
+        if ((m = p.match(/^\/j\/(\d+)$/))) return this.jobPage(+m[1], url.searchParams.get('c') || '');
+        if ((m = p.match(/^\/go\/(\d+)\/(\d+)$/))) return this.goApply(+m[1], +m[2]);
+        if (p === '/download' || p === '/dl') return await this.downloadPage(url);
+        if (p === '/apk') return await this.apkFile(url);
         if (p === '/jobs') { const lg = this.legacy(req); if (lg) return lg.jobs; return this.jobs(url, req); }
         if (p === '/changes') return this.changes(url);
         if (p === '/announce') {
@@ -385,6 +398,7 @@ export class Db {
         if (p === '/cv/delete') { this.run(`UPDATE accounts SET cv_text=NULL, cv_profile=NULL, cv_name=NULL, cv_updated=0 WHERE email=?`, me.email); return json({ ok: true }); }
         if (p === '/account/delete') return this.deleteAccount(me, b);
         if (p === '/link/report') return this.reportLink(me, b);
+        if (p === '/tg/link/start') return await this.tgLinkStart(url, me);
         if (p === '/learn/report') {   // 3 بلاغات من حسابات مختلفة تقريباً ← إخفاء تلقائي حتى يراجعه الأدمن
           this.run(`UPDATE learn SET reports=COALESCE(reports,0)+1, hidden=CASE WHEN COALESCE(reports,0)+1>=3 THEN 1 ELSE hidden END WHERE id=?`, +b.id);
           return json({ ok: true });
@@ -405,6 +419,8 @@ export class Db {
         if (p === '/admin/link-reports') return json({ reports: this.q(`SELECT skill, url, COUNT(*) AS n, MAX(created) AS last FROM link_reports GROUP BY skill, url ORDER BY last DESC LIMIT 100`) });
         if (p === '/admin/reports') return this.getReports(url);
         if (p === '/admin/channel') return json(this.chanInfo(url.origin));
+        if (p === '/admin/channel/reviews') return json({ items: this.chanReviewList(+url.searchParams.get('state') || 0) });
+        if (p === '/admin/reach') return json({ text: this.reachText(+url.searchParams.get('d') || 7), sum: this.summaryText(+url.searchParams.get('d') || 7) });
         if (p === '/admin/kb') return json({ kb: this.q(`SELECT * FROM kb ORDER BY id DESC`) });
         if (p === '/admin/flags') return json({ flags: this.q(`SELECT j.id, j.title, j.src, j.url, j.hidden, COUNT(f.email) AS n, GROUP_CONCAT(f.email, '، ') AS who, MAX(f.created) AS last
           FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2 GROUP BY j.id ORDER BY last DESC LIMIT 100`) });
@@ -416,8 +432,8 @@ export class Db {
         if (p === '/admin/learn/tojob') return this.learnToJob(+b.id);
         if (p === '/admin/channel') return json(this.chanSet(b));
         if (p === '/admin/channel/skip') { if (b.undo) this.run(`DELETE FROM chan_posted WHERE job_id=? AND skip=1`, +b.id); else this.run(`INSERT OR IGNORE INTO chan_posted(job_id,at,msg_id,skip) VALUES(?,?,0,1)`, +b.id, Date.now()); return json({ ok: true }); }
-        if (p === '/admin/channel/review') { this.run(`INSERT OR REPLACE INTO chan_review(job_id,state,contact,at,by) VALUES(?,?,COALESCE((SELECT contact FROM chan_review WHERE job_id=?),''),?,?)`, +b.id, b.ok ? 1 : 2, +b.id, Date.now(), me.email); return json({ ok: true }); }
-        if (p === '/admin/channel/post-now') return await this.chanTick(url.origin, b.tenders ? 'tenders' : 'jobs');
+        if (p === '/admin/channel/review') return json(this.reviewSet(+b.id, b.state != null ? Math.max(0, Math.min(3, +b.state)) : (b.ok ? 1 : 2), me.email));
+        if (p === '/admin/channel/post-now') return await this.chanTick(url.origin, b.tenders ? 'tenders' : b.hl ? 'hl' : 'jobs');
         if (p === '/admin/sources/purpose') { this.run(`UPDATE sources SET purpose=? WHERE id=?`, b.purpose === 'learn' ? 'learn' : 'jobs', +b.id); return json({ ok: true }); }
         if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/users/role') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذا الإجراء لمطوّر التطبيق فقط'); return this.setRole(me, b); }
@@ -509,14 +525,7 @@ export class Db {
   /** يبدأ دخولاً عبر تيليغرام: رمز لمرة واحدة صالح 5 دقائق + رابط البوت. يضبط الـwebhook أول مرة تلقائياً. */
   async tgLoginStart(url) {
     if (!this.env.TG_BOT_TOKEN) throw new HttpErr(503, 'الدخول عبر تيليغرام غير مهيأ على الخادم');
-    const hook = url.origin + '/tg/webhook';
-    if ((this.one(`SELECT v FROM meta WHERE k='tg_hook'`) || {}).v !== hook) {
-      const r = await this.tgApi('setWebhook', { url: hook, secret_token: await this.tgSecret(), allowed_updates: ['message'], drop_pending_updates: true });
-      if (!r.ok) throw new HttpErr(502, 'تعذّر ربط البوت: ' + (r.description || ''));
-      const me = await this.tgApi('getMe');
-      if (me.ok) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_bot_user',?)`, me.result.username);
-      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_hook',?)`, hook);
-    }
+    await this.ensureHook(url.origin);
     const now = Date.now();
     this.run(`DELETE FROM tg_login WHERE created < ?`, now - 15 * 60e3);
     const nonce = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '').slice(0, 16);
@@ -537,30 +546,192 @@ export class Db {
 
   async tgWebhook(req, b) {
     if (req.headers.get('X-Telegram-Bot-Api-Secret-Token') !== await this.tgSecret()) return json({ ok: false }, 403);
-    const m = b.message;
-    if (!m || !m.from || m.from.is_bot || !m.chat || m.chat.type !== 'private') return json({ ok: true });
-    const text = String(m.text || '');
-    const mm = text.match(/^\/start\s+login_([A-Za-z0-9]{20,64})/);
-    const reply = t => this.ctx.waitUntil(this.tgApi('sendMessage', { chat_id: m.chat.id, text: t }));
-    if (!mm) {
-      reply('👋 أهلاً بك في بوت «وظيفتي».\nللدخول إلى التطبيق: افتح التطبيق ← «✈️ الدخول عبر تيليغرام».\n📲 تحميل التطبيق: ' + RELEASE);
-      return json({ ok: true });
+    try {
+      if (b.callback_query) await this.botCallback(b.callback_query);
+      else if (b.message) await this.botMessage(b.message);
+    } catch (e) { /* لا نعيد خطأ لتيليغرام حتى لا يكرر الإرسال */ }
+    return json({ ok: true });
+  }
+
+  botUserKb() {
+    const chan = this.chanCfg().chat.replace(/^@/, '');
+    return { inline_keyboard: [[{ text: '📲 صفحة التحميل والشرح', url: `${SITE}/download?from=bot` }], [{ text: '📣 قناة الوظائف', url: `https://t.me/${chan}` }], [{ text: '📞 تواصل مع المطوّر', url: `https://wa.me/${DEV_WA}` }]] };
+  }
+
+  async botMessage(m) {
+    if (!m.from || m.from.is_bot || !m.chat || m.chat.type !== 'private') return;
+    const text = String(m.text || '').trim();
+    const send = (t, extra) => this.tgApi('sendMessage', { chat_id: m.chat.id, text: t, ...(extra || {}) });
+    let mm;
+    if ((mm = text.match(/^\/start\s+login_([A-Za-z0-9]{20,64})/))) return this.botLogin(m, mm[1], send);
+    if ((mm = text.match(/^\/start\s+link_([A-Za-z0-9]{20,64})/))) {
+      const r = this.one(`SELECT * FROM tg_link_req WHERE nonce=?`, mm[1]);
+      if (!r || Date.now() - r.created > 15 * 60e3) return send('⌛ انتهت صلاحية رابط الربط. ارجع للتطبيق واضغط «ربط حسابي ببوت تيليغرام» مجدداً.');
+      this.run(`INSERT OR REPLACE INTO tg_links(tg_id,email,at,mute) VALUES(?,?,?,COALESCE((SELECT mute FROM tg_links WHERE tg_id=?),0))`, String(m.from.id), r.email, Date.now(), String(m.from.id));
+      this.run(`DELETE FROM tg_link_req WHERE nonce=?`, r.nonce);
+      const ad = this.tgAdmin(m.from.id);
+      await send(`✅ تم ربط حسابك (${r.email}) بالبوت.` + (ad ? '\nلوحة التحكم جاهزة 👇' : '\nستظهر لوحة التحكم حين تصبح أدمن في التطبيق.'), ad ? { reply_markup: { keyboard: [[{ text: '🛠 لوحة التحكم' }]], resize_keyboard: true, is_persistent: true } } : {});
+      if (ad) await this.botPanel(m.chat.id, null, 'p', ad);
+      return;
     }
-    const row = this.one(`SELECT * FROM tg_login WHERE nonce=?`, mm[1]);
-    if (!row || Date.now() - row.created > 5 * 60e3) { reply('⌛ انتهت صلاحية رابط الدخول. ارجع للتطبيق واضغط «الدخول عبر تيليغرام» مجدداً.'); return json({ ok: true }); }
-    if (row.token) { reply('✅ تم الدخول مسبقاً، ارجع إلى التطبيق.'); return json({ ok: true }); }
+    const ad = this.tgAdmin(m.from.id);
+    const CMD = { '/stats': 's:1', '/week': 's:7', '/month': 's:30', '/funnel': 'f:7', '/channel': 'c', '/top': 'top:7', '/users': 'u', '/errors': 'e', '/sources': 'src', '/reader': 'rd', '/review': 'r:0', '/next': 'c:next', '/postnow': 'c:post', '/pause': 'c:off', '/resume': 'c:on', '/help': 'h', '/panel': 'p', '/admin': 'p' };
+    if (ad && (text === '/start' || text === '🛠 لوحة التحكم' || CMD[text.split(/[\s@]/)[0]])) {
+      if (text === '/start') await send('👋 أهلاً بك يا أدمن «وظيفتي».', { reply_markup: { keyboard: [[{ text: '🛠 لوحة التحكم' }]], resize_keyboard: true, is_persistent: true } });
+      const v = CMD[text.split(/[\s@]/)[0]] || 'p';
+      return this.botPanel(m.chat.id, null, v, ad);
+    }
+    if (/^\/start/.test(text)) {
+      this.evAdd('bot_start');
+      await send('👋 أهلاً بك في «وظيفتي» — فرص العمل والمناقصات في سوريا حسب اختصاصك ومحافظتك.\nهذا ملف التطبيق 👇', { reply_markup: this.botUserKb() });
+      const r = await this.apkSend(m.chat.id);
+      if (r.ok) this.evAdd('bot_apk'); else await send(`📲 حمّل التطبيق من هنا: ${SITE}/download?from=bot`);
+      return;
+    }
+    return send('🤖 هذا بوت «وظيفتي».\nاضغط /start لاستلام ملف التطبيق، أو تابع القناة لتصلك الفرص.', { reply_markup: this.botUserKb() });
+  }
+
+  async botLogin(m, nonce, send) {
+    const row = this.one(`SELECT * FROM tg_login WHERE nonce=?`, nonce);
+    if (!row || Date.now() - row.created > 5 * 60e3) return send('⌛ انتهت صلاحية رابط الدخول. ارجع للتطبيق واضغط «الدخول عبر تيليغرام» مجدداً.');
+    if (row.token) return send('✅ تم الدخول مسبقاً، ارجع إلى التطبيق.');
     const email = `tg${m.from.id}@telegram.user`;   // معرّف ثابت لحساب تيليغرام (لا نحصل على رقم الهاتف)
     const name = [m.from.first_name, m.from.last_name].filter(Boolean).join(' ').slice(0, 80) || (m.from.username ? '@' + m.from.username : 'مستخدم تيليغرام');
     const now = Date.now();
     const acc = this.one(`SELECT * FROM accounts WHERE email=?`, email);
-    if (acc && acc.status === 'blocked') { reply('⛔ هذا الحساب موقوف. تواصل مع مدير التطبيق.'); return json({ ok: true }); }
+    if (acc && acc.status === 'blocked') return send('⛔ هذا الحساب موقوف. تواصل مع مدير التطبيق.');
     if (!acc) this.run(`INSERT INTO accounts(email,name,photo,role,status,created,last_seen) VALUES(?,?,?,?,?,?,?)`, email, name, '', 'user', 'active', now, now);
     else this.run(`UPDATE accounts SET name=?, last_seen=? WHERE email=?`, name, now, email);
     const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
     this.run(`INSERT INTO sessions(token,email,created,dev) VALUES(?,?,?,?)`, token, email, now, 'telegram');
     this.run(`UPDATE tg_login SET token=?, name=? WHERE nonce=?`, token, name, row.nonce);
-    reply(`✅ تم تسجيل دخولك إلى «وظيفتي» باسم ${name}.\nارجع الآن إلى التطبيق 👈`);
-    return json({ ok: true });
+    return send(`✅ تم تسجيل دخولك إلى «وظيفتي» باسم ${name}.\nارجع الآن إلى التطبيق 👈`);
+  }
+
+  async botCallback(q) {
+    const ad = this.tgAdmin(q.from.id);
+    const ans = t => this.tgApi('answerCallbackQuery', { callback_query_id: q.id, ...(t ? { text: t } : {}) });
+    if (!ad || !q.message) return ans('هذه الأزرار للأدمن فقط');
+    const d = String(q.data || 'p'), chat = q.message.chat.id, mid = q.message.message_id;
+    let mm;
+    if ((mm = d.match(/^r([aru]):(\d+)$/))) {   // قرار مراجعة على رسالة فرصة
+      const st = { a: 1, r: 2, u: 0 }[mm[1]];
+      this.reviewSet(+mm[2], st, ad.email);
+      const who = ad.email.replace(/@.*/, '');
+      const lbl = { 1: '✅ تمت الموافقة — تُنشر في الدفعة القادمة', 2: '❌ رُفضت — تبقى في التطبيق فقط', 0: '↩ أُعيدت إلى «بانتظار المراجعة»' }[st];
+      await this.tgApi('editMessageText', { chat_id: chat, message_id: mid, text: String(q.message.text || '').slice(0, 3500) + `\n\n${lbl} (${who})` });
+      return ans(lbl.split(' — ')[0]);
+    }
+    await ans();
+    return this.botPanel(chat, mid, d, ad, q.from.id);
+  }
+
+  /** لوحة التحكم: كل زر يعرض نتيجته بنفس الرسالة مع أزرار فرعية */
+  async botPanel(chat, mid, v, ad, tgId) {
+    const back = [{ text: '⬅ القائمة', callback_data: 'p' }];
+    const per = (pre, d) => [[1, 'اليوم'], [7, '7 أيام'], [30, '30 يوماً']].map(([n, t]) => ({ text: (n === d ? '• ' : '') + t, callback_data: `${pre}:${n}` }));
+    const n = (sql, ...a) => (this.one(sql, ...a) || {}).n || 0;
+    const cfg = this.chanCfg();
+    let text = '', kb = [];
+    const [k, arg] = v.split(':');
+    const days = Math.max(1, Math.min(90, +arg || 1));
+    if (k === 's') { text = this.summaryText(days); kb = [per('s', days), [{ text: '🔄 تحديث', callback_data: v }], back]; }
+    else if (k === 'f') { text = this.reachText(days); kb = [per('f', days), [{ text: '🔄 تحديث', callback_data: v }], back]; }
+    else if (k === 'top') {
+      const since = Date.now() - days * DAY;
+      const tv = this.q(`SELECT e.job_id, e.n, j.title, j.text FROM job_ev e JOIN jobs j ON j.id=e.job_id WHERE e.k='view' AND j.created>? ORDER BY e.n DESC LIMIT 5`, since - 14 * DAY);
+      const ta = this.q(`SELECT e.job_id, e.n, j.title, j.text FROM job_ev e JOIN jobs j ON j.id=e.job_id WHERE e.k='apply' AND j.created>? ORDER BY e.n DESC LIMIT 5`, since - 14 * DAY);
+      const tp = this.q(`SELECT p.views n, j.title, j.text FROM chan_posted p JOIN jobs j ON j.id=p.job_id WHERE p.at>? AND p.views>0 ORDER BY p.views DESC LIMIT 5`, since);
+      const L = (a) => a.length ? a.map((x, i) => `${i + 1}. ${this.unNorm(x.text, x.title).slice(0, 45)} (${x.n})`).join('\n') : '—';
+      text = `🔥 الأكثر اهتماماً\n\n👁 مشاهدات في القناة:\n${L(tp)}\n\n🧲 زيارات صفحة الفرصة:\n${L(tv)}\n\n✋ ضغطات التقديم:\n${L(ta)}`;
+      kb = [per('top', days), back];
+    } else if (k === 'u') {
+      const since = Date.now() - 7 * DAY;
+      const vers = this.q(`SELECT app_ver v, COUNT(*) n FROM installs WHERE last_seen>? AND app_ver<>'' GROUP BY app_ver ORDER BY n DESC LIMIT 6`, since);
+      const nb = {};
+      for (const r of this.q(`SELECT model FROM installs WHERE last_seen>?`, since)) { let x = (String(r.model).trim().split(/\s+/)[0] || '?').toLowerCase(); if (/^sm-/.test(x)) x = 'samsung'; nb[x] = (nb[x] || 0) + 1; }
+      text = `👥 المستخدمون\n\nالحسابات: ${n(`SELECT COUNT(*) n FROM accounts`)} (جديدة اليوم ${n(`SELECT COUNT(*) n FROM accounts WHERE created>?`, Date.now() - DAY)}، هذا الأسبوع ${n(`SELECT COUNT(*) n FROM accounts WHERE created>?`, since)})\nنشطون اليوم: ${n(`SELECT COUNT(*) n FROM accounts WHERE last_seen>?`, Date.now() - DAY)}\nأجهزة نشطة (7 أيام): ${n(`SELECT COUNT(*) n FROM installs WHERE last_seen>?`, since)}\n\n🔢 النسخ: ${vers.map(x => `${x.v} (${x.n})`).join('، ') || '—'}\n📱 الأجهزة: ${Object.entries(nb).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([a, b]) => `${a} ${b}`).join('، ') || '—'}`;
+      kb = [[{ text: '🔄 تحديث', callback_data: 'u' }], back];
+    } else if (k === 'e') {
+      const rs = this.q(`SELECT kind, err_code, count, model, app_ver, last_seen FROM client_reports WHERE resolved=0 ORDER BY last_seen DESC LIMIT 8`);
+      text = rs.length ? '🐞 الأخطاء غير المحلولة\n\n' + rs.map(r => `${r.kind === 'auth_fail' ? '🔑' : '💥'} ${r.err_code} ×${r.count}\n   📱 ${r.model} • v${r.app_ver}`).join('\n') + '\n\nالتفاصيل والحلول من التطبيق: الإدارة ← الأخطاء' : '✅ لا أخطاء غير محلولة';
+      kb = [[{ text: '🔄 تحديث', callback_data: 'e' }], back];
+    } else if (k === 'src') {
+      const fail = this.q(`SELECT name,value,last_err FROM sources WHERE enabled=1 AND pending=0 AND kind<>'manual' AND fail_since>0 LIMIT 8`);
+      const off = this.q(`SELECT name,value FROM sources WHERE auto_off=1 AND enabled=0 LIMIT 8`);
+      const pend = this.q(`SELECT name,value,added_by FROM sources WHERE pending=1 LIMIT 8`);
+      text = `📡 المصادر\n\nفعّالة: ${n(`SELECT COUNT(*) n FROM sources WHERE enabled=1`)}\n\n❌ تفشل: ${fail.length ? '\n' + fail.map(f => `• ${f.name || f.value}: ${String(f.last_err || '').slice(0, 60)}`).join('\n') : 'لا شيء'}\n\n⏸ أُوقفت تلقائياً: ${off.length ? off.map(f => f.name || f.value).join('، ') : 'لا شيء'}\n\n📨 مقترحة بانتظار موافقتك: ${pend.length ? '\n' + pend.map(f => `• ${f.name || f.value} (${f.added_by})`).join('\n') : 'لا شيء'}`;
+      kb = [[{ text: '🔄 تحديث', callback_data: 'src' }], back];
+    } else if (k === 'rd') {
+      const tg = JSON.parse((this.one(`SELECT v FROM meta WHERE k='tg_account'`) || {}).v || 'null');
+      text = !tg ? '👤 حساب القراءة غير مفعّل' : `👤 حساب القراءة: ${tg.ok ? '✅ متصل' : '⚠️ متوقف'}${tg.name ? ' (' + tg.name + ')' : ''}\nآخر تحديث: ${new Date(tg.at + 3 * 3600e3).toISOString().slice(0, 16).replace('T', ' ')}${tg.ok ? '' : '\nالسبب: ' + tg.err}`;
+      kb = [[{ text: '🔄 تحديث', callback_data: 'rd' }], back];
+    } else if (k === 'c') {
+      if (arg === 'on' || arg === 'off') this.chanSet({ on: arg === 'on' });
+      if (arg === 'mode') this.chanSet({ mode: cfg.mode === 'all' ? 'best' : 'all' });
+      const c2 = this.chanCfg(), info = this.chanInfo(SITE);
+      if (arg === 'post!' || arg === 'hl!') {
+        const r = await (await this.chanTick(SITE, arg === 'hl!' ? 'hl' : 'jobs')).json();
+        text = r.ok ? (r.empty ? 'لا توجد فرص جديدة للنشر الآن.' : `✅ نُشرت ${r.n} ${arg === 'hl!' ? 'في منشور «أبرز الفرص»' : 'فرصة'}`) : '❌ ' + r.err;
+        kb = [[{ text: '📣 القناة', callback_data: 'c' }], back];
+      } else if (arg === 'post' || arg === 'hl') {
+        text = arg === 'hl' ? `نشر «⭐ أبرز الفرص» الآن (بإشعار للمشتركين)؟` : `نشر ${Math.min(info.waiting, c2.mode === 'all' ? 15 : c2.n)} فرصة الآن في ${c2.chat}؟`;
+        kb = [[{ text: '✅ نعم، انشر', callback_data: `c:${arg}!` }, { text: 'إلغاء', callback_data: 'c' }]];
+      } else if (arg === 'next') {
+        text = `👀 الدفعة القادمة (${info.next.length} من ${info.waiting} بانتظار النشر):\n\n` + (info.next.map((x, i) => `${i + 1}. ${x.title}${x.org ? ' — ' + x.org : ''}${x.contact ? ' 📞' : ''}`).join('\n') || 'لا شيء جديد');
+        kb = [[{ text: '🚀 انشر الآن', callback_data: 'c:post' }], [{ text: '📣 القناة', callback_data: 'c' }], back];
+      } else {
+        const subs = (this.one(`SELECT n FROM ev WHERE k='chan_subs' ORDER BY day DESC LIMIT 1`) || {}).n || 0;
+        text = `📣 قناة الوظائف ${c2.chat}\n\nالنشر التلقائي: ${c2.on ? '▶ يعمل' : '⏸ متوقف'}\nالطريقة: ${c2.mode === 'all' ? 'كل الفرص بصمت + «أبرز الفرص» بإشعار' : 'أبرز الفرص فقط'}\nالمواعيد: ${c2.times.join(' و ')} • حد يومي ${c2.cap}\n👥 المشتركون: ${subs}\n📤 نُشر خلال 24 ساعة: ${info.today}\n🕓 بانتظار النشر: ${info.waiting}\n⏳ بانتظار المراجعة: ${info.counts.pending}${info.err ? '\n⚠️ آخر خطأ: ' + info.err.err : ''}`;
+        kb = [[{ text: '👀 الدفعة القادمة', callback_data: 'c:next' }, { text: '🚀 انشر الآن', callback_data: 'c:post' }], [{ text: '⭐ أبرز الفرص الآن', callback_data: 'c:hl' }],
+          [{ text: c2.on ? '⏸ إيقاف النشر' : '▶ تشغيل النشر', callback_data: c2.on ? 'c:off' : 'c:on' }, { text: c2.mode === 'all' ? '🔁 أبرز الفرص فقط' : '🔁 كل الفرص بصمت', callback_data: 'c:mode' }], back];
+      }
+    } else if (k === 'r') {
+      const st = [0, 2, 3].includes(+arg) ? +arg : 0;
+      const items = this.chanReviewList(st);
+      const cnt = s => n(`SELECT COUNT(*) n FROM chan_review r JOIN jobs j ON j.id=r.job_id WHERE r.state=? AND j.hidden=0`, s);
+      const name = { 0: '⏳ بانتظار المراجعة', 2: '🚫 المرفوضة', 3: '🗄 المؤرشفة' }[st];
+      text = `${name}: ${items.length}${items.length > 8 ? ' (أعرض أحدث 8)' : ''}` + (st === 0 ? '\nما لا تراجعه خلال 5 أيام يُؤرشف تلقائياً.' : '');
+      kb = [[{ text: `⏳ بانتظار (${cnt(0)})`, callback_data: 'r:0' }, { text: `🚫 مرفوضة (${cnt(2)})`, callback_data: 'r:2' }, { text: `🗄 مؤرشفة (${cnt(3)})`, callback_data: 'r:3' }], back];
+      await this.botShow(chat, mid, text, kb);
+      for (const x of items.slice(0, 8)) {
+        const t = `${x.title}${x.org ? '\n🏢 ' + x.org : ''}\n📞 ${x.contact}${x.expired ? '\n⏳ انتهى موعدها' : ''}${st ? `\n${st === 2 ? 'رُفضت' : 'أُرشفت'}: ${new Date(x.at + 3 * 3600e3).toISOString().slice(0, 10)} — ${String(x.by || '').replace(/@.*/, '')}` : ''}\n\n${String(x.text || '').slice(0, 900)}`;
+        const bk = st === 0 ? [[{ text: '✅ موافق', callback_data: `ra:${x.id}` }, { text: '❌ رفض', callback_data: `rr:${x.id}` }]]
+          : [[{ text: '↩ تراجع', callback_data: `ru:${x.id}` }, ...(x.expired ? [] : [{ text: '✅ موافق وانشر', callback_data: `ra:${x.id}` }])]];
+        await this.tgApi('sendMessage', { chat_id: chat, text: t.slice(0, 4000), disable_web_page_preview: true, reply_markup: { inline_keyboard: bk } });
+      }
+      return;
+    } else if (k === 'apk') {
+      const r = await this.apkSend(chat);
+      text = r.ok ? '📲 أُرسل ملف التطبيق أعلاه — يمكنك إعادة توجيهه لأي شخص.' : '❌ تعذّر إرسال الملف: ' + (r.description || '');
+      kb = [back];
+    } else if (k === 'mute') {
+      const id = String(tgId || chat);
+      const cur = this.one(`SELECT mute FROM tg_links WHERE tg_id=?`, id);
+      if (cur) this.run(`UPDATE tg_links SET mute=? WHERE tg_id=?`, cur.mute ? 0 : 1, id);
+      else this.run(`INSERT INTO tg_links(tg_id,email,at,mute) VALUES(?,?,?,1)`, id, ad.email, Date.now());
+      return this.botPanel(chat, mid, 'p', ad, tgId);
+    } else if (k === 'h') {
+      text = '❓ لوحة التحكم\n\n📊 الإحصائيات: الفرص والحسابات والتثبيتات والنسخ.\n📈 الوصول: صفحة التحميل ← التحميل ← التثبيت ← الحساب، والقناة وضغطات التقديم.\n📣 القناة: الحالة، الدفعة القادمة، النشر الآن، الإيقاف والتشغيل.\n⏳ المراجعة: الفرص التي فيها واتساب/هاتف/معرّف — موافقة أو رفض أو تراجع.\n🐞 الأخطاء • 📡 المصادر • 👤 حساب القراءة.\n🔕 التنبيهات: إيقاف/تشغيل تنبيهات البوت لك وحدك.\n\nالأوامر النصية الاحتياطية: /stats /week /month /funnel /channel /review /top /users /errors /sources /reader';
+      kb = [back];
+    } else {
+      const pend = n(`SELECT COUNT(*) n FROM chan_review WHERE state=0`), errs = n(`SELECT COUNT(*) n FROM client_reports WHERE resolved=0`);
+      const muted = (this.one(`SELECT mute FROM tg_links WHERE tg_id=?`, String(tgId || chat)) || {}).mute;
+      text = `🛠 لوحة تحكم وظيفتي\n\n📲 تثبيتات اليوم: ${n(`SELECT COUNT(*) n FROM installs WHERE first_seen>?`, Date.now() - DAY)} • 👤 حسابات اليوم: ${n(`SELECT COUNT(*) n FROM accounts WHERE created>?`, Date.now() - DAY)}\n⬇ زيارات صفحة التحميل اليوم: ${this.evSum('dl_page', 1)}\n⏳ بانتظار المراجعة: ${pend}${errs ? `\n🐞 أخطاء غير محلولة: ${errs}` : ''}`;
+      kb = [[{ text: '📊 الإحصائيات', callback_data: 's:1' }, { text: '📈 التحميل والوصول', callback_data: 'f:1' }],
+        [{ text: '📣 القناة', callback_data: 'c' }, { text: `⏳ المراجعة${pend ? ' (' + pend + ')' : ''}`, callback_data: 'r:0' }],
+        [{ text: '🔥 الأكثر اهتماماً', callback_data: 'top:7' }, { text: '👥 المستخدمون', callback_data: 'u' }],
+        [{ text: `🐞 الأخطاء${errs ? ' (' + errs + ')' : ''}`, callback_data: 'e' }, { text: '📡 المصادر', callback_data: 'src' }],
+        [{ text: '👤 حساب القراءة', callback_data: 'rd' }, { text: '📲 ملف التطبيق', callback_data: 'apk' }],
+        [{ text: muted ? '🔔 تشغيل التنبيهات' : '🔕 إيقاف التنبيهات', callback_data: 'mute' }, { text: '❓ مساعدة', callback_data: 'h' }]];
+    }
+    return this.botShow(chat, mid, text, kb);
+  }
+
+  async botShow(chat, mid, text, kb) {
+    const body = { chat_id: chat, text: String(text).slice(0, 4000), disable_web_page_preview: true, reply_markup: { inline_keyboard: kb } };
+    if (mid) { const r = await this.tgApi('editMessageText', { ...body, message_id: mid }); if (r.ok || /not modified/.test(r.description || '')) return r; }
+    return this.tgApi('sendMessage', body);
   }
 
   who(req) {
@@ -608,10 +779,22 @@ export class Db {
   }
 
   // ===== الوظائف =====
+  /** فرصة من تيليغرام نُشرت في قناتنا ← رابط منشورنا بدل القناة الأخرى */
+  pubUrl(r) {
+    const u = String(r.url || '');
+    if (!/^https?:\/\/(t\.me|telegram\.me)\//i.test(u)) return u;
+    if (!this._cmap || Date.now() - this._cmap.at > 300e3) {
+      const m = new Map(); for (const x of this.q(`SELECT job_id, msg_id FROM chan_posted WHERE skip=0 AND msg_id>0`)) m.set(x.job_id, x.msg_id);
+      this._cmap = { at: Date.now(), m, cfg: this.chanCfg() };
+    }
+    const mid = this._cmap.m.get(r.id);
+    return (mid && this.chanLink(this._cmap.cfg, mid)) || u;
+  }
+
   jobRow(r) {
     return {
       id: r.id, t: r.title, o: r.org, s: r.specs, g: r.govs, c: r.sector, d: r.deadline,
-      p: r.posted, src: r.src, n: (r.srcs || '').split('\n').filter(Boolean).length, u: r.url, a: r.apply, x: r.text, sh: r.shared_by ? 1 : 0,
+      p: r.posted, src: r.src, n: (r.srcs || '').split('\n').filter(Boolean).length, u: this.pubUrl(r), a: r.apply, x: r.text, sh: r.shared_by ? 1 : 0,
       im: r.image || '', dt: r.doubt ? 1 : 0, k: r.kind || 'job', tc: r.tcat || '', bd: r.bond || '',
     };
   }
@@ -1130,7 +1313,7 @@ export class Db {
       newFlags: this.one(`SELECT COUNT(*) AS n FROM flags WHERE created > ?`, since).n,
       edits: this.one(`SELECT COUNT(*) AS n FROM jobs WHERE edited_at > 0 AND edit_reviewed=0`).n,
       reports: this.one(`SELECT COUNT(*) AS n FROM client_reports WHERE resolved=0`).n,
-      chanReview: this.chanReviewList().length,
+      chanReview: (this.one(`SELECT COUNT(*) n FROM chan_review WHERE state=0`) || {}).n || 0,
       newReports: this.one(`SELECT COUNT(*) AS n FROM client_reports WHERE resolved=0 AND last_seen > ?`, since).n,
       newFixes: this.one(`SELECT COUNT(*) AS n FROM fixes WHERE status='pending' AND created > ?`, since).n,
       autoOff: this.q(`SELECT name FROM sources WHERE auto_off > ? AND ? > 0 ORDER BY auto_off DESC LIMIT 10`, since, since).map(r => r.name),
@@ -1258,52 +1441,31 @@ export class Db {
 
   /** الملخص اليومي للمطوّر على تيليغرام (مرة في اليوم بتوقيت دمشق). */
   digest(force) {
-    const day = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+    const day = this.dayDm();
     const done = (this.one(`SELECT v FROM meta WHERE k='digest_day'`) || {}).v;
     if (done === day && !force) return json({ skip: true });
-    const since = Date.now() - DAY, n = (sql, ...a) => (this.one(sql, ...a) || {}).n || 0;
-    const jobs = n(`SELECT COUNT(*) n FROM jobs WHERE created>? AND COALESCE(kind,'job')='job' AND COALESCE(hidden,0)=0`, since);
-    const tenders = n(`SELECT COUNT(*) n FROM jobs WHERE created>? AND kind='tender'`, since);
-    const learn = n(`SELECT COUNT(*) n FROM learn WHERE created>?`, since);
-    const files = n(`SELECT COUNT(*) n FROM learn WHERE created>? AND ftype IS NOT NULL`, since);
-    const newAcc = n(`SELECT COUNT(*) n FROM accounts WHERE created>?`, since);
-    const active = n(`SELECT COUNT(*) n FROM accounts WHERE last_seen>?`, since);
-    const totalAcc = n(`SELECT COUNT(*) n FROM accounts`);
-    const newInst = n(`SELECT COUNT(*) n FROM installs WHERE first_seen>?`, since);
-    const crashes = n(`SELECT COUNT(*) n FROM client_reports WHERE last_seen>? AND resolved=0`, since);
+    const n = (sql, ...a) => (this.one(sql, ...a) || {}).n || 0;
     const pendingSrc = n(`SELECT COUNT(*) n FROM sources WHERE pending=1`);
-    const failing = this.q(`SELECT name,value,last_err FROM sources WHERE enabled=1 AND pending=0 AND kind<>'manual' AND fail_since IS NOT NULL AND fail_since>0 AND COALESCE(last_err,'') NOT LIKE '⏸%' LIMIT 5`);
+    const failing = this.q(`SELECT name,value FROM sources WHERE enabled=1 AND pending=0 AND kind<>'manual' AND fail_since IS NOT NULL AND fail_since>0 AND COALESCE(last_err,'') NOT LIKE '⏸%' LIMIT 5`);
     const autoOff = this.q(`SELECT name,value FROM sources WHERE auto_off=1 AND enabled=0 LIMIT 5`);
-    const top = this.q(`SELECT src, COUNT(*) n FROM jobs WHERE created>? GROUP BY src ORDER BY n DESC LIMIT 3`, since);
-    const nb = {};
-    for (const r of this.q(`SELECT model FROM installs WHERE first_seen>?`, since)) {
-      let x = (String(r.model).trim().split(/\s+/)[0] || '?').toLowerCase();
-      if (/^sm-/.test(x)) x = 'samsung';
-      x = x.charAt(0).toUpperCase() + x.slice(1);
-      nb[x] = (nb[x] || 0) + 1;
-    }
-    const newBrands = Object.entries(nb).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join('، ');
     const tg = JSON.parse((this.one(`SELECT v FROM meta WHERE k='tg_account'`) || {}).v || 'null');
-    const L = [`📊 ملخص وظيفتي — ${day}`, '',
-      `💼 فرص جديدة: ${jobs}   📑 مناقصات: ${tenders}`,
-      `🎓 تعلّم: ${learn}${files ? ` (منها ${files} ملف)` : ''}`,
-      `👥 حسابات جديدة: ${newAcc} • نشطون اليوم: ${active} • المجموع: ${totalAcc}`,
-      `📲 تثبيتات جديدة: ${newInst}` + (newBrands ? ` (${newBrands})` : ''),
-      crashes ? `💥 أخطاء/انهيارات جديدة: ${crashes}` : '✅ لا أخطاء جديدة',
+    const pend = n(`SELECT COUNT(*) n FROM chan_review WHERE state=0`);
+    const L = [`📊 ملخص وظيفتي — ${day}`, '', this.summaryText(1), '', this.reachText(1), '',
+      pend ? `⏳ بانتظار مراجعتك للقناة: ${pend}` : '',
       pendingSrc ? `📨 مصادر مقترحة بانتظار موافقتك: ${pendingSrc}` : '',
       tg ? (tg.ok ? '👤 حساب القراءة: متصل' : `⚠️ حساب القراءة متوقف: ${tg.err}`) : '',
-      top.length ? '🏆 الأكثر إضافة: ' + top.map(t => `${t.src} (${t.n})`).join('، ') : '',
       failing.length ? '❌ مصادر تفشل: ' + failing.map(f => f.name || f.value).join('، ') : '',
       autoOff.length ? '⏸ أُوقفت تلقائياً: ' + autoOff.map(f => f.name || f.value).join('، ') : '',
     ].filter(x => x !== '');
     this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('digest_day',?)`, day);
-    if (this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg(L.join('\n')));
-    return json({ ok: true, text: L.join('\n') });
+    const text = L.join('\n').replace(/\n{3,}/g, '\n\n');
+    if (this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) this.ctx.waitUntil(this.tgApi('sendMessage', { chat_id: this.env.TG_CHAT_ID, text: text.slice(0, 4000), reply_markup: { inline_keyboard: [[{ text: '🛠 لوحة التحكم', callback_data: 'p' }]] } }));
+    return json({ ok: true, text });
   }
 
   // ===== قناة الوظائف على تيليغرام (3.1.2) =====
   chanCfg() {
-    const d = { on: 1, chat: '@wazifati_jobs', n: 8, times: [9, 18], tenders: 1 };
+    const d = { on: 1, chat: '@wazifati_jobs', n: 8, times: [9, 18], tenders: 1, mode: 'all', cap: 40 };
     try { return { ...d, ...JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan'`) || {}).v || '{}') }; } catch (_) { return d; }
   }
 
@@ -1312,6 +1474,8 @@ export class Db {
     if (b.on != null) c.on = b.on ? 1 : 0;
     if (b.tenders != null) c.tenders = b.tenders ? 1 : 0;
     if (b.n != null) c.n = Math.max(1, Math.min(15, +b.n || 8));
+    if (b.cap != null) c.cap = Math.max(5, Math.min(150, +b.cap || 40));
+    if (b.mode != null) c.mode = b.mode === 'best' ? 'best' : 'all';
     if (b.times != null) {
       const t = [...new Set(String(b.times).split(/[^\d]+/).map(Number).filter(x => x >= 0 && x <= 23))].sort((a, b) => a - b).slice(0, 6);
       if (t.length) c.times = t;
@@ -1343,34 +1507,38 @@ export class Db {
     return (phones.length || handles.length) ? [...new Set([...phones, ...handles])].slice(0, 4).join(' ، ') + (hasWa ? ' (واتساب)' : '') : '';
   }
 
-  /** يجهّز المرشّحين: يُدخل ما يحتاج مراجعة إلى chan_review ويعيد القابل للنشر فقط */
+  /** يجهّز المرشّحين: يُدخل ما يحتاج مراجعة إلى chan_review ويعيد القابل للنشر فقط.
+   *  الحالات: 0 بانتظار، 1 موافق، 2 مرفوض، 3 مؤرشف (5 أيام بلا قرار). الموافق عليه يُنشر حتى 14 يوماً ما دام موعده قائماً. */
   chanCands() {
     const now = Date.now(), today = new Date(now + 3 * 3600e3).toISOString().slice(0, 10);
     const rows = this.q(`SELECT id,title,org,specs,govs,deadline,apply,src,url,text,created FROM jobs
       WHERE COALESCE(kind,'job')='job' AND hidden=0 AND doubt=0 AND created>? AND (deadline IS NULL OR deadline='' OR deadline>=?)
-      AND id NOT IN (SELECT job_id FROM chan_posted) ORDER BY id DESC LIMIT 300`, now - 3 * DAY, today);
+      AND id NOT IN (SELECT job_id FROM chan_posted) ORDER BY id DESC LIMIT 400`, now - 14 * DAY, today);
     const rev = {}; for (const x of this.q(`SELECT job_id, state FROM chan_review`)) rev[x.job_id] = x.state;
     const out = []; let added = 0;
     for (const r of rows) {
+      const fresh = r.created > now - 3 * DAY;
       if (!this.chanSyria(r)) continue;
       const c = this.chanContact(r.text);
       if (c) {
-        if (rev[r.id] == null) { this.run(`INSERT OR IGNORE INTO chan_review(job_id,state,contact,at) VALUES(?,0,?,?)`, r.id, c, now); rev[r.id] = 0; added++; }
+        if (rev[r.id] == null) { if (!fresh) continue; this.run(`INSERT OR IGNORE INTO chan_review(job_id,state,contact,at) VALUES(?,0,?,?)`, r.id, c, now); rev[r.id] = 0; added++; }
         if (rev[r.id] !== 1) continue;
         r.keepContact = 1;
-      } else if (rev[r.id] === 2) continue;
+      } else if (rev[r.id] === 2 || rev[r.id] === 3 || !fresh) continue;
       out.push(r);
     }
     return { out, added };
   }
 
-  chanPick(n) {
-    const now = Date.now();
-    const rows = this.chanCands().out;
+  chanScore(r) { return (r.keepContact ? 4 : 0) + (r.apply ? 3 : 0) + (r.deadline ? 2 : 0) + (r.org ? 1 : 0) + (/other/.test(r.specs || 'other') ? 0 : 1) - (Date.now() - r.created) / DAY; }
+
+  /** n=0 ← كل المرشّحين (مرتبين حسب الجودة) بلا حدود توازن */
+  chanPick(n, rows) {
+    rows = rows || this.chanCands().out;
     const seenT = new Set();
-    const sc = r => (r.keepContact ? 4 : 0) + (r.apply ? 3 : 0) + (r.deadline ? 2 : 0) + (r.org ? 1 : 0) + (/other/.test(r.specs || 'other') ? 0 : 1) - (now - r.created) / DAY;
     const cand = rows.filter(r => { const k = norm(String(r.title || '')).slice(0, 40) + '|' + norm(String(r.org || '')).slice(0, 20); if (seenT.has(k)) return false; seenT.add(k); return true; })
-      .sort((a, b) => sc(b) - sc(a));
+      .sort((a, b) => this.chanScore(b) - this.chanScore(a));
+    if (!n) return cand;
     const out = [], ps = {}, pg = {};
     for (const pass of [1, 2]) for (const r of cand) {
       if (out.length >= n) break;
@@ -1479,7 +1647,7 @@ export class Db {
   async chanFail(cfg, r) {
     const err = String((r && r.description) || 'فشل الإرسال').slice(0, 200);
     this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('chan_err',?)`, JSON.stringify({ err, at: Date.now() }));
-    if (this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg('⚠️ تعذّر النشر في قناة الوظائف ' + cfg.chat + ': ' + err));
+    this.ctx.waitUntil(this.notifyAdmins('⚠️ تعذّر النشر في قناة الوظائف ' + cfg.chat + ': ' + err));
     return { ok: false, err };
   }
 
@@ -1491,26 +1659,73 @@ export class Db {
       if (this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg(`✅ أول نشر في قناة الوظائف ${cfg.chat} تم بنجاح (${n}).`));
     }
     this.run(`DELETE FROM chan_posted WHERE at < ?`, at - 60 * DAY);
-    this.run(`DELETE FROM chan_review WHERE at < ?`, at - 30 * DAY);
+    this.run(`DELETE FROM chan_review WHERE state IN (2,3) AND at < ?`, at - 60 * DAY);
   }
 
-  /** كل وظيفة بمنشور مستقل: الأول بإشعار، والباقي صامت؛ رابط التطبيق في آخر منشور */
-  async chanSendJobs(cfg, rows, origin) {
+  chanKb(r, origin, last) {
+    const kb = [[{ text: '📄 التفاصيل كاملة وطريقة التقديم', url: `${origin}/j/${r.id}?c=ch` }]];
+    if (last) kb.push([{ text: '📲 حمّل تطبيق وظيفتي — فرص حسب اختصاصك', url: `${origin}/download?from=ch` }]);
+    return { inline_keyboard: kb };
+  }
+
+  /** كل وظيفة بمنشور مستقل. silent=كلها صامتة (وضع «كل الفرص»)، وإلا الأول بإشعار والباقي صامت */
+  async chanSendJobs(cfg, rows, origin, silent) {
     if (!this.env.TG_BOT_TOKEN) return { ok: false, err: 'TG_BOT_TOKEN غير مهيأ' };
     if (!rows.length) return { ok: true, empty: true };
     let n = 0;
     for (let i = 0; i < rows.length; i++) {
-      const r = rows[i], last = i === rows.length - 1;
-      const kb = [[{ text: '📄 التفاصيل كاملة وطريقة التقديم', url: `${origin}/j/${r.id}` }]];
-      if (last) kb.push([{ text: '📲 حمّل تطبيق وظيفتي — فرص حسب اختصاصك', url: RELEASE }]);
+      const r = rows[i];
       const res = await this.tgApi('sendMessage', { chat_id: cfg.chat, text: this.chanJobText(r), parse_mode: 'HTML', disable_web_page_preview: true,
-        disable_notification: i > 0, reply_markup: { inline_keyboard: kb } });
+        disable_notification: silent || i > 0, reply_markup: this.chanKb(r, origin, !silent && i === rows.length - 1) });
       if (!res.ok) { if (!n) return this.chanFail(cfg, res); break; }
       this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip) VALUES(?,?,?,0)`, r.id, Date.now(), res.result.message_id);
+      this.evAdd('chan_post');
       n++;
     }
+    this._cmap = null;
     this.chanDone(cfg, n + ' فرصة');
     return { ok: true, n };
+  }
+
+  chanLink(cfg, msgId) { return /^@/.test(cfg.chat) ? `https://t.me/${cfg.chat.slice(1)}/${msgId}` : ''; }
+
+  /** «⭐ أبرز فرص اليوم»: أفضل n مما نُشر خلال 24 ساعة ولم يُبرز بعد — بإشعار */
+  async chanHighlights(cfg, origin) {
+    const ps = this.q(`SELECT p.job_id, p.msg_id, j.title, j.org, j.govs, j.specs, j.apply, j.deadline, j.created, j.text FROM chan_posted p JOIN jobs j ON j.id=p.job_id
+      WHERE p.skip=0 AND p.msg_id>0 AND COALESCE(p.hl,0)=0 AND p.at>? AND COALESCE(j.kind,'job')='job' AND j.hidden=0`, Date.now() - DAY);
+    if (!ps.length) return { ok: true, empty: true };
+    const top = this.chanPick(cfg.n, ps.map(x => ({ ...x, id: x.job_id })));
+    const { esc, lab } = this.chanFmt();
+    const h = new Date(Date.now() + 3 * 3600e3).getUTCHours();
+    const L = [`⭐ <b>أبرز فرص ${h < 14 ? 'الصباح' : 'المساء'}</b> — اختيار «وظيفتي»`, ''];
+    top.forEach((r, i) => {
+      const title = esc(this.cleanText(this.unNorm(r.text, r.title)).slice(0, 90)) || 'فرصة';
+      const org = esc(this.cleanText(this.unNorm(r.text, r.org)).slice(0, 50));
+      const g = lab(LABELS.govs, r.govs, ['unknown']).slice(0, 2).join('، ');
+      const link = this.chanLink(cfg, r.msg_id) || `${origin}/j/${r.id}?c=ch`;
+      L.push(`${i + 1}. <a href="${link}">${title}</a>${org ? ' — ' + org : ''}${g ? ' • 📍' + esc(g) : ''}`);
+    });
+    L.push('', `📌 كل الفرص الجديدة تُنشر هنا أولاً بأول. ابحث بوسم محافظتك مثل #دمشق أو اختصاصك مثل #هندسة.`);
+    const res = await this.tgApi('sendMessage', { chat_id: cfg.chat, text: L.join('\n').slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: [[{ text: '📲 حمّل تطبيق وظيفتي — فرص حسب اختصاصك', url: `${origin}/download?from=ch` }]] } });
+    if (!res.ok) return this.chanFail(cfg, res);
+    for (const r of top) this.run(`UPDATE chan_posted SET hl=? WHERE job_id=?`, Date.now(), r.id);
+    return { ok: true, n: top.length };
+  }
+
+  /** تحديث المنشور بدل تكراره: إن تغيّرت الفرصة (موعد/رابط/دمج مصدر جديد) بعد نشرها */
+  async chanEdits(cfg, origin) {
+    const rows = this.q(`SELECT j.*, p.msg_id, p.at pat FROM chan_posted p JOIN jobs j ON j.id=p.job_id
+      WHERE p.skip=0 AND p.msg_id>0 AND COALESCE(j.kind,'job')='job' AND j.updated > MAX(p.at, COALESCE(p.ed,0)) + 60000 AND p.at > ? LIMIT 5`, Date.now() - 7 * DAY);
+    let n = 0;
+    for (const r of rows) {
+      const rv = this.one(`SELECT state FROM chan_review WHERE job_id=?`, r.id);
+      r.keepContact = rv && rv.state === 1 ? 1 : 0;
+      const res = await this.tgApi('editMessageText', { chat_id: cfg.chat, message_id: r.msg_id, text: this.chanJobText(r), parse_mode: 'HTML', disable_web_page_preview: true, reply_markup: this.chanKb(r, origin, false) });
+      this.run(`UPDATE chan_posted SET ed=? WHERE job_id=?`, Date.now(), r.id);
+      if (res.ok) n++;
+    }
+    return n;
   }
 
   async chanSendTenders(cfg, rows, origin) {
@@ -1523,47 +1738,81 @@ export class Db {
     return { ok: true, n: rows.length };
   }
 
-  /** يُستدعى كل ساعة من الجالب، أو يدوياً من الأدمن («انشر الآن»: force='jobs'|'tenders'). */
+  /** يُستدعى كل ساعة من الجالب، أو يدوياً من الأدمن («انشر الآن»: force='jobs'|'tenders'|'hl'). */
   async chanTick(origin, force) {
     const cfg = this.chanCfg();
-    if (force === 'jobs') return json(await this.chanSendJobs(cfg, this.chanPick(cfg.n), origin));
+    if (force === 'jobs') return json(await this.chanSendJobs(cfg, this.chanPick(cfg.mode === 'all' ? 15 : cfg.n), origin, cfg.mode === 'all'));
     if (force === 'tenders') return json(await this.chanSendTenders(cfg, this.chanTenders(), origin));
-    if (!cfg.on) return json({ off: true });
-    // كل ساعة: تحويل الجديد الذي فيه واتساب/هاتف/معرّف إلى المراجعة وتنبيه المطوّر
-    const { added } = this.chanCands();
-    if (added && this.env.TG_CHAT_ID) {
-      const tot = (this.one(`SELECT COUNT(*) n FROM chan_review r JOIN jobs j ON j.id=r.job_id WHERE r.state=0 AND j.hidden=0 AND r.job_id NOT IN (SELECT job_id FROM chan_posted)`) || {}).n || 0;
-      this.ctx.waitUntil(this.notifyTg(`⏳ ${added} فرصة جديدة فيها واتساب/هاتف/معرّف تيليغرام بانتظار مراجعتك قبل النشر في القناة (المجموع ${tot}).\nمن التطبيق: الإدارة ← 📣 قناة الوظائف`));
-    }
+    if (force === 'hl') return json(await this.chanHighlights(cfg, origin));
+    const out = {};
+    try { await this.ensureHook(origin); } catch (_) { /* */ }
+    try { out.apk = await this.apkPin(cfg, origin); } catch (e) { out.apk = String(e).slice(0, 100); }
+    try { await this.subsDaily(cfg); } catch (_) { /* */ }
+    out.review = await this.reviewTick();
+    if (!cfg.on) return json({ ...out, off: true });
+    try { out.edits = await this.chanEdits(cfg, origin); } catch (_) { /* */ }
     const dm = new Date(Date.now() + 3 * 3600e3), day = dm.toISOString().slice(0, 10), h = dm.getUTCHours();
+    if (cfg.mode === 'all') {
+      const today = (this.one(`SELECT COUNT(*) n FROM chan_posted WHERE skip=0 AND at>? AND msg_id>0`, Date.now() - DAY) || {}).n || 0;
+      const room = Math.max(0, Math.min(15, cfg.cap - today));   // 15 بالساعة تحت حدود تيليغرام
+      if (room) out.jobs = await this.chanSendJobs(cfg, this.chanPick(0).slice(0, room), origin, true);
+    }
     let st = {}; try { st = JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_slots'`) || {}).v || '{}'); } catch (_) { /* */ }
     if (st.day !== day) st = { day, done: [] };
     const due = cfg.times.filter(t => h >= t && !st.done.includes(t));
-    if (!due.length) return json({ wait: true, review: added });
+    if (!due.length) return json(out);
     st.done.push(...due);
     this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('chan_slots',?)`, JSON.stringify(st));
-    const out = { jobs: await this.chanSendJobs(cfg, this.chanPick(cfg.n), origin) };
+    if (cfg.mode === 'all') out.hl = await this.chanHighlights(cfg, origin);
+    else out.best = await this.chanSendJobs(cfg, this.chanPick(cfg.n), origin, false);
     if (cfg.tenders && due.includes(Math.max(...cfg.times))) out.tenders = await this.chanSendTenders(cfg, this.chanTenders(), origin);
     return json(out);
   }
 
-  chanReviewList() {
-    return this.q(`SELECT r.job_id id, r.contact, r.at, j.title, j.org, j.text FROM chan_review r JOIN jobs j ON j.id=r.job_id
-      WHERE r.state=0 AND j.hidden=0 AND r.job_id NOT IN (SELECT job_id FROM chan_posted) AND j.created > ? ORDER BY r.at DESC LIMIT 50`, Date.now() - 3 * DAY)
-      .map(x => ({ ...x, text: String(x.text || '').slice(0, 1500) }));
+  /** المراجعة كل ساعة: كشف الجديد + تنبيه، أرشفة بعد 5 أيام، تذكير قبلها بيوم */
+  async reviewTick() {
+    const now = Date.now();
+    const { added } = this.chanCands();
+    const pend = () => (this.one(`SELECT COUNT(*) n FROM chan_review WHERE state=0`) || {}).n || 0;
+    if (added) this.ctx.waitUntil(this.notifyAdmins(`⏳ ${added} فرصة جديدة فيها واتساب/هاتف/معرّف تيليغرام بانتظار المراجعة قبل النشر في القناة (المجموع ${pend()}).`, [[{ text: '⏳ راجعها الآن', callback_data: 'r:0' }]]));
+    const soon = this.q(`SELECT job_id FROM chan_review WHERE state=0 AND COALESCE(warned,0)=0 AND at < ?`, now - 4 * DAY);
+    if (soon.length) {
+      for (const x of soon) this.run(`UPDATE chan_review SET warned=1 WHERE job_id=?`, x.job_id);
+      this.ctx.waitUntil(this.notifyAdmins(`⚠️ ${soon.length} فرصة ستؤرشف غداً إن لم تراجعها.`, [[{ text: '⏳ راجعها الآن', callback_data: 'r:0' }]]));
+    }
+    const arch = (this.one(`SELECT COUNT(*) n FROM chan_review WHERE state=0 AND at < ?`, now - 5 * DAY) || {}).n || 0;
+    if (arch) { this.run(`UPDATE chan_review SET state=3, at=?, by='تلقائي' WHERE state=0 AND at < ?`, now, now - 5 * DAY); this.evAdd('review', 'arch', arch); }
+    return { added, archived: arch };
+  }
+
+  chanReviewList(state = 0) {
+    const today = new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
+    return this.q(`SELECT r.job_id id, r.state, r.contact, r.at, r.by, j.title, j.org, j.text, j.deadline FROM chan_review r JOIN jobs j ON j.id=r.job_id
+      WHERE r.state=? AND j.hidden=0 AND r.job_id NOT IN (SELECT job_id FROM chan_posted) ORDER BY r.at DESC LIMIT 60`, state)
+      .map(x => ({ ...x, title: this.unNorm(x.text, x.title), org: this.unNorm(x.text, x.org), text: String(x.text || '').slice(0, 1500), expired: x.deadline && x.deadline < today ? 1 : 0 }));
+  }
+
+  reviewSet(id, state, by) {
+    this.run(`INSERT INTO chan_review(job_id,state,contact,at,by,warned) VALUES(?,?,?,?,?,0) ON CONFLICT(job_id) DO UPDATE SET state=excluded.state, at=excluded.at, by=excluded.by, warned=0`,
+      +id, state, this.chanContact((this.one(`SELECT text FROM jobs WHERE id=?`, +id) || {}).text), Date.now(), by);
+    this.evAdd('review', ['', 'ok', 'no', 'arch'][state] || 'undo');
+    return { ok: true };
   }
 
   chanInfo(origin) {
     const cfg = this.chanCfg(), since = Date.now() - DAY;
-    const next = this.chanPick(cfg.n), tn = this.chanTenders();
+    const all = this.chanPick(0);
+    const next = cfg.mode === 'all' ? all.slice(0, 15) : this.chanPick(cfg.n), tn = this.chanTenders();
+    const cnt = st => (this.one(`SELECT COUNT(*) n FROM chan_review r JOIN jobs j ON j.id=r.job_id WHERE r.state=? AND j.hidden=0`, st) || {}).n || 0;
     return {
       cfg, err: JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_err'`) || {}).v || 'null'),
       today: (this.one(`SELECT COUNT(*) n FROM chan_posted WHERE skip=0 AND at>?`, since) || {}).n || 0,
       total: (this.one(`SELECT COUNT(*) n FROM chan_posted WHERE skip=0`) || {}).n || 0,
+      waiting: all.length,
       slots: JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_slots'`) || {}).v || '{}'),
-      review: this.chanReviewList(),
-      next: next.map(r => ({ id: r.id, title: r.title, org: r.org, src: this.srcSite(r), deadline: r.deadline, contact: r.keepContact ? 1 : 0 })),
-      tenders: tn.map(r => ({ id: r.id, title: r.title, org: r.org })),
+      review: this.chanReviewList(0), counts: { pending: cnt(0), rejected: cnt(2), archived: cnt(3) },
+      next: next.map(r => ({ id: r.id, title: this.unNorm(r.text, r.title), org: this.unNorm(r.text, r.org), src: this.srcSite(r), deadline: r.deadline, contact: r.keepContact ? 1 : 0 })),
+      tenders: tn.map(r => ({ id: r.id, title: this.unNorm(r.text, r.title), org: this.unNorm(r.text, r.org) })),
       preview: this.chanText(next.slice(0, 3)),
     };
   }
@@ -1576,6 +1825,251 @@ export class Db {
         body: JSON.stringify({ chat_id: this.env.TG_CHAT_ID, text: String(text).slice(0, 3500) }),
       });
     } catch (_) { /* تجاهل */ }
+  }
+
+  // ===== 3.2: إحصائيات الأحداث (أعداد فقط بلا هوية) =====
+  dayDm(off = 0) { return new Date(Date.now() + 3 * 3600e3 - off * DAY).toISOString().slice(0, 10); }
+  evAdd(k, v = '', n = 1) {
+    try { this.run(`INSERT INTO ev(day,k,v,n) VALUES(?,?,?,?) ON CONFLICT(day,k,v) DO UPDATE SET n=n+excluded.n`, this.dayDm(), k, String(v || '').slice(0, 30), n); } catch (_) { /* */ }
+  }
+  evSet(k, n, v = '') { this.run(`INSERT OR REPLACE INTO ev(day,k,v,n) VALUES(?,?,?,?)`, this.dayDm(), k, v, n); }
+  evSum(k, days) { return (this.one(`SELECT SUM(n) n FROM ev WHERE k=? AND day>?`, k, this.dayDm(days)) || {}).n || 0; }
+  evBy(k, days) { return this.q(`SELECT v, SUM(n) n FROM ev WHERE k=? AND day>? GROUP BY v ORDER BY n DESC`, k, this.dayDm(days)); }
+  jobEv(id, k) { try { this.run(`INSERT INTO job_ev(job_id,k,n) VALUES(?,?,1) ON CONFLICT(job_id,k) DO UPDATE SET n=n+1`, id, k); } catch (_) { /* */ } }
+
+  // ===== 3.2: صفحة التحميل + رابط APK المباشر + ملف التطبيق في تيليغرام =====
+  async relLatest(force) {
+    let c = null; try { c = JSON.parse((this.one(`SELECT v FROM meta WHERE k='rel_cache'`) || {}).v || 'null'); } catch (_) { /* */ }
+    if (c && !force && Date.now() - c.at < 20 * 60e3) return c;
+    try {
+      const r = await fetch(GH_LATEST, { headers: { 'User-Agent': 'wazifati-worker', Accept: 'application/vnd.github+json' } });
+      if (!r.ok) return c;
+      const j = await r.json();
+      const a = (j.assets || []).find(x => /\.apk$/i.test(x.name));
+      if (!a) return c;
+      const notes = String(j.body || '').split('\n').map(x => x.replace(/^[\s*\-•]+/, '').trim())
+        .filter(x => x && !/^(#|التثبيت|\*\*التثبيت)/.test(x) && !/apk|github/i.test(x)).slice(0, 6);
+      c = { at: Date.now(), tag: String(j.tag_name || '').replace(/^v/, ''), url: a.browser_download_url, name: a.name, size: a.size, date: String(j.published_at || '').slice(0, 10), notes };
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('rel_cache',?)`, JSON.stringify(c));
+    } catch (_) { /* */ }
+    return c;
+  }
+
+  async downloadPage(url) {
+    const from = String(url.searchParams.get('from') || 'direct').replace(/[^\w-]/g, '').slice(0, 20) || 'direct';
+    this.evAdd('dl_page', from);
+    const rel = await this.relLatest() || {};
+    const esc = x => String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const mb = rel.size ? (rel.size / 1048576).toFixed(1) + ' ميغا' : '';
+    const chan = this.chanCfg().chat.replace(/^@/, '');
+    const bot = (this.one(`SELECT v FROM meta WHERE k='tg_bot_user'`) || {}).v || 'wazifati_bot';
+    const qr = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(SITE + '/download?from=qr')}`;
+    const html = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>تحميل تطبيق وظيفتي</title><meta property="og:title" content="تحميل تطبيق وظيفتي — فرص العمل في سوريا"><meta property="og:description" content="تطبيق مجاني يجمع فرص العمل والمناقصات في سوريا حسب اختصاصك ومحافظتك.">
+<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:auto;padding:16px;line-height:1.8;color:#1c2333;background:#f4f6fb}.c{background:#fff;border-radius:16px;padding:18px;margin:12px 0;box-shadow:0 1px 4px #0001}
+h1{font-size:24px;margin:4px 0}.m{color:#5a6477;font-size:14px}.b{display:block;text-align:center;padding:16px;border-radius:14px;margin:10px 0;font-weight:800;font-size:18px;text-decoration:none}.p{background:#1565C0;color:#fff}.s{background:#e8effb;color:#1565C0;font-size:15px;padding:12px}
+ol{padding-right:20px;margin:6px 0}li{margin:6px 0}.w{background:#fff6e5;border-right:4px solid #e65100;padding:10px 12px;border-radius:10px}details{margin:8px 0}summary{font-weight:700;cursor:pointer}.q{text-align:center}</style>
+<div class="c" style="text-align:center"><div style="font-size:46px">💼</div><h1>وظيفتي</h1><div class="m">فرص العمل والمناقصات في سوريا — حسب اختصاصك ومحافظتك، مجاناً</div>
+<a class="b p" href="/apk?from=${esc(from)}">⬇ تحميل التطبيق${mb ? ' (' + mb + ')' : ''}</a>
+<div class="m">${rel.tag ? 'الإصدار ' + esc(rel.tag) + (rel.date ? ' • ' + esc(rel.date) : '') : ''} • أندرويد 8 فما فوق</div></div>
+<div class="c"><b>📲 طريقة التثبيت</b><ol><li>اضغط زر التحميل وانتظر انتهاء التنزيل.</li><li>افتح الملف من الإشعار أو من «التنزيلات».</li><li>إن طُلب منك: اسمح بـ<b>«التثبيت من هذا المصدر»</b> ثم ارجع واضغط «تثبيت».</li><li>افتح التطبيق واختر اختصاصك ومحافظتك ✅</li></ol>
+<div class="w"><b>🛡 إن ظهر تحذير Google Play Protect:</b><br>اضغط <b>«مزيد من التفاصيل»</b> ثم <b>«التثبيت على أي حال»</b>. التحذير يظهر لأن التطبيق غير منشور على متجر Google Play، وهذا طبيعي.</div>
+<details><summary>❓ ظهرت رسالة «التطبيق لم يُثبَّت»</summary><ul><li>إن كانت عندك نسخة قديمة: احذفها أولاً ثم ثبّت الجديدة.</li><li>تأكد من وجود مساحة فارغة (50 ميغا على الأقل).</li><li>أعد تنزيل الملف إن انقطع التحميل.</li></ul></details>
+<details><summary>❓ لا أجد الملف بعد التحميل</summary><p class="m">افتح تطبيق «الملفات» ← «التنزيلات» وابحث عن ${esc(rel.name || 'Wazifati.apk')}.</p></details>
+<details><summary>❓ أفضّل التحميل من تيليغرام</summary><p class="m">افتح البوت واضغط «ابدأ»، فيصلك ملف التطبيق مباشرة.</p><a class="b s" href="https://t.me/${esc(bot)}?start=apk">🤖 استلم الملف من البوت</a></details></div>
+${(rel.notes || []).length ? `<div class="c"><b>✨ الجديد في هذه النسخة</b><ul>${rel.notes.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+<div class="c"><a class="b s" href="https://t.me/${esc(chan)}">📣 تابع قناة الوظائف على تيليغرام</a><div class="q"><img src="${qr}" width="150" height="150" alt="QR"><div class="m">امسح الرمز لفتح هذه الصفحة على هاتف آخر</div></div></div>
+<div class="c m" style="text-align:center">تطوير: ${DEV_NAME} • <a href="tel:${DEV_PHONE}">📞 ${DEV_PHONE}</a> • <a href="https://wa.me/${DEV_WA}">💬 واتساب</a><br><a href="/privacy">الخصوصية</a></div></html>`;
+    return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+  }
+
+  /** ينزّل ملف الـAPK عبر خادمنا (اسم ملف واضح، ويعمل حتى لو كان GitHub بطيئاً في المتصفح) */
+  async apkFile(url) {
+    const from = String(url.searchParams.get('from') || 'direct').replace(/[^\w-]/g, '').slice(0, 20) || 'direct';
+    const rel = await this.relLatest();
+    if (!rel || !rel.url) return Response.redirect('https://github.com/makanona-team/wazifati/releases/latest', 302);
+    this.evAdd('apk', from);
+    try {
+      const r = await fetch(rel.url, { headers: { 'User-Agent': 'wazifati-worker' } });
+      if (!r.ok || !r.body) return Response.redirect(rel.url, 302);
+      const h = { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Disposition': `attachment; filename="Wazifati-${rel.tag || 'latest'}.apk"`, 'Cache-Control': 'no-store' };
+      if (r.headers.get('content-length')) h['Content-Length'] = r.headers.get('content-length');
+      return new Response(r.body, { headers: h });
+    } catch (_) { return Response.redirect(rel.url, 302); }
+  }
+
+  /** يرسل ملف التطبيق عبر البوت (file_id محفوظ لكل نسخة لتسريع الإرسال) */
+  async apkSend(chatId, extra) {
+    const rel = await this.relLatest();
+    if (!rel || !rel.url) return { ok: false };
+    let fid = null; try { const x = JSON.parse((this.one(`SELECT v FROM meta WHERE k='apk_tg'`) || {}).v || 'null'); if (x && x.tag === rel.tag) fid = x.fid; } catch (_) { /* */ }
+    const cap = `📲 <b>تطبيق وظيفتي ${rel.tag}</b>\n\nطريقة التثبيت:\n1️⃣ اضغط الملف لتنزيله ثم افتحه.\n2️⃣ اسمح بـ«التثبيت من هذا المصدر» إن طُلب.\n3️⃣ إن ظهر تحذير Play Protect: «مزيد من التفاصيل» ← «التثبيت على أي حال».\n\nشرح مفصّل وحلول المشاكل: ${SITE}/download?from=bot`;
+    const res = await this.tgApi('sendDocument', { chat_id: chatId, document: fid || rel.url, caption: cap, parse_mode: 'HTML', ...(extra || {}) });
+    if (res.ok && res.result && res.result.document && !fid) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('apk_tg',?)`, JSON.stringify({ tag: rel.tag, fid: res.result.document.file_id }));
+    return res;
+  }
+
+  /** ملف التطبيق مثبّت أعلى القناة ويُستبدل عند كل نسخة منشورة */
+  async apkPin(cfg) {
+    const rel = await this.relLatest();
+    if (!rel || !rel.tag) return 'no-rel';
+    let st = {}; try { st = JSON.parse((this.one(`SELECT v FROM meta WHERE k='apk_pin'`) || {}).v || '{}'); } catch (_) { /* */ }
+    if (st.tag === rel.tag || (st.fail && Date.now() - st.fail < 6 * 3600e3 && st.ftag === rel.tag)) return 'same';
+    const res = await this.apkSend(cfg.chat, { disable_notification: true });
+    if (!res.ok) { this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('apk_pin',?)`, JSON.stringify({ ...st, fail: Date.now(), ftag: rel.tag })); return 'send-fail: ' + (res.description || ''); }
+    const mid = res.result.message_id;
+    const pin = await this.tgApi('pinChatMessage', { chat_id: cfg.chat, message_id: mid, disable_notification: true });
+    if (st.mid) this.ctx.waitUntil(this.tgApi('unpinChatMessage', { chat_id: cfg.chat, message_id: st.mid }));
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('apk_pin',?)`, JSON.stringify({ tag: rel.tag, mid }));
+    if (!pin.ok) this.ctx.waitUntil(this.notifyAdmins(`📌 أُرسل ملف التطبيق ${rel.tag} إلى القناة لكن تعذّر تثبيته: ${pin.description || ''}\nأعطِ البوت صلاحية «تثبيت الرسائل» في القناة.`));
+    return 'pinned ' + rel.tag;
+  }
+
+  async subsDaily(cfg) {
+    const today = this.dayDm();
+    if ((this.one(`SELECT n FROM ev WHERE day=? AND k='chan_subs'`, today) || {}).n) return;
+    const r = await this.tgApi('getChatMemberCount', { chat_id: cfg.chat });
+    if (r.ok) this.evSet('chan_subs', r.result);
+  }
+
+  /** يضبط الـwebhook (مرة) مع callback_query لأزرار لوحة التحكم */
+  async ensureHook(origin) {
+    if (!this.env.TG_BOT_TOKEN) return;
+    const hook = origin + '/tg/webhook';
+    if ((this.one(`SELECT v FROM meta WHERE k='tg_hook'`) || {}).v === hook && (this.one(`SELECT v FROM meta WHERE k='tg_hook_v'`) || {}).v === '2') return;
+    const r = await this.tgApi('setWebhook', { url: hook, secret_token: await this.tgSecret(), allowed_updates: ['message', 'callback_query'] });
+    if (!r.ok) return;
+    const me = await this.tgApi('getMe');
+    if (me.ok) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_bot_user',?)`, me.result.username);
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_hook',?)`, hook);
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_hook_v','2')`);
+    await this.tgApi('setMyCommands', { commands: [{ command: 'start', description: 'ابدأ / تحميل التطبيق' }] });
+  }
+
+  // ===== 3.2: أزرار التقديم في صفحة الفرصة (تُعدّ الضغطات عبر /go) =====
+  jobButtons(r) {
+    const T = String(r.text || ''), out = [];
+    const tgLink = u => /(^|\/\/)(t\.me|telegram\.me)\//i.test(String(u || ''));
+    if (r.apply && /^https?:/i.test(r.apply) && !tgLink(r.apply)) out.push({ k: 'link', label: r.kind === 'tender' ? '📝 وثائق المناقصة' : '📝 رابط التقديم', href: r.apply, cls: 'p' });
+    const emails = [...new Set([...(T.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || []), ...(/^mailto:/i.test(r.apply || '') ? [r.apply.slice(7).split('?')[0]] : [])])].slice(0, 2);
+    for (const m of emails) out.push({ k: 'mail', label: `📧 إرسال إيميل إلى ${m}`, href: `mailto:${m}?subject=${encodeURIComponent('طلب توظيف: ' + (r.title || ''))}`, cls: 'p' });
+    const isWa = /(واتس|whats ?app)/i.test(T);
+    const phones = [...new Set((T.match(/(?:\+|00)?963[\s-]?9\d(?:[\s-]?\d){7}|\b09\d(?:[\s-]?\d){7}\b/g) || []).map(x => x.replace(/[\s-]/g, '')))].slice(0, 2);
+    for (const ph of phones) {
+      const intl = ph.replace(/^(\+|00)/, '').replace(/^0/, '963');
+      if (isWa) out.push({ k: 'wa', label: `💬 واتساب ${ph}`, href: `https://wa.me/${intl}`, cls: 'p' });
+      out.push({ k: 'call', label: `📞 اتصال ${ph}`, href: `tel:+${intl}`, cls: 's' });
+    }
+    for (const w of [...new Set(T.match(/wa\.me\/\d+/g) || [])].slice(0, 1)) out.push({ k: 'wa', label: '💬 مراسلة واتساب', href: 'https://' + w, cls: 'p' });
+    for (const u of [...new Set(T.match(/https?:\/\/[^\s<>"'()]+/g) || [])]) {
+      const x = u.replace(/[.,،؛;:!?)]+$/, '');
+      if (/(docs\.google\.com\/forms|forms\.gle|kobotoolbox|forms\.office\.com|jotform|typeform)/i.test(x) && !out.some(o => o.href === x)) { out.push({ k: 'form', label: '📋 نموذج التقديم', href: x, cls: 'p' }); break; }
+    }
+    return out;
+  }
+
+  goApply(id, i) {
+    const r = this.one(`SELECT * FROM jobs WHERE id=?`, id);
+    const b = r ? this.jobButtons(r)[i] : null;
+    if (!b) return Response.redirect(`${SITE}/j/${id}`, 302);
+    this.evAdd('apply_click', b.k); this.jobEv(id, 'apply');
+    return new Response(null, { status: 302, headers: { Location: b.href, 'Cache-Control': 'no-store' } });
+  }
+
+  // ===== 3.2: تنبيهات لكل الأدمنية المربوطين بالبوت =====
+  adminChats() {
+    const ids = new Set();
+    if (this.env.TG_CHAT_ID) ids.add(String(this.env.TG_CHAT_ID));
+    for (const r of this.q(`SELECT l.tg_id FROM tg_links l JOIN accounts a ON a.email=l.email WHERE a.role='admin' AND a.status='active'`)) ids.add(String(r.tg_id));
+    for (const r of this.q(`SELECT email FROM accounts WHERE role='admin' AND status='active' AND email LIKE 'tg%@telegram.user'`)) ids.add(r.email.replace(/^tg|@telegram\.user$/g, ''));
+    const muted = new Set(this.q(`SELECT tg_id FROM tg_links WHERE mute=1`).map(x => String(x.tg_id)));
+    return [...ids].filter(x => !muted.has(x));
+  }
+  async notifyAdmins(text, kb) {
+    if (!this.env.TG_BOT_TOKEN) return;
+    for (const id of this.adminChats()) {
+      try { await this.tgApi('sendMessage', { chat_id: id, text: String(text).slice(0, 3500), ...(kb ? { reply_markup: { inline_keyboard: kb } } : {}) }); } catch (_) { /* */ }
+    }
+  }
+  tgAdmin(tgId) {
+    tgId = String(tgId);
+    if (this.env.TG_CHAT_ID && tgId === String(this.env.TG_CHAT_ID)) return { email: FIRST_ADMIN, owner: 1 };
+    const l = this.one(`SELECT email FROM tg_links WHERE tg_id=?`, tgId);
+    for (const email of [l && l.email, `tg${tgId}@telegram.user`].filter(Boolean)) {
+      const a = this.one(`SELECT email, role, status FROM accounts WHERE email=?`, email);
+      if (a && a.role === 'admin' && a.status === 'active') return { email: a.email, owner: a.email === FIRST_ADMIN ? 1 : 0 };
+    }
+    return null;
+  }
+
+  async tgLinkStart(url, me) {
+    if (!this.env.TG_BOT_TOKEN) throw new HttpErr(503, 'البوت غير مهيأ على الخادم');
+    await this.ensureHook(url.origin);
+    const nonce = crypto.randomUUID().replace(/-/g, '');
+    this.run(`DELETE FROM tg_link_req WHERE created < ?`, Date.now() - 15 * 60e3);
+    this.run(`INSERT INTO tg_link_req(nonce,email,created) VALUES(?,?,?)`, nonce, me.email, Date.now());
+    const bot = (this.one(`SELECT v FROM meta WHERE k='tg_bot_user'`) || {}).v || 'wazifati_bot';
+    const linked = this.one(`SELECT tg_id FROM tg_links WHERE email=?`, me.email);
+    return json({ link: `https://t.me/${bot}?start=link_${nonce}`, linked: !!linked });
+  }
+
+  // ===== 3.2: ملخصات وإحصائيات نصية (للبوت والملخص اليومي والتطبيق) =====
+  summaryText(days) {
+    const since = Date.now() - days * DAY, n = (sql, ...a) => (this.one(sql, ...a) || {}).n || 0;
+    const jobs = n(`SELECT COUNT(*) n FROM jobs WHERE created>? AND COALESCE(kind,'job')='job' AND COALESCE(hidden,0)=0`, since);
+    const tenders = n(`SELECT COUNT(*) n FROM jobs WHERE created>? AND kind='tender'`, since);
+    const learn = n(`SELECT COUNT(*) n FROM learn WHERE created>?`, since);
+    const newAcc = n(`SELECT COUNT(*) n FROM accounts WHERE created>?`, since), active = n(`SELECT COUNT(*) n FROM accounts WHERE last_seen>?`, since), totalAcc = n(`SELECT COUNT(*) n FROM accounts`);
+    const newInst = n(`SELECT COUNT(*) n FROM installs WHERE first_seen>?`, since), activeInst = n(`SELECT COUNT(*) n FROM installs WHERE last_seen>?`, since);
+    const crashes = n(`SELECT COUNT(*) n FROM client_reports WHERE last_seen>? AND resolved=0`, since);
+    const top = this.q(`SELECT src, COUNT(*) n FROM jobs WHERE created>? GROUP BY src ORDER BY n DESC LIMIT 3`, since);
+    const vers = this.q(`SELECT app_ver v, COUNT(*) n FROM installs WHERE last_seen>? AND app_ver<>'' GROUP BY app_ver ORDER BY n DESC LIMIT 4`, since);
+    const per = days === 1 ? 'اليوم' : days <= 10 ? `آخر ${days} أيام` : `آخر ${days} يوماً`;
+    return [`📊 ملخص ${per}`,
+      `💼 فرص جديدة: ${jobs} • 📑 مناقصات: ${tenders} • 🎓 تعلّم: ${learn}`,
+      `👥 حسابات جديدة: ${newAcc} • نشطون: ${active} • المجموع: ${totalAcc}`,
+      `📲 تثبيتات جديدة: ${newInst} • أجهزة نشطة: ${activeInst}`,
+      vers.length ? '🔢 النسخ: ' + vers.map(v => `${v.v} (${v.n})`).join('، ') : '',
+      crashes ? `💥 أخطاء غير محلولة: ${crashes}` : '✅ لا أخطاء جديدة',
+      top.length ? '🏆 الأكثر إضافة: ' + top.map(t => `${t.src} (${t.n})`).join('، ') : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  reachText(days) {
+    const since = Date.now() - days * DAY, n = (sql, ...a) => (this.one(sql, ...a) || {}).n || 0;
+    const FROM = { ch: 'القناة', bot: 'البوت', direct: 'مباشر', job: 'صفحات الفرص', qr: 'QR', app: 'التطبيق', wa: 'واتساب', share: 'مشاركة' };
+    const by = k => this.evBy(k, days).map(x => `${FROM[x.v] || x.v || 'مباشر'} ${x.n}`).join('، ');
+    const page = this.evSum('dl_page', days), apk = this.evSum('apk', days), botf = this.evSum('bot_apk', days);
+    const inst = n(`SELECT COUNT(*) n FROM installs WHERE first_seen>?`, since), acc = n(`SELECT COUNT(*) n FROM accounts WHERE created>?`, since);
+    const subsNow = (this.one(`SELECT n FROM ev WHERE k='chan_subs' ORDER BY day DESC LIMIT 1`) || {}).n || 0;
+    const subsThen = (this.one(`SELECT n FROM ev WHERE k='chan_subs' AND day<=? ORDER BY day DESC LIMIT 1`, this.dayDm(days)) || {}).n;
+    const posts = this.evSum('chan_post', days);
+    const views = this.evSum('job_view', days), chView = (this.one(`SELECT SUM(n) n FROM ev WHERE k='job_view' AND v='ch' AND day>?`, this.dayDm(days)) || {}).n || 0;
+    const clicks = this.evSum('apply_click', days);
+    const KN = { mail: '📧', call: '📞', wa: '💬', link: '🔗', form: '📋' };
+    const ck = this.evBy('apply_click', days).map(x => `${KN[x.v] || x.v} ${x.n}`).join(' ');
+    const topPost = this.one(`SELECT p.views, j.title, j.text FROM chan_posted p JOIN jobs j ON j.id=p.job_id WHERE p.at>? AND p.views>0 ORDER BY p.views DESC LIMIT 1`, since);
+    const topJobs = this.q(`SELECT e.job_id, e.n, j.title, j.text FROM job_ev e JOIN jobs j ON j.id=e.job_id WHERE e.k='view' AND j.created>? ORDER BY e.n DESC LIMIT 3`, since - 14 * DAY);
+    // طلبات المستخدمين (من «طلباتي» — أعداد فقط)
+    const ST = { applied: 0, contact: 0, interview: 0, accepted: 0, rejected: 0 };
+    for (const r of this.q(`SELECT prefs FROM accounts WHERE prefs LIKE '%"apps"%'`)) {
+      try { for (const a of Object.values(JSON.parse(r.prefs).apps || {})) if ((a.u || 0) > since && ST[a.s] != null) ST[a.s]++; } catch (_) { /* */ }
+    }
+    const rv = this.evBy('review', days).reduce((o, x) => (o[x.v] = x.n, o), {});
+    const per = days === 1 ? 'اليوم' : days <= 10 ? `آخر ${days} أيام` : `آخر ${days} يوماً`;
+    return [`📈 الوصول — ${per}`,
+      `⬇ صفحة التحميل: ${page} زيارة${page ? ' (' + by('dl_page') + ')' : ''}`,
+      `📦 تحميلات: ${apk}${apk ? ' (' + by('apk') + ')' : ''} • 🤖 ملفات من البوت: ${botf}`,
+      `📲 تثبيتات جديدة: ${inst} • 👤 حسابات جديدة: ${acc}`,
+      `🔻 التحويل: ${page} زيارة ← ${apk + botf} تحميل ← ${inst} تثبيت ← ${acc} حساب`,
+      `📣 القناة: ${subsNow} مشترك${subsThen != null ? ` (${subsNow - subsThen >= 0 ? '+' : ''}${subsNow - subsThen})` : ''} • منشورات: ${posts}`,
+      topPost ? `👁 أكثر منشور مشاهدة: ${this.unNorm(topPost.text, topPost.title).slice(0, 50)} (${topPost.views})` : '',
+      `🧲 صفحات الفرص: ${views} زيارة (من القناة ${chView})`,
+      `✋ ضغطات التقديم: ${clicks}${ck ? ' — ' + ck : ''}`,
+      topJobs.length ? '🔥 الأكثر زيارة: ' + topJobs.map(t => `${this.unNorm(t.text, t.title).slice(0, 35)} (${t.n})`).join('، ') : '',
+      `📋 طلبات المستخدمين: قدّموا ${ST.applied + ST.contact + ST.interview + ST.accepted + ST.rejected} • مقابلات ${ST.interview} • ✅ وجدوا عملاً ${ST.accepted}`,
+      (rv.ok || rv.no || rv.arch) ? `⏳ المراجعة: قُبلت ${rv.ok || 0} • رُفضت ${rv.no || 0} • أُرشفت ${rv.arch || 0}` : '',
+    ].filter(Boolean).join('\n');
   }
 
   getReports(url) {
@@ -1720,50 +2214,41 @@ export class Db {
   }
 
   // ===== صفحة ويب لكل وظيفة (للمشاركة على واتساب/تيليغرام) =====
-  jobPage(id) {
+  jobPage(id, c) {
     const esc = x => String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const safe = u => /^(https?:|mailto:)/i.test(String(u || '')) ? esc(u) : '';
     const r = this.one(`SELECT * FROM jobs WHERE id=? AND hidden=0`, id);
-    if (r) { r.title = this.unNorm(r.text, r.title); r.org = this.unNorm(r.text, r.org); }
+    const from = String(c || '').replace(/[^\w]/g, '').slice(0, 10) || 'direct';
+    this.evAdd('job_view', from);
+    if (r) { this.jobEv(id, 'view'); if (from === 'ch') this.jobEv(id, 'ch'); r.title = this.unNorm(r.text, r.title); r.org = this.unNorm(r.text, r.org); }
+    const chan = this.chanCfg().chat.replace(/^@/, '');
     const head = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">`;
     const css = `<style>body{font-family:system-ui,sans-serif;max-width:680px;margin:auto;padding:16px;line-height:1.8;color:#1c2333;background:#f4f6fb}.c{background:#fff;border-radius:14px;padding:16px;margin:12px 0;box-shadow:0 1px 4px #0001}h1{font-size:21px;margin:0 0 4px}.m{color:#5a6477;font-size:14px}.b{display:block;text-align:center;padding:13px;border-radius:12px;margin:8px 0;font-weight:700;text-decoration:none}.p{background:#1565C0;color:#fff}.s{background:#e8effb;color:#1565C0}.x{white-space:normal;word-break:break-word}img{max-width:100%;border-radius:10px}small{color:#8a93a5}</style>`;
-    if (!r) return new Response(`${head}<title>وظيفتي</title>${css}<div class="c"><h1>هذه الفرصة لم تعد متاحة</h1><p class="m">قد تكون انتهت أو أُزيلت.</p></div><a class="b p" href="${RELEASE}">حمّل وظيفتي لتصلك فرص جديدة</a></html>`, { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+    const dl = `${SITE}/download?from=job`;
+    if (!r) return new Response(`${head}<title>وظيفتي</title>${css}<div class="c"><h1>هذه الفرصة لم تعد متاحة</h1><p class="m">قد تكون انتهت أو أُزيلت.</p></div><a class="b p" href="${dl}">حمّل وظيفتي لتصلك فرص جديدة</a><a class="b s" href="https://t.me/${esc(chan)}">📣 تابع قناة وظيفتي</a></html>`, { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
     const names = (csv, dict) => String(csv || '').split(',').filter(Boolean).map(k => dict[k]).filter(Boolean).join('، ');
     const tender = r.kind === 'tender';
     const govs = names(r.govs, LABELS.govs);
     const kind = tender ? 'مناقصة — ' + (LABELS.tcats[r.tcat] || 'أخرى') : names(r.specs, LABELS.specs);
     const sector = LABELS.sectors[r.sector] || '';
     const desc = [r.org, govs, r.deadline ? 'آخر موعد: ' + r.deadline : ''].filter(Boolean).join(' • ');
-    const clean = this.cleanText(r.text, 1);
-    const body = esc(clean.slice(0, 4000)).replace(/\n/g, '<br>');
-    // أزرار تقديم جاهزة من النص: إيميل، هاتف، واتساب، رابط (غير تيليغرام)
-    const T = String(r.text || ''), btn = [];
-    const emails = [...new Set(T.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || [])].slice(0, 2);
-    for (const m of emails) btn.push(`<a class="b p" href="mailto:${esc(m)}?subject=${encodeURIComponent('طلب توظيف: ' + (r.title || ''))}">📧 إرسال إيميل إلى ${esc(m)}</a>`);
-    const isWa = /(واتس|whats ?app)/i.test(T);
-    const phones = [...new Set((T.match(/(?:\+|00)?963[\s-]?9\d(?:[\s-]?\d){7}|\b09\d(?:[\s-]?\d){7}\b/g) || []).map(x => x.replace(/[\s-]/g, '')))].slice(0, 2);
-    for (const ph of phones) {
-      const intl = ph.replace(/^(\+|00)/, '').replace(/^0/, '963');
-      if (isWa) btn.push(`<a class="b p" href="https://wa.me/${intl}">💬 واتساب ${esc(ph)}</a>`);
-      btn.push(`<a class="b s" href="tel:+${intl}">📞 اتصال ${esc(ph)}</a>`);
-    }
-    for (const w of [...new Set(T.match(/wa\.me\/\d+/g) || [])].slice(0, 1)) btn.push(`<a class="b p" href="https://${esc(w)}">💬 مراسلة واتساب</a>`);
-    const tgLink = u => /(^|\/\/)(t\.me|telegram\.me)\//i.test(String(u || ''));
+    const body = esc(this.cleanText(r.text, 1).slice(0, 4000)).replace(/\n/g, '<br>');
+    const btns = this.jobButtons(r).map((x, i) => `<a class="b ${x.cls}" href="/go/${id}/${i}">${esc(x.label)}</a>`).join('');
     const site = this.srcSite(r);
-    const intent = `intent://job/${id}#Intent;scheme=wazifati;package=com.feras.wazifati;S.browser_fallback_url=${encodeURIComponent(RELEASE)};end`;
-    const apply = tgLink(r.apply) ? '' : safe(r.apply), orig = site ? safe(r.url) : '';
+    const intent = `intent://job/${id}#Intent;scheme=wazifati;package=com.feras.wazifati;S.browser_fallback_url=${encodeURIComponent(dl)};end`;
+    const orig = site ? safe(r.url) : '';
     const img = /^https:/i.test(r.image || '') ? `<img src="${esc(r.image)}" alt="">` : '';
     const html = `${head}<title>${esc(r.title)} — وظيفتي</title>
 <meta property="og:title" content="${esc(r.title)}"><meta property="og:description" content="${esc(desc)}"><meta property="og:type" content="article">${img ? `<meta property="og:image" content="${esc(r.image)}">` : ''}
 <meta name="description" content="${esc(desc)}">${css}
 <div class="c"><h1>${esc(r.title)}</h1><div class="m">${esc(r.org || '')}</div>
 <p class="m">${govs ? '📍 ' + esc(govs) + '<br>' : ''}${kind ? '🏷 ' + esc(kind) + '<br>' : ''}${sector ? '🏢 ' + esc(sector) + '<br>' : ''}${r.deadline ? '⏳ آخر موعد: ' + esc(r.deadline) + '<br>' : ''}${r.bond ? '💰 التأمين: ' + esc(r.bond) + '<br>' : ''}${site ? '🌐 المصدر: ' + esc(site) : ''}</p></div>
-${apply && !String(apply).startsWith('mailto') ? `<a class="b p" href="${apply}">${tender ? '📝 وثائق المناقصة' : '📝 رابط التقديم'}</a>` : ''}${btn.join('')}${orig && orig !== apply ? `<a class="b s" href="${orig}">📄 الإعلان على ${esc(site)}</a>` : ''}
-<a class="b s" href="${intent}">📲 افتحها في تطبيق وظيفتي</a>
+${btns ? `<div class="c"><b>✋ طريقة التقديم</b>${btns}</div>` : ''}
 <div class="c x"><b>📋 الوصف الوظيفي والتفاصيل</b><br>${body}</div>${img ? `<div class="c">${img}</div>` : ''}
-<div class="c"><b>💼 وظيفتي</b><p class="m">تطبيق مجاني يجمع فرص العمل والمناقصات في سوريا ويرسل لك ما يناسب اختصاصك ومحافظتك.</p><a class="b p" href="${RELEASE}">⬇ حمّل التطبيق</a></div>
+${orig ? `<a class="b s" href="${orig}">📄 الإعلان على ${esc(site)}</a>` : ''}<a class="b s" href="${intent}">📲 افتحها في تطبيق وظيفتي</a><a class="b s" href="https://t.me/${esc(chan)}">📣 تابع قناة وظيفتي — كل الفرص أولاً بأول</a>
+<div class="c"><b>💼 وظيفتي</b><p class="m">تطبيق مجاني يجمع فرص العمل والمناقصات في سوريا ويرسل لك ما يناسب اختصاصك ومحافظتك.</p><a class="b p" href="${dl}">⬇ حمّل التطبيق</a></div>
 <p><small>تحقّق من الجهة المعلنة قبل التقديم، ولا تدفع أي مبلغ مقابل وظيفة. <a href="/privacy">الخصوصية</a></small></p></html>`;
-    return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300' } });
+    return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, max-age=60' } });
   }
 
   home() {
@@ -1773,7 +2258,7 @@ ${apply && !String(apply).startsWith('mailto') ? `<a class="b p" href="${apply}"
     const html = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>وظيفتي</title>
 <style>body{font-family:system-ui,sans-serif;margin:24px;background:#f4f6fb;color:#1c2333;text-align:center}b{color:#1565C0;font-size:28px}</style>
 <h1>💼 وظيفتي</h1><p>الخادم يعمل (v${VERSION})</p><p><b>${n}</b><br>فرصة محفوظة</p><p>آخر جلب منذ ${ago}</p>
-<p><a href="https://github.com/makanona-team/wazifati/releases/latest">تحميل التطبيق</a></p></html>`;
+<p><a href="/download?from=home">تحميل التطبيق</a></p></html>`;
     return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
   }
 }

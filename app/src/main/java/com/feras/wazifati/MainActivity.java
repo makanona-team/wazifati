@@ -56,6 +56,8 @@ public class MainActivity extends Activity {
     private FrameLayout content;
     private TextView status, syncIcon, bell;
     static final int T_JOBS = 0, T_TENDERS = 1, T_LEARN = 2, T_SAVED = 3, T_FILTER = 4, T_MORE = 5;
+    private String appsFilter = "all";
+    private int chanRevState = 0;
     private final TextView[] tabs = new TextView[6];
     private boolean tenderMode = false;
     private String quickCat = null;
@@ -1012,6 +1014,7 @@ public class MainActivity extends Activity {
             b.setOnClickListener(v -> {
                 try {
                     Intent i = new Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:" + e + "?subject=" + Uri.encode("طلب توظيف: " + j.title) + "&body=" + Uri.encode(msg)));
+                    trackApply(j, "📧 إيميل");
                     startActivity(i);
                     Toast.makeText(this, "📎 لا تنسَ إرفاق سيرتك الذاتية", Toast.LENGTH_LONG).show();
                 } catch (Exception ex) { Toast.makeText(this, "لا يوجد تطبيق بريد", Toast.LENGTH_SHORT).show(); }
@@ -1020,22 +1023,22 @@ public class MainActivity extends Activity {
         }
         for (String u : was) {
             Button b = button(this, "💬 واتساب (رابط الإعلان)", true);
-            b.setOnClickListener(v -> openUrl(u + (u.contains("?") ? "&" : "?") + "text=" + Uri.encode(msg)));
+            b.setOnClickListener(v -> { trackApply(j, "💬 واتساب"); openUrl(u + (u.contains("?") ? "&" : "?") + "text=" + Uri.encode(msg)); });
             c.addView(b, lpm(this, -1, -2, 0, 6));
         }
         for (String ph : phones) {
             LinearLayout r = row(this);
             Button w = button(this, "💬 واتساب +" + ph, waHint);
-            w.setOnClickListener(v -> openUrl("https://wa.me/" + ph + "?text=" + Uri.encode(msg)));
+            w.setOnClickListener(v -> { trackApply(j, "💬 واتساب"); openUrl("https://wa.me/" + ph + "?text=" + Uri.encode(msg)); });
             Button call = button(this, "📞 اتصال", false);
-            call.setOnClickListener(v -> { try { startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:+" + ph))); } catch (Exception ignored) { } });
+            call.setOnClickListener(v -> { trackApply(j, "📞 اتصال"); try { startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:+" + ph))); } catch (Exception ignored) { } });
             r.addView(w, weight());
             r.addView(call, weight());
             c.addView(r, lpm(this, -1, -2, 0, 6));
         }
         for (String u : forms) {
             Button b = button(this, "📋 فتح نموذج التقديم", true);
-            b.setOnClickListener(v -> openUrl(u));
+            b.setOnClickListener(v -> { trackApply(j, "📋 نموذج"); openUrl(u); });
             c.addView(b, lpm(this, -1, -2, 0, 6));
         }
         Button cp = button(this, "📋 نسخ رسالة التقديم", false);
@@ -1045,6 +1048,112 @@ public class MainActivity extends Activity {
         });
         c.addView(cp);
         return c;
+    }
+
+    // ===== 3.2: «طلباتي» =====
+    private void trackApply(Store.Job j, String method) {
+        if (j == null || j.tender()) return;
+        Apps.set(this, j, j.id, "opened", method);
+        Store.p(this).edit().putLong("ap_id", j.id).putLong("ap_at", System.currentTimeMillis()).apply();
+    }
+
+    private String appBtnText(long id) {
+        JSONObject o = Apps.get(this, id);
+        if (o == null || !Apps.applied(o.optString("s"))) return "✔ قدّمت عليها";
+        String l = Apps.label(o.optString("s"));
+        return l.length() > 16 ? l.substring(0, 16) : l;
+    }
+
+    /** عند العودة من الإيميل/الواتساب/المتصفح: «هل قدّمت؟» */
+    private void askApplied() {
+        long id = Store.p(this).getLong("ap_id", 0), at = Store.p(this).getLong("ap_at", 0);
+        if (id == 0) return;
+        long el = System.currentTimeMillis() - at;
+        if (el < 4000) return;   // لم يغادر التطبيق فعلاً
+        Store.p(this).edit().remove("ap_id").remove("ap_at").apply();
+        if (el > 6 * 3600e3) return;
+        JSONObject o = Apps.get(this, id);
+        if (o == null || !"opened".equals(o.optString("s"))) return;
+        final long fid = id;
+        Store.Job j = null;
+        for (Store.Job x : all) if (x.id == id) { j = x; break; }
+        final Store.Job fj = j;
+        try {
+            new AlertDialog.Builder(this).setTitle("هل قدّمت على هذه الفرصة؟")
+                    .setMessage(o.optString("t") + (o.optString("o").isEmpty() ? "" : "\n" + o.optString("o")))
+                    .setPositiveButton("✅ نعم قدّمت", (d, w) -> { Apps.set(this, fj, fid, "applied", null); Toast.makeText(this, "📋 أُضيفت إلى «طلباتي» — سنسألك بعد أسبوعين إن وصلك رد", Toast.LENGTH_LONG).show(); })
+                    .setNeutralButton("⏳ ليس بعد", (d, w) -> { Apps.set(this, fj, fid, "later", null); Toast.makeText(this, "سنذكّرك قبل انتهاء الموعد ⏰", Toast.LENGTH_SHORT).show(); })
+                    .setNegativeButton("✖ لا يهمني", (d, w) -> Apps.set(this, null, fid, null, null)).show();
+        } catch (Exception ignored) { }
+    }
+
+    private void statusDialog(long id, Runnable after) {
+        JSONObject o = Apps.get(this, id);
+        String[] items = new String[Apps.LABEL.length + 2];
+        System.arraycopy(Apps.LABEL, 0, items, 0, Apps.LABEL.length);
+        items[Apps.LABEL.length] = "📝 ملاحظة" + (o != null && !o.optString("n").isEmpty() ? ": " + o.optString("n") : "");
+        items[Apps.LABEL.length + 1] = "🗑 حذف من «طلباتي»";
+        new AlertDialog.Builder(this).setTitle(o == null ? "الحالة" : o.optString("t")).setItems(items, (d, w) -> {
+            if (w < Apps.STATUS.length) Apps.set(this, null, id, Apps.STATUS[w], null);
+            else if (w == Apps.STATUS.length) {
+                EditText e = input("مثلاً: المقابلة الأحد الساعة 10");
+                if (o != null) e.setText(o.optString("n"));
+                new AlertDialog.Builder(this).setTitle("📝 ملاحظة").setView(e)
+                        .setPositiveButton("حفظ", (d2, w2) -> { Apps.note(this, id, e.getText().toString().trim()); if (after != null) after.run(); })
+                        .setNegativeButton("إلغاء", null).show();
+                return;
+            } else Apps.set(this, null, id, null, null);
+            if (after != null) after.run();
+        }).show();
+    }
+
+    private void appsView(LinearLayout l) {
+        LinearLayout fr = row(this);
+        String[][] fl = {{"all", "الكل"}, {"wait", "بانتظار الرد"}, {"interview", "المقابلات"}};
+        for (String[] f : fl) {
+            TextView t = chip(this, f[1], f[0].equals(appsFilter));
+            t.setOnClickListener(v -> { appsFilter = f[0]; show(T_SAVED); });
+            fr.addView(t, weight());
+        }
+        l.addView(fr, lpm(this, -1, -2, 0, 8));
+        ScrollView sv = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        sv.addView(box);
+        JSONObject a = Apps.all(this);
+        List<String[]> ids = Apps.list(this, appsFilter);
+        if (ids.isEmpty()) {
+            TextView e = text(this, "لا طلبات بعد.\nحين تضغط زر تقديم (إيميل، واتساب، رابط) سنسألك عند عودتك: «هل قدّمت؟»، أو اضغط «✔ قدّمت عليها» داخل أي فرصة.", 15, MUTED, false);
+            e.setGravity(Gravity.CENTER);
+            e.setPadding(dp(this, 20), dp(this, 40), dp(this, 20), 0);
+            box.addView(e);
+        }
+        java.text.SimpleDateFormat df = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
+        for (String[] it : ids) {
+            JSONObject o = a.optJSONObject(it[0]);
+            if (o == null) continue;
+            final long id = Long.parseLong(it[0]);
+            LinearLayout c = card(this);
+            c.addView(text(this, o.optString("t"), 15, TEXT, true));
+            if (!o.optString("o").isEmpty()) c.addView(text(this, o.optString("o"), 13, MUTED, false));
+            String s = o.optString("s");
+            int col = "accepted".equals(s) ? GREEN : "rejected".equals(s) ? RED : "interview".equals(s) || "contact".equals(s) ? ORANGE : PRIMARY;
+            c.addView(text(this, Apps.label(s), 14, col, true), lpm(this, -1, -2, 4, 0));
+            String meta = (o.optLong("at") > 0 ? "📅 قدّمت: " + df.format(new java.util.Date(o.optLong("at"))) : "") + (o.optString("m").isEmpty() ? "" : "  •  " + o.optString("m"))
+                    + (o.optString("dl").isEmpty() ? "" : "\n⏳ آخر موعد: " + o.optString("dl"));
+            if (!meta.trim().isEmpty()) c.addView(text(this, meta.trim(), 12, MUTED, false));
+            if (!o.optString("n").isEmpty()) c.addView(text(this, "📝 " + o.optString("n"), 13, TEXT, false), lpm(this, -1, -2, 4, 0));
+            LinearLayout br = row(this);
+            Button st = button(this, "تغيير الحالة", false);
+            st.setOnClickListener(v -> statusDialog(id, () -> show(T_SAVED)));
+            Button op = button(this, "فتح الفرصة", false);
+            op.setOnClickListener(v -> openJobById(id));
+            br.addView(st, weight());
+            br.addView(op, weight());
+            c.addView(br, lpm(this, -1, -2, 8, 0));
+            box.addView(c, lpm(this, -1, -2, 0, 8));
+        }
+        l.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
     }
 
     /** إغلاق نافذة بأمان حتى لو أُعيد إنشاء الشاشة (تدوير، خروج ورجوع). */
@@ -1355,6 +1464,7 @@ public class MainActivity extends Activity {
         super.onResume();
         if (powerDlg != null) buildPower();
         if (pendingUpd != null && getPackageManager().canRequestPackageInstalls()) { Updater.Info u = pendingUpd; pendingUpd = null; download(u); }
+        askApplied();
         String tip = Store.p(this).getString("crash_tip", "");
         if (!tip.isEmpty()) {
             Store.p(this).edit().remove("crash_tip").apply();
@@ -1444,7 +1554,7 @@ public class MainActivity extends Activity {
         }
         if (!j.apply.isEmpty()) {
             Button ap = button(this, j.apply.startsWith("mailto:") ? (j.tender() ? "✉️ طلب الوثائق بالبريد" : "✉️ التقديم بالبريد") : (j.tender() ? "📝 وثائق المناقصة" : "📝 رابط التقديم"), true);
-            ap.setOnClickListener(v -> openUrl(j.apply));
+            ap.setOnClickListener(v -> { trackApply(j, j.apply.startsWith("mailto:") ? "📧 إيميل" : "🔗 رابط التقديم"); openUrl(j.apply); });
             r1.addView(ap, weight());
         }
         if (r1.getChildCount() > 0) l.addView(r1, lpm(this, -1, -2, 0, 8));
@@ -1471,18 +1581,21 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "سيصلك تذكير قبل يوم من إغلاق التقديم ⏰", Toast.LENGTH_SHORT).show();
             Sync.pushPrefs(this);
         });
-        Button app = button(this, Store.set(this, "applied").contains(id) ? "✅ قدّمت" : "قدّمت عليها", false);
+        Button app = button(this, appBtnText(j.id), false);
         app.setOnClickListener(v -> {
-            boolean on = Store.toggle(this, "applied", id);
-            app.setText(on ? "✅ قدّمت" : "قدّمت عليها");
-            Sync.pushPrefs(this);
+            JSONObject ao = Apps.get(this, j.id);
+            if (ao == null || !Apps.applied(ao.optString("s"))) {
+                Apps.set(this, j, j.id, "applied", ao == null ? "✔ يدوياً" : null);
+                Toast.makeText(this, "📋 أُضيفت إلى «طلباتي»", Toast.LENGTH_SHORT).show();
+                app.setText(appBtnText(j.id));
+            } else statusDialog(j.id, () -> app.setText(appBtnText(j.id)));
         });
         Button share = button(this, "↗ مشاركة", false);
         share.setOnClickListener(v -> {
             String body = j.title + (j.org.isEmpty() ? "" : "\n" + j.org) + "\n📍 " + Labels.names(Labels.GOVS, j.govs)
                     + (j.deadline.isEmpty() ? "" : "\n⏳ آخر موعد: " + j.deadline)
                     + (j.apply.isEmpty() ? "" : "\nللتقديم: " + j.apply.replace("mailto:", ""))
-                    + (j.url.startsWith("http") ? "\nالإعلان: " + j.url : "") + "\n\n🔗 " + Api.base() + "/j/" + j.id + "\n— عبر تطبيق وظيفتي";
+                    + (j.url.startsWith("http") ? "\nالإعلان: " + j.url : "") + "\n\n🔗 " + Api.base() + "/j/" + j.id + "?c=share\n— عبر تطبيق وظيفتي";
             startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, body), "مشاركة الفرصة"));
         });
         if (!guest()) { r2.addView(fav, weight()); r2.addView(app, weight()); }
@@ -2360,9 +2473,11 @@ public class MainActivity extends Activity {
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.VERTICAL);
         l.setPadding(dp(this, 10), dp(this, 8), dp(this, 10), 0);
+        long oa = Store.p(this).getLong("open_apps", 0);
+        if (oa > 0) { Store.p(this).edit().remove("open_apps").apply(); if (System.currentTimeMillis() - oa < 2 * Store.DAY) savedMode = 1; }
         Set<String> favs = Store.set(this, "favs"), applied = Store.set(this, "applied"), hidden = Store.set(this, "hidden");
         LinearLayout seg = row(this);
-        String[] names = {"⭐ المفضلة (" + favs.size() + ")", "✅ قدّمت (" + applied.size() + ")", "🚫 المخفية (" + hidden.size() + ")"};
+        String[] names = {"⭐ المفضلة (" + favs.size() + ")", "📋 طلباتي (" + Apps.all(this).length() + ")", "🚫 المخفية (" + hidden.size() + ")"};
         for (int i = 0; i < 3; i++) {
             final int k = i;
             TextView t = chip(this, names[i], savedMode == i);
@@ -2370,7 +2485,8 @@ public class MainActivity extends Activity {
             seg.addView(t, weight());
         }
         l.addView(seg, lpm(this, -1, -2, 0, 8));
-        Set<String> pick = savedMode == 0 ? favs : savedMode == 1 ? applied : hidden;
+        if (savedMode == 1) { appsView(l); return l; }
+        Set<String> pick = savedMode == 0 ? favs : hidden;
         ArrayList<Store.Job> out = new ArrayList<>();
         for (Store.Job j : all) if (pick.contains(String.valueOf(j.id))) out.add(j);
         ListView lv = new ListView(this);
@@ -2627,7 +2743,14 @@ public class MainActivity extends Activity {
             int pch = Store.p(this).getInt("pending_chan", 0);
             Button bch = button(this, "📣 قناة الوظائف على تيليغرام" + (pch > 0 ? "  (" + pch + " ⏳ مراجعة 🔴)" : ""), pch > 0);
             bch.setOnClickListener(v -> adminChannel());
-            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, bsk, brl, bch, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
+            Button blk = button(this, "✈️ ربط حسابي ببوت تيليغرام (لوحة التحكم والتنبيهات)", false);
+            blk.setOnClickListener(v -> post("/tg/link/start", jo(), x -> {
+                String lk = x.optString("link");
+                if (lk.isEmpty()) return;
+                new AlertDialog.Builder(this).setTitle("ربط البوت").setMessage((x.optBoolean("linked") ? "حسابك مربوط مسبقاً، ويمكنك إعادة الربط من هاتف آخر.\n\n" : "") + "سيفتح البوت: اضغط «ابدأ / Start» فتظهر لك لوحة التحكم بالأزرار والتنبيهات.")
+                        .setPositiveButton("فتح البوت", (d2, w) -> openUrl(lk)).setNegativeButton("إلغاء", null).show();
+            }));
+            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, bsk, brl, bch, blk, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
             l.addView(ad, lpm(this, -1, -2, 0, 12));
         }
 
@@ -2673,9 +2796,13 @@ public class MainActivity extends Activity {
         ub.addView(chk, weight());
         ub.addView(news, weight());
         uc.addView(ub, lpm(this, -1, -2, 8, 4));
-        TextView about = text(this, "وظيفتي — مساعد البحث عن الوظائف في سوريا\nتطوير: المهندس فراس • +963982424717", 13, MUTED, false);
+        TextView about = text(this, "وظيفتي — مساعد البحث عن الوظائف في سوريا\nتطوير: م. فراس\n📞 للتواصل: 0996265003", 13, MUTED, false);
         about.setGravity(Gravity.CENTER);
         about.setPadding(0, dp(this, 8), 0, 0);
+        about.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("التواصل مع المطوّر — م. فراس").setMessage("0996265003")
+                .setPositiveButton("💬 واتساب", (d2, w) -> openUrl("https://wa.me/963996265003"))
+                .setNeutralButton("📞 اتصال", (d2, w) -> { try { startActivity(new Intent(Intent.ACTION_DIAL, Uri.parse("tel:0996265003"))); } catch (Exception ignored) { } })
+                .setNegativeButton("إغلاق", null).show());
         uc.addView(about);
         l.addView(uc, lp(-1, -2));
         return sv;
@@ -3214,6 +3341,30 @@ public class MainActivity extends Activity {
                     + "\n👥 المستخدمون: " + r.optInt("users") + " (نشطون هذا الأسبوع: " + r.optInt("active7") + ")"
                     + "\n🔄 آخر جلب: " + (r.optLong("lastRun") > 0 ? ago(r.optLong("lastRun")) : "—"), 15, TEXT, false));
             l.addView(c, lpm(this, -1, -2, 0, 10));
+            // 3.2: الوصول (صفحة التحميل ← التحميل ← التثبيت ← الحساب، القناة، التقديم، طلباتي)
+            LinearLayout rc = card(this);
+            LinearLayout rr = row(this);
+            TextView rt = text(this, "⏳", 14, TEXT, false);
+            rt.setTextIsSelectable(true);
+            int[] ds = {1, 7, 30};
+            String[] dn = {"اليوم", "7 أيام", "30 يوماً"};
+            TextView[] chips = new TextView[3];
+            Runnable[] load = new Runnable[1];
+            int[] cur = {7};
+            load[0] = () -> {
+                rt.setText("⏳");
+                get("/admin/reach?d=" + cur[0], x -> rt.setText(x.optString("text") + "\n\n" + x.optString("sum")));
+            };
+            for (int i = 0; i < 3; i++) {
+                final int di = ds[i];
+                chips[i] = chip(this, dn[i], di == 7);
+                chips[i].setOnClickListener(v -> { cur[0] = di; for (int k = 0; k < 3; k++) setChip(this, chips[k], ds[k] == di); load[0].run(); });
+                rr.addView(chips[i], weight());
+            }
+            rc.addView(rr, lpm(this, -1, -2, 0, 8));
+            rc.addView(rt);
+            l.addView(rc, lpm(this, -1, -2, 0, 10));
+            get("/admin/reach?d=7", x -> rt.setText(x.optString("text") + "\n\n" + x.optString("sum")));
 
             JSONObject ins = r.optJSONObject("installs");
             if (ins != null) {
@@ -3585,7 +3736,17 @@ public class MainActivity extends Activity {
             tn.setTextColor(TEXT);
             tn.setChecked(cfg.optInt("tenders", 1) == 1);
             c.addView(tn, lpm(this, -1, -2, 6, 6));
-            c.addView(text(this, "عدد الفرص في كل منشور:", 13, MUTED, false));
+            Switch md = new Switch(this);
+            md.setText("كل الفرص فور وصولها (بصمت) + «⭐ أبرز الفرص» بإشعار في المواعيد");
+            md.setTextColor(TEXT);
+            md.setChecked(!"best".equals(cfg.optString("mode", "all")));
+            c.addView(md, lpm(this, -1, -2, 0, 6));
+            c.addView(text(this, "الحد الأعلى للمنشورات يومياً (وضع كل الفرص):", 13, MUTED, false));
+            EditText cap = input("40");
+            cap.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            cap.setText(String.valueOf(cfg.optInt("cap", 40)));
+            c.addView(cap, lpm(this, -1, -2, 4, 6));
+            c.addView(text(this, "عدد الفرص في «أبرز الفرص» (أو في كل دفعة بوضع الأبرز فقط):", 13, MUTED, false));
             EditText n = input("8");
             n.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
             n.setText(String.valueOf(cfg.optInt("n", 8)));
@@ -3599,47 +3760,71 @@ public class MainActivity extends Activity {
             c.addView(t, lpm(this, -1, -2, 4, 6));
             c.addView(text(this, "قد يتأخر النشر حتى ساعة عن الموعد (يتم مع دورة الجلب).", 12, MUTED, false));
             Button save = button(this, "💾 حفظ الإعدادات", true);
-            save.setOnClickListener(v -> post("/admin/channel", jo("on", on.isChecked(), "tenders", tn.isChecked(), "n", n.getText().toString().trim(), "times", t.getText().toString().replace('،', ',')),
+            save.setOnClickListener(v -> post("/admin/channel", jo("on", on.isChecked(), "tenders", tn.isChecked(), "n", n.getText().toString().trim(), "times", t.getText().toString().replace('،', ','),
+                    "mode", md.isChecked() ? "all" : "best", "cap", cap.getText().toString().trim()),
                     x -> { Toast.makeText(this, "✅ حُفظت", Toast.LENGTH_SHORT).show(); dh[0].dismiss(); adminChannel(); }));
             c.addView(save, lpm(this, -1, -2, 8, 0));
             l.addView(c, lpm(this, -1, -2, 0, 12));
 
-            JSONArray rv = r.optJSONArray("review");
-            int rc = rv == null ? 0 : rv.length();
+            JSONObject cnts = r.optJSONObject("counts");
+            int rc = cnts == null ? 0 : cnts.optInt("pending");
             if (Store.p(this).getInt("pending_chan", 0) != rc) { Store.p(this).edit().putInt("pending_chan", rc).apply(); setStatus(); }
             LinearLayout rcard = card(this);
-            rcard.addView(text(this, "⏳ بانتظار المراجعة (" + rc + ")", 16, rc > 0 ? ORANGE : TEXT, true));
-            rcard.addView(text(this, "فرص فيها واتساب أو هاتف أو معرّف تيليغرام: لا تُنشر في القناة إلا بموافقتك أو موافقة الأدمنية. المرفوضة تبقى في التطبيق عادي.", 12, MUTED, false), lpm(this, -1, -2, 2, 6));
-            if (rc == 0) rcard.addView(text(this, "لا شيء بانتظار المراجعة ✅", 13, MUTED, false));
-            for (int i = 0; i < rc; i++) {
-                JSONObject o = rv.optJSONObject(i);
-                if (o == null) continue;
-                final long id = o.optLong("id");
-                LinearLayout rw = new LinearLayout(this);
-                rw.setOrientation(LinearLayout.VERTICAL);
-                rw.addView(text(this, str(o, "title"), 15, TEXT, true));
-                if (!str(o, "org").isEmpty()) rw.addView(text(this, str(o, "org"), 12, MUTED, false));
-                rw.addView(text(this, "📞 " + str(o, "contact"), 14, ORANGE, true), lpm(this, -1, -2, 4, 4));
-                TextView full = text(this, str(o, "text"), 13, TEXT, false);
-                full.setTextIsSelectable(true);
-                rw.addView(full);
-                LinearLayout br = row(this);
-                Button yes = button(this, "✅ موافق", true), no = button(this, "❌ رفض", false);
-                yes.setOnClickListener(v -> post("/admin/channel/review", jo("id", id, "ok", true), x -> { dh[0].dismiss(); adminChannel(); }));
-                no.setOnClickListener(v -> post("/admin/channel/review", jo("id", id, "ok", false), x -> { dh[0].dismiss(); adminChannel(); }));
-                LinearLayout.LayoutParams w1 = new LinearLayout.LayoutParams(0, -2, 1f), w2 = new LinearLayout.LayoutParams(0, -2, 1f);
-                w2.rightMargin = dp(this, 8);
-                br.addView(yes, w1);
-                br.addView(no, w2);
-                rw.addView(br, lpm(this, -1, -2, 6, 12));
-                rcard.addView(rw, lpm(this, -1, -2, 8, 0));
+            rcard.addView(text(this, "🔎 مراجعة الفرص قبل القناة", 16, rc > 0 ? ORANGE : TEXT, true));
+            rcard.addView(text(this, "فرص فيها واتساب أو هاتف أو معرّف تيليغرام لا تُنشر إلا بموافقتك أو موافقة الأدمنية. ما لا يُراجع خلال 5 أيام يُؤرشف تلقائياً. المرفوضة والمؤرشفة تبقى في التطبيق عادي.", 12, MUTED, false), lpm(this, -1, -2, 2, 6));
+            LinearLayout tabs = row(this);
+            String[] tnames = {"⏳ بانتظار (" + rc + ")", "🚫 مرفوضة (" + (cnts == null ? 0 : cnts.optInt("rejected")) + ")", "🗄 مؤرشفة (" + (cnts == null ? 0 : cnts.optInt("archived")) + ")"};
+            int[] tstate = {0, 2, 3};
+            LinearLayout rbox = new LinearLayout(this);
+            rbox.setOrientation(LinearLayout.VERTICAL);
+            for (int i = 0; i < 3; i++) {
+                final int st = tstate[i];
+                TextView tc = chip(this, tnames[i], st == chanRevState);
+                tc.setOnClickListener(v -> { chanRevState = st; dh[0].dismiss(); adminChannel(); });
+                tabs.addView(tc, weight());
             }
+            rcard.addView(tabs, lpm(this, -1, -2, 0, 8));
+            rcard.addView(rbox);
+            Res fill = x -> {
+                rbox.removeAllViews();
+                JSONArray rv = x.optJSONArray(chanRevState == 0 ? "review" : "items");
+                int k = rv == null ? 0 : rv.length();
+                if (k == 0) rbox.addView(text(this, chanRevState == 0 ? "لا شيء بانتظار المراجعة ✅" : "القائمة فارغة.", 13, MUTED, false));
+                for (int i = 0; i < k; i++) {
+                    JSONObject o = rv.optJSONObject(i);
+                    if (o == null) continue;
+                    final long id = o.optLong("id");
+                    LinearLayout rw = new LinearLayout(this);
+                    rw.setOrientation(LinearLayout.VERTICAL);
+                    rw.addView(text(this, str(o, "title"), 15, TEXT, true));
+                    if (!str(o, "org").isEmpty()) rw.addView(text(this, str(o, "org"), 12, MUTED, false));
+                    rw.addView(text(this, "📞 " + str(o, "contact"), 14, ORANGE, true), lpm(this, -1, -2, 4, 2));
+                    if (chanRevState != 0) rw.addView(text(this, (chanRevState == 2 ? "رُفضت" : "أُرشفت") + ": " + new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(new java.util.Date(o.optLong("at"))) + " — " + str(o, "by").replaceAll("@.*", ""), 12, MUTED, false));
+                    if (o.optInt("expired") == 1) rw.addView(text(this, "⏳ انتهى موعدها", 12, RED, true));
+                    TextView full = text(this, str(o, "text"), 13, TEXT, false);
+                    full.setTextIsSelectable(true);
+                    rw.addView(full, lpm(this, -1, -2, 4, 0));
+                    LinearLayout br = row(this);
+                    Button yes = button(this, chanRevState == 0 ? "✅ موافق" : "✅ موافق وانشر", true), no = button(this, chanRevState == 0 ? "❌ رفض" : "↩ تراجع", false);
+                    yes.setEnabled(o.optInt("expired") != 1);
+                    yes.setOnClickListener(v -> post("/admin/channel/review", jo("id", id, "state", 1), z -> { dh[0].dismiss(); adminChannel(); }));
+                    no.setOnClickListener(v -> post("/admin/channel/review", jo("id", id, "state", chanRevState == 0 ? 2 : 0), z -> { dh[0].dismiss(); adminChannel(); }));
+                    LinearLayout.LayoutParams w1 = new LinearLayout.LayoutParams(0, -2, 1f), w2 = new LinearLayout.LayoutParams(0, -2, 1f);
+                    w2.rightMargin = dp(this, 8);
+                    br.addView(yes, w1);
+                    br.addView(no, w2);
+                    rw.addView(br, lpm(this, -1, -2, 6, 12));
+                    rbox.addView(rw, lpm(this, -1, -2, 8, 0));
+                }
+            };
+            if (chanRevState == 0) fill.on(r);
+            else { rbox.addView(text(this, "⏳", 13, MUTED, false)); get("/admin/channel/reviews?state=" + chanRevState, fill); }
             l.addView(rcard, lpm(this, -1, -2, 0, 12));
 
             LinearLayout nc = card(this);
             JSONArray nx = r.optJSONArray("next");
             int cnt = nx == null ? 0 : nx.length();
-            nc.addView(text(this, "👀 المنشور القادم (" + cnt + " فرصة)", 16, TEXT, true));
+            nc.addView(text(this, "👀 الدفعة القادمة (" + cnt + " من " + r.optInt("waiting") + " بانتظار النشر)", 16, TEXT, true));
             if (cnt == 0) nc.addView(text(this, "لا توجد فرص جديدة غير منشورة حالياً.", 13, MUTED, false));
             for (int i = 0; i < cnt; i++) {
                 JSONObject o = nx.optJSONObject(i);
@@ -3659,7 +3844,7 @@ public class MainActivity extends Activity {
             final String prev = r.optString("preview");
             pv.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("معاينة").setMessage(prev).setPositiveButton("حسناً", null).show());
             nc.addView(pv, lpm(this, -1, -2, 8, 0));
-            nc.addView(text(this, "كل فرصة بمنشور مستقل؛ الأول بإشعار والباقي صامت.", 12, MUTED, false), lpm(this, -1, -2, 6, 0));
+            nc.addView(text(this, "all".equals(cfg.optString("mode", "all")) ? "كل فرصة بمنشور مستقل وبصمت، و«⭐ أبرز الفرص» بإشعار في المواعيد." : "كل فرصة بمنشور مستقل؛ الأول بإشعار والباقي صامت.", 12, MUTED, false), lpm(this, -1, -2, 6, 0));
             Button now = button(this, "🚀 انشر الآن", true);
             now.setEnabled(cnt > 0);
             now.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("نشر " + cnt + " فرصة الآن؟")
@@ -3669,6 +3854,10 @@ public class MainActivity extends Activity {
                         dh[0].dismiss(); adminChannel(); }))
                     .setNegativeButton("إلغاء", null).show());
             nc.addView(now, lpm(this, -1, -2, 8, 0));
+            Button hl = button(this, "⭐ انشر «أبرز الفرص» الآن", false);
+            hl.setOnClickListener(v -> post("/admin/channel/post-now", jo("hl", true), x -> {
+                Toast.makeText(this, x.optBoolean("ok") ? (x.optBoolean("empty") ? "لا فرص منشورة جديدة لإبرازها" : "✅ نُشر") : "❌ " + x.optString("err"), Toast.LENGTH_LONG).show(); }));
+            nc.addView(hl, lpm(this, -1, -2, 6, 0));
             l.addView(nc, lpm(this, -1, -2, 0, 12));
 
             JSONArray tz = r.optJSONArray("tenders");
