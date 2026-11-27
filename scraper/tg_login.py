@@ -15,6 +15,7 @@ from telethon.sessions import StringSession  # noqa: E402
 
 API_ID = int(os.environ["TG_API_ID"].strip())
 API_HASH = os.environ["TG_API_HASH"].strip()
+SLOT = "2" if "احتياطي" in os.environ.get("ACCOUNT", "") else ""   # الحساب الاحتياطي يُحفظ في session2
 
 
 def client(sess=""):
@@ -26,7 +27,7 @@ async def send(phone):
     c = client()
     await c.connect()
     r = await c.send_code_request(phone)
-    api("/tg/secret", {"k": "login", "v": json.dumps({"s": c.session.save(), "h": r.phone_code_hash, "p": phone})})
+    api("/tg/secret", {"k": "login" + SLOT, "v": json.dumps({"s": c.session.save(), "h": r.phone_code_hash, "p": phone})})
     await c.disconnect()
     t = type(r.type).__name__
     where = {"SentCodeTypeApp": "داخل تطبيق تيليغرام: محادثة «Telegram» الرسمية (علامة زرقاء) على الجهاز المسجَّل بهذا الرقم",
@@ -41,7 +42,7 @@ async def send(phone):
 
 
 async def verify(code, pw):
-    st = json.loads(api("/tg/secret?k=login").get("v") or "{}")
+    st = json.loads(api("/tg/secret?k=login" + SLOT).get("v") or "{}")
     if not st:
         sys.exit("❌ لا توجد مرحلة 1 محفوظة. شغّل المرحلة 1 أولاً.")
     c = client(st["s"])
@@ -55,8 +56,8 @@ async def verify(code, pw):
     except (errors.PhoneCodeInvalidError, errors.PhoneCodeExpiredError) as e:
         sys.exit(f"❌ الرمز خاطئ أو انتهت صلاحيته ({type(e).__name__}). أعد المرحلة 1 ثم 2.")
     me = await c.get_me()
-    api("/tg/secret", {"k": "session", "v": c.session.save()})
-    api("/tg/secret", {"k": "login", "v": ""})
+    api("/tg/secret", {"k": "session" + SLOT, "v": c.session.save()})
+    api("/tg/secret", {"k": "login" + SLOT, "v": ""})
     api("/tg/status", {"ok": True, "name": me.first_name or ""})
     await c.disconnect()
     print(f"✅ تم تسجيل الدخول باسم {me.first_name}. حساب القراءة جاهز، يبدأ العمل من الجلب القادم.")
@@ -121,7 +122,7 @@ async def qr_login(pw):
         bot_text("⌛ انتهت مدة المسح دون تأكيد. أعد تشغيل المرحلة 3.")
         sys.exit("⌛ انتهت المدة دون مسح الرمز. أعد تشغيل المرحلة 3.")
     me = await c.get_me()
-    api("/tg/secret", {"k": "session", "v": c.session.save()})
+    api("/tg/secret", {"k": "session" + SLOT, "v": c.session.save()})
     api("/tg/status", {"ok": True, "name": me.first_name or ""})
     await c.disconnect()
     bot_text(f"✅ تم تسجيل دخول حساب القراءة باسم {me.first_name}. يبدأ العمل من الجلب القادم.")

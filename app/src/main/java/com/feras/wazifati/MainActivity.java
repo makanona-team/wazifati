@@ -569,7 +569,7 @@ public class MainActivity extends Activity {
             t.setOnClickListener(v -> show(k));
             tabs[i] = t;
             if (i == T_TENDERS && !Store.flag(this, "tenders")) t.setVisibility(View.GONE);
-            if (i == T_LEARN && !Store.flag(this, "learn_tab")) t.setVisibility(View.GONE);
+            if (i == T_LEARN) t.setVisibility(View.GONE);   // 3.3: «تعلّم» انتقل إلى «المزيد»
             nav.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
         }
         root.addView(nav);
@@ -1048,6 +1048,91 @@ public class MainActivity extends Activity {
         });
         c.addView(cp);
         return c;
+    }
+
+    // ===== 3.3: صورة «فرص اليوم» لحالة واتساب =====
+    private void shareStatusImage() {
+        long now = System.currentTimeMillis();
+        Set<String> sp = Store.set(this, "specs"), gv = Store.set(this, "govs");
+        List<Store.Job> pick = new ArrayList<>(), any = new ArrayList<>();
+        for (Store.Job j : all) {
+            if (j.tender() || now - j.posted > 2 * Store.DAY || Store.daysLeft(j) < 0 && Store.daysLeft(j) != Integer.MIN_VALUE) continue;
+            if (j.govs.contains("abroad")) continue;
+            any.add(j);
+            boolean so = sp.isEmpty(), go = gv.isEmpty();
+            for (String x : j.specs.split(",")) if (sp.contains(x)) so = true;
+            for (String x : j.govs.split(",")) if (gv.contains(x) || "all".equals(x)) go = true;
+            if (so && go) pick.add(j);
+        }
+        if (pick.size() < 3) pick = any;
+        pick.sort((a, b) -> Long.compare(b.posted, a.posted));
+        if (pick.isEmpty()) { Toast.makeText(this, "لا فرص جديدة اليوم بعد — جرّب بعد المزامنة", Toast.LENGTH_LONG).show(); return; }
+        List<Store.Job> top = pick.subList(0, Math.min(6, pick.size()));
+        try {
+            int W = 1080, H = 1920;
+            android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(W, H, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas cv = new android.graphics.Canvas(bm);
+            android.graphics.Paint bg = new android.graphics.Paint();
+            bg.setShader(new android.graphics.LinearGradient(0, 0, 0, H, 0xFF0D47A1, 0xFF1976D2, android.graphics.Shader.TileMode.CLAMP));
+            cv.drawRect(0, 0, W, H, bg);
+            android.text.TextPaint tp = new android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            tp.setColor(Color.WHITE);
+            float y = 110;
+            y = drawRtl(cv, tp, "💼 فرص عمل اليوم", 78, true, 80, y, W - 160) + 10;
+            y = drawRtl(cv, tp, Ui.today() + " • سوريا", 40, false, 80, y, W - 160) + 50;
+            android.graphics.Paint card = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            card.setColor(0x26FFFFFF);
+            for (Store.Job j : top) {
+                String gov = Labels.names(Labels.GOVS, j.govs);
+                String t1 = j.title.length() > 70 ? j.title.substring(0, 68) + "…" : j.title;
+                String t2 = (j.org.isEmpty() ? "" : j.org + " • ") + (gov.isEmpty() ? "" : "📍 " + gov);
+                float h1 = rtlHeight(tp, t1, 46, true, W - 220), h2 = t2.isEmpty() ? 0 : rtlHeight(tp, t2, 34, false, W - 220);
+                if (y + h1 + h2 + 60 > H - 400) break;
+                cv.drawRoundRect(new android.graphics.RectF(70, y, W - 70, y + h1 + h2 + 56), 36, 36, card);
+                float yy = drawRtl(cv, tp, t1, 46, true, 110, y + 24, W - 220);
+                if (!t2.isEmpty()) drawRtl(cv, tp, t2, 34, false, 110, yy + 4, W - 220);
+                y += h1 + h2 + 56 + 26;
+            }
+            float fy = H - 340;
+            android.graphics.Paint fb = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            fb.setColor(Color.WHITE);
+            cv.drawRoundRect(new android.graphics.RectF(70, fy, W - 70, H - 90), 40, 40, fb);
+            tp.setColor(0xFF0D47A1);
+            float f2 = drawRtl(cv, tp, "التفاصيل وطريقة التقديم وفرص اختصاصك:", 40, true, 110, fy + 36, W - 220);
+            f2 = drawRtl(cv, tp, "🔔 t.me/wazifati_bot", 46, true, 110, f2 + 10, W - 220);
+            drawRtl(cv, tp, "📲 تطبيق «وظيفتي» المجاني", 38, false, 110, f2 + 10, W - 220);
+            java.io.File dir = new java.io.File(getCacheDir(), "share");
+            dir.mkdirs();
+            java.io.File out = new java.io.File(dir, "wazifati-today.png");
+            try (java.io.FileOutputStream fo = new java.io.FileOutputStream(out)) { bm.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, fo); }
+            Uri uri = androidx.core.content.FileProvider.getUriForFile(this, "com.feras.wazifati.files", out);
+            Intent si = new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, uri)
+                    .putExtra(Intent.EXTRA_TEXT, "💼 فرص عمل اليوم في سوريا — التفاصيل وفرص اختصاصك: t.me/wazifati_bot?start=status")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(si, "شارك على حالة واتساب أو أي مكان"));
+            new Thread(() -> { try { Api.post("/client/ev", jo("k", "status_share")); } catch (Throwable ignored) { } }).start();
+        } catch (Throwable e) { Toast.makeText(this, "تعذّر إنشاء الصورة: " + e.getMessage(), Toast.LENGTH_LONG).show(); }
+    }
+
+    private float rtlHeight(android.text.TextPaint tp, String s, float size, boolean bold, int w) {
+        tp.setTextSize(size);
+        tp.setTypeface(bold ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
+        return android.text.StaticLayout.Builder.obtain(s, 0, s.length(), tp, w).setTextDirection(android.text.TextDirectionHeuristics.RTL).setMaxLines(3)
+                .setEllipsize(android.text.TextUtils.TruncateAt.END).build().getHeight();
+    }
+
+    /** يكتب نصاً عربياً (من اليمين) ويعيد أسفل النص المكتوب */
+    private float drawRtl(android.graphics.Canvas cv, android.text.TextPaint tp, String s, float size, boolean bold, float x, float y, int w) {
+        tp.setTextSize(size);
+        tp.setTypeface(bold ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
+        android.text.StaticLayout sl = android.text.StaticLayout.Builder.obtain(s, 0, s.length(), tp, w)
+                .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL).setTextDirection(android.text.TextDirectionHeuristics.RTL).setMaxLines(3)
+                .setEllipsize(android.text.TextUtils.TruncateAt.END).build();
+        cv.save();
+        cv.translate(x, y);
+        sl.draw(cv);
+        cv.restore();
+        return y + sl.getHeight();
     }
 
     // ===== 3.2: «طلباتي» =====
@@ -1595,7 +1680,7 @@ public class MainActivity extends Activity {
             String body = j.title + (j.org.isEmpty() ? "" : "\n" + j.org) + "\n📍 " + Labels.names(Labels.GOVS, j.govs)
                     + (j.deadline.isEmpty() ? "" : "\n⏳ آخر موعد: " + j.deadline)
                     + (j.apply.isEmpty() ? "" : "\nللتقديم: " + j.apply.replace("mailto:", ""))
-                    + (j.url.startsWith("http") ? "\nالإعلان: " + j.url : "") + "\n\n🔗 " + Api.base() + "/j/" + j.id + "?c=share\n— عبر تطبيق وظيفتي";
+                    + (j.url.startsWith("http") ? "\nالإعلان: " + j.url : "") + "\n\n🔗 " + Api.base() + "/j/" + j.id + "?c=share\n— عبر تطبيق وظيفتي\n🔔 فرص اختصاصك تصلك على تيليغرام مجاناً: t.me/wazifati_bot?start=share";
             startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, body), "مشاركة الفرصة"));
         });
         if (!guest()) { r2.addView(fav, weight()); r2.addView(app, weight()); }
@@ -2699,6 +2784,21 @@ public class MainActivity extends Activity {
         ac.addView(delAcc, lpm(this, -1, -2, 6, 0));
         l.addView(ac, lpm(this, -1, -2, 0, 12));
 
+        // 3.3: البوت، صورة الحالة، تعلّم
+        LinearLayout tc = card(this);
+        Button bb = button(this, "🔔 فرص اختصاصك تصلك على تيليغرام (البوت)", true);
+        bb.setOnClickListener(v -> openUrl("https://t.me/wazifati_bot?start=app"));
+        tc.addView(bb);
+        Button st = button(this, "📸 شارك فرص اليوم على حالة واتساب", false);
+        st.setOnClickListener(v -> shareStatusImage());
+        tc.addView(st, lpm(this, -1, -2, 6, 0));
+        if (Store.flag(this, "learn_tab")) {
+            Button lr = button(this, "🎓 تعلّم: دورات ومنح وملفات", false);
+            lr.setOnClickListener(v -> show(T_LEARN));
+            tc.addView(lr, lpm(this, -1, -2, 6, 0));
+        }
+        l.addView(tc, lpm(this, -1, -2, 0, 12));
+
         if (Store.flag(this, "cv_match")) l.addView(cvCard(), lpm(this, -1, -2, 0, 12));
 
         if (!guest()) {
@@ -3218,62 +3318,149 @@ public class MainActivity extends Activity {
         return c;
     }
 
+    // ===== 3.3: المستخدمون بتبويبات وفلاتر: الحسابات، مشتركو البوت، الزوار =====
+    private JSONObject usersData;
+    private int usersTab = 0, usersSort = 0, usersVia = 0, usersAct = 0, usersExtra = 0;
+    private String usersQ = "";
+
     private void adminUsers() {
         Dialog[] dh = new Dialog[1];
         LinearLayout l = fullDialog("المستخدمون", dh);
         l.addView(text(this, "جارٍ التحميل…", 14, MUTED, false));
         dh[0].show();
-        get("/admin/users", r -> {
-            l.removeAllViews();
-            JSONArray a = r.optJSONArray("users");
-            if (a == null) return;
-            l.addView(section("👥 " + a.length() + " مستخدم"));
-            java.util.TreeMap<String, Integer> vc = new java.util.TreeMap<>((x, y) -> Updater.cmp(y, x));
-            String latest = Store.p(this).getString("upd_ver", "");
-            for (int k = 0; k < a.length(); k++) {
-                JSONObject uu = a.optJSONObject(k);
-                String vv = uu == null ? "" : str(uu, "ver");
-                vc.merge(vv.isEmpty() ? "?" : vv, 1, Integer::sum);
+        get("/admin/users", r -> { usersData = r; renderUsers(l, dh); });
+    }
+
+    private void renderUsers(LinearLayout l, Dialog[] dh) {
+        l.removeAllViews();
+        JSONObject r = usersData;
+        if (r == null) return;
+        JSONArray a = r.optJSONArray("users"), subs = r.optJSONArray("subs");
+        JSONObject gs = r.optJSONObject("guests");
+        int na = a == null ? 0 : a.length(), ns = 0;
+        for (int i = 0; subs != null && i < subs.length(); i++) if (subs.optJSONObject(i).optInt("active") == 1) ns++;
+        LinearLayout tabsRow = row(this);
+        String[] tn = {"👤 الحسابات (" + na + ")", "🤖 البوت (" + ns + ")", "👀 الزوار (" + (gs == null ? 0 : gs.optInt("total")) + ")"};
+        for (int i = 0; i < 3; i++) {
+            final int k = i;
+            TextView t = chip(this, tn[i], usersTab == i);
+            t.setOnClickListener(v -> { usersTab = k; renderUsers(l, dh); });
+            tabsRow.addView(t, weight());
+        }
+        l.addView(tabsRow, lpm(this, -1, -2, 0, 8));
+        long now = System.currentTimeMillis(), D = Store.DAY;
+        if (usersTab == 2) {
+            LinearLayout c = card(this);
+            StringBuilder sb = new StringBuilder("👀 زوار بلا حساب (ثبّتوا التطبيق ولم يسجّلوا)\n\nالمجموع: " + (gs == null ? 0 : gs.optInt("total"))
+                    + "\nنشطون آخر 7 أيام: " + (gs == null ? 0 : gs.optInt("active7")) + "\nجدد آخر 7 أيام: " + (gs == null ? 0 : gs.optInt("new7")));
+            JSONArray vv = gs == null ? null : gs.optJSONArray("vers"), mm = gs == null ? null : gs.optJSONArray("models");
+            if (vv != null && vv.length() > 0) { sb.append("\n\n🔢 النسخ:"); for (int i = 0; i < vv.length(); i++) sb.append("\n  ").append(vv.optJSONObject(i).optString("v", "?")).append(" ← ").append(vv.optJSONObject(i).optInt("n")); }
+            if (mm != null && mm.length() > 0) { sb.append("\n\n📱 الأجهزة:"); for (int i = 0; i < mm.length(); i++) sb.append("\n  ").append(mm.optJSONObject(i).optString("v", "?")).append(" ← ").append(mm.optJSONObject(i).optInt("n")); }
+            c.addView(text(this, sb.toString(), 13, TEXT, false));
+            l.addView(c);
+            return;
+        }
+        // بحث + فلاتر (تبديل بالضغط)
+        EditText q = input("🔎 بحث بالاسم أو الإيميل أو المعرّف");
+        q.setText(usersQ);
+        q.setSingleLine(true);
+        q.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        q.setOnEditorActionListener((v, act, ev) -> { usersQ = q.getText().toString().trim(); renderUsers(l, dh); return true; });
+        l.addView(q, lpm(this, -1, -2, 0, 6));
+        String[] sorts = {"↕ الأحدث اشتراكاً", "↕ آخر فتح/استلام", "↕ الاسم"};
+        String[] vias = {"🔑 كل طرق الدخول", "🔑 Google", "🔑 تيليغرام"};
+        String[] acts = {"⏱ كل النشاط", "⏱ نشط 7 أيام", "⏱ غير نشط 7 أيام", "⏱ غير نشط 30 يوماً"};
+        String[] extras = usersTab == 0 ? new String[]{"➕ بلا فلتر إضافي", "📄 رفع سيرة", "📋 لديه طلبات", "🛠 أدمن", "⛔ موقوف"} : new String[]{"➕ كل المشتركين", "✅ فعّال", "⏸ أوقف/حظر", "⚡ فوري", "🌙 ملخص يومي"};
+        LinearLayout f1 = row(this), f2 = row(this);
+        TextView cs = chip(this, sorts[usersSort], false), cv = chip(this, vias[usersVia], usersVia > 0), ca = chip(this, acts[usersAct], usersAct > 0), ce = chip(this, extras[Math.min(usersExtra, extras.length - 1)], usersExtra > 0);
+        cs.setOnClickListener(v -> { usersSort = (usersSort + 1) % 3; renderUsers(l, dh); });
+        cv.setOnClickListener(v -> { usersVia = (usersVia + 1) % 3; renderUsers(l, dh); });
+        ca.setOnClickListener(v -> { usersAct = (usersAct + 1) % 4; renderUsers(l, dh); });
+        ce.setOnClickListener(v -> { usersExtra = (usersExtra + 1) % extras.length; renderUsers(l, dh); });
+        f1.addView(cs, weight());
+        if (usersTab == 0) f1.addView(cv, weight());
+        f2.addView(ca, weight());
+        f2.addView(ce, weight());
+        l.addView(f1, lpm(this, -1, -2, 0, 4));
+        l.addView(f2, lpm(this, -1, -2, 0, 8));
+        String ql = usersQ.toLowerCase();
+        java.util.List<JSONObject> items = new java.util.ArrayList<>();
+        JSONArray src = usersTab == 0 ? a : subs;
+        for (int i = 0; src != null && i < src.length(); i++) {
+            JSONObject u = src.optJSONObject(i);
+            if (u == null) continue;
+            String hay = (str(u, "name") + " " + str(u, "email") + " " + str(u, "uname")).toLowerCase();
+            if (!ql.isEmpty() && !hay.contains(ql)) continue;
+            long last = usersTab == 0 ? u.optLong("last_seen") : u.optLong("last_sent");
+            if (usersAct == 1 && now - last > 7 * D) continue;
+            if (usersAct == 2 && now - last <= 7 * D) continue;
+            if (usersAct == 3 && now - last <= 30 * D) continue;
+            if (usersTab == 0) {
+                if (usersVia == 1 && !"google".equals(str(u, "via"))) continue;
+                if (usersVia == 2 && !"tg".equals(str(u, "via"))) continue;
+                if (usersExtra == 1 && u.optInt("cv") != 1) continue;
+                if (usersExtra == 2 && u.optInt("apps") == 0) continue;
+                if (usersExtra == 3 && !"admin".equals(str(u, "role"))) continue;
+                if (usersExtra == 4 && !"blocked".equals(str(u, "status"))) continue;
+            } else {
+                boolean act = u.optInt("active") == 1 && u.optInt("blocked") == 0;
+                if (usersExtra == 1 && !act) continue;
+                if (usersExtra == 2 && act) continue;
+                if (usersExtra == 3 && !"instant".equals(str(u, "mode"))) continue;
+                if (usersExtra == 4 && !"daily".equals(str(u, "mode"))) continue;
             }
-            StringBuilder vs = new StringBuilder("📲 النسخ المنتشرة:");
-            for (java.util.Map.Entry<String, Integer> e : vc.entrySet()) vs.append("\n  ").append(e.getKey()).append(" ← ").append(e.getValue()).append(" مستخدم");
-            LinearLayout vcard = card(this);
-            vcard.addView(text(this, vs.toString(), 13, TEXT, false));
-            l.addView(vcard, lpm(this, -1, -2, 0, 8));
-            String meEmail = Store.p(this).getString("email", "");
-            for (int i = 0; i < a.length(); i++) {
-                JSONObject u = a.optJSONObject(i);
-                if (u == null) continue;
-                String email = str(u, "email");
-                boolean isAdmin = "admin".equals(str(u, "role")), blocked = "blocked".equals(str(u, "status"));
-                LinearLayout c = card(this);
-                String name = str(u, "name");
-                c.addView(oneLine(text(this, (blocked ? "⛔ " : isAdmin ? "🛠 " : "👤 ") + (name.isEmpty() ? email : name), 15, TEXT, true)));
-                c.addView(oneLine(text(this, email, 12, MUTED, false)));
-                String model = str(u, "model"), ver = str(u, "ver");
-                c.addView(text(this, "🕒 آخر فتح: " + (u.optLong("last_seen") > 0 ? ago(u.optLong("last_seen")) : "—")
-                        + "  •  🔄 آخر مزامنة: " + (u.optLong("last_sync") > 0 ? ago(u.optLong("last_sync")) : "—")
-                        + "\nمصادر: " + u.optInt("contrib") + " • مشاركات: " + u.optInt("shares")
-                        + (model.isEmpty() ? "" : "\n📱 " + model + (ver.isEmpty() ? "" : " • v" + ver + (!latest.isEmpty() && Updater.cmp(latest, ver) > 0 ? " 🟠 قديم" : ""))), 12, MUTED, false));
-                if (!email.equals("eng.feras8585@gmail.com") && !email.equals(meEmail)) {
-                    LinearLayout r2 = row(this);
-                    Button role = button(this, isAdmin ? "إزالة صلاحية الأدمن" : "اجعله أدمن", false);
-                    String who = name.isEmpty() ? email : name;
-                    role.setOnClickListener(v -> new AlertDialog.Builder(this)
-                            .setMessage(isAdmin ? "إزالة صلاحية الأدمن من " + who + "؟" : "هل تريد جعل " + who + " أدمن؟\nسيرى المصادر والتصحيحات والبلاغات ويستطيع الموافقة والإدارة (دون صلاحية عرض المستخدمين أو رفع أدمن).")
-                            .setPositiveButton("نعم", (x, w) -> post("/admin/users/role", jo("email", email, "role", isAdmin ? "user" : "admin"), y -> { dh[0].dismiss(); adminUsers(); }))
-                            .setNegativeButton("إلغاء", null).show());
-                    Button blk = button(this, blocked ? "✅ تفعيل" : "⛔ إيقاف", false);
-                    blk.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage((blocked ? "تفعيل " : "إيقاف ") + email + "؟")
-                            .setPositiveButton("نعم", (x, w) -> post("/admin/users/status", jo("email", email, "status", blocked ? "active" : "blocked"), y -> { dh[0].dismiss(); adminUsers(); }))
-                            .setNegativeButton("إلغاء", null).show());
-                    r2.addView(role, weight());
-                    r2.addView(blk, weight());
-                    c.addView(r2, lpm(this, -1, -2, 8, 0));
-                }
+            items.add(u);
+        }
+        final int tab = usersTab;
+        items.sort((x, y) -> usersSort == 2 ? str(x, "name").compareTo(str(y, "name"))
+                : Long.compare(usersSort == 0 ? y.optLong("created") : (tab == 0 ? y.optLong("last_seen") : y.optLong("last_sent")),
+                               usersSort == 0 ? x.optLong("created") : (tab == 0 ? x.optLong("last_seen") : x.optLong("last_sent"))));
+        l.addView(text(this, "المعروض: " + items.size() + " من " + (src == null ? 0 : src.length()), 13, MUTED, true), lpm(this, -1, -2, 0, 6));
+        java.text.SimpleDateFormat df = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
+        String meEmail = Store.p(this).getString("email", ""), latest = Store.p(this).getString("upd_ver", "");
+        for (JSONObject u : items.subList(0, Math.min(items.size(), 300))) {
+            LinearLayout c = card(this);
+            String name = str(u, "name");
+            if (tab == 1) {
+                boolean act = u.optInt("active") == 1 && u.optInt("blocked") == 0;
+                c.addView(oneLine(text(this, (act ? "🤖 " : u.optInt("blocked") == 1 ? "🚫 " : "⏸ ") + (name.isEmpty() ? "مستخدم" : name) + (str(u, "uname").isEmpty() ? "" : "  @" + str(u, "uname")), 15, TEXT, true)));
+                String sp = "all".equals(str(u, "specs")) ? "كل الاختصاصات" : Labels.names(Labels.SPECS, str(u, "specs"));
+                String gv = "all".equals(str(u, "govs")) ? "كل المحافظات" : Labels.names(Labels.GOVS, str(u, "govs"));
+                c.addView(text(this, "🎓 " + (sp.isEmpty() ? "—" : sp) + (u.optInt("tenders") == 1 ? " + 📑 مناقصات" : "") + "\n📍 " + (gv.isEmpty() ? "—" : gv)
+                        + "\n🔔 " + ("daily".equals(str(u, "mode")) ? "ملخص يومي" : "فوري") + " • 📨 استلم " + u.optInt("sent") + " فرصة"
+                        + "\n📅 اشترك: " + df.format(new java.util.Date(u.optLong("created"))) + " • آخر استلام: " + (u.optLong("last_sent") > 0 ? ago(u.optLong("last_sent")) : "—")
+                        + (str(u, "src").isEmpty() ? "" : " • من: " + str(u, "src")), 12, MUTED, false));
                 l.addView(c, lpm(this, -1, -2, 0, 8));
+                continue;
             }
-        });
+            String email = str(u, "email");
+            boolean isAdmin = "admin".equals(str(u, "role")), blocked = "blocked".equals(str(u, "status"));
+            c.addView(oneLine(text(this, (blocked ? "⛔ " : isAdmin ? "🛠 " : "👤 ") + (name.isEmpty() ? email : name) + ("tg".equals(str(u, "via")) ? "  ✈️" : "  G"), 15, TEXT, true)));
+            if (!"tg".equals(str(u, "via"))) c.addView(oneLine(text(this, email, 12, MUTED, false)));
+            String model = str(u, "model"), ver = str(u, "ver");
+            c.addView(text(this, "📅 اشترك: " + (u.optLong("created") > 0 ? df.format(new java.util.Date(u.optLong("created"))) : "—")
+                    + "\n🕒 آخر فتح: " + (u.optLong("last_seen") > 0 ? ago(u.optLong("last_seen")) : "—")
+                    + "  •  🔄 آخر مزامنة: " + (u.optLong("last_sync") > 0 ? ago(u.optLong("last_sync")) : "—")
+                    + "\n" + (u.optInt("cv") == 1 ? "📄 سيرة ذاتية • " : "") + "📋 طلبات: " + u.optInt("apps") + " • مصادر: " + u.optInt("contrib") + " • مشاركات: " + u.optInt("shares")
+                    + (model.isEmpty() ? "" : "\n📱 " + model + (ver.isEmpty() ? "" : " • v" + ver + (!latest.isEmpty() && Updater.cmp(latest, ver) > 0 ? " 🟠 قديم" : ""))), 12, MUTED, false));
+            if (!email.equals("eng.feras8585@gmail.com") && !email.equals(meEmail)) {
+                LinearLayout r2 = row(this);
+                Button role = button(this, isAdmin ? "إزالة صلاحية الأدمن" : "اجعله أدمن", false);
+                String who = name.isEmpty() ? email : name;
+                role.setOnClickListener(v -> new AlertDialog.Builder(this)
+                        .setMessage(isAdmin ? "إزالة صلاحية الأدمن من " + who + "؟" : "هل تريد جعل " + who + " أدمن؟\nسيرى المصادر والتصحيحات والبلاغات ويستطيع الموافقة والإدارة (دون صلاحية عرض المستخدمين أو رفع أدمن).")
+                        .setPositiveButton("نعم", (x, w) -> post("/admin/users/role", jo("email", email, "role", isAdmin ? "user" : "admin"), y -> { dh[0].dismiss(); adminUsers(); }))
+                        .setNegativeButton("إلغاء", null).show());
+                Button blk = button(this, blocked ? "✅ تفعيل" : "⛔ إيقاف", false);
+                blk.setOnClickListener(v -> new AlertDialog.Builder(this).setMessage((blocked ? "تفعيل " : "إيقاف ") + who + "؟")
+                        .setPositiveButton("نعم", (x, w) -> post("/admin/users/status", jo("email", email, "status", blocked ? "active" : "blocked"), y -> { dh[0].dismiss(); adminUsers(); }))
+                        .setNegativeButton("إلغاء", null).show());
+                r2.addView(role, weight());
+                r2.addView(blk, weight());
+                c.addView(r2, lpm(this, -1, -2, 8, 0));
+            }
+            l.addView(c, lpm(this, -1, -2, 0, 8));
+        }
     }
 
     private void adminFixes() {

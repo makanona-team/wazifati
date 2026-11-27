@@ -61,6 +61,7 @@ class Ctx:
         self.joins = 0
         self.lib, self.libmap, self.no_fwd, self.dirty = None, {}, {}, False
         self.groups = None
+        self.dead, self.backup = False, False
 
     def left(self):
         return TIME_BUDGET - (time.time() - self.t0)
@@ -359,11 +360,22 @@ def main(sources, api, send, log):
         sess = api("/tg/secret?k=session").get("v", "")
     except Exception as e:  # noqa
         log(f"تعذّر جلب الجلسة: {e}")
-    if not (api_id and api_hash and sess):
+    sess2 = ""
+    try:
+        sess2 = api("/tg/secret?k=session2").get("v", "")
+    except Exception:  # noqa
+        pass
+    if not (api_id and api_hash and (sess or sess2)):
         log(f"⏸ حساب القراءة غير مفعّل؛ {len(sources)} مصدر بانتظاره")
         report_all(ctx, sources, "⏸ بانتظار تفعيل حساب القراءة الخاص")
         return 0
-    return asyncio.run(run(ctx, sources, int(api_id), api_hash, sess))
+    added = asyncio.run(run(ctx, sources, int(api_id), api_hash, sess)) if sess else 0
+    if (ctx.dead or not sess) and sess2:   # الحساب الأساسي متوقف ← الاحتياطي يكمل العمل
+        log("🔁 الحساب الأساسي متوقف — التشغيل بالحساب الاحتياطي")
+        ctx.dead = False
+        ctx.backup = True
+        added += asyncio.run(run(ctx, sources, int(api_id), api_hash, sess2))
+    return added
 
 
 async def run(ctx, sources, api_id, api_hash, sess):
@@ -373,7 +385,8 @@ async def run(ctx, sources, api_id, api_hash, sess):
     await client.connect()
     try:
         if not await client.is_user_authorized():
-            ctx.api("/tg/status", {"ok": False, "alert": True, "err": "الجلسة منتهية أو أُلغيت"})
+            ctx.dead = True
+            ctx.api("/tg/status", {"ok": False, "alert": True, "err": ("الاحتياطي: " if getattr(ctx, "backup", False) else "") + "الجلسة منتهية أو أُلغيت"})
             report_all(ctx, sources, "⏸ حساب القراءة يحتاج تسجيل دخول جديد")
             return 0
         me = await client.get_me()
@@ -383,7 +396,7 @@ async def run(ctx, sources, api_id, api_hash, sess):
             except Exception as e:  # noqa — المكتبة اختيارية، لا توقف الفهرسة
                 ctx.lib = None
                 ctx.log(f"⚠️ مكتبة وظيفتي: {e}")
-        ctx.api("/tg/status", {"ok": True, "name": (me.first_name or "") + (f" @{me.username}" if me.username else "")})
+        ctx.api("/tg/status", {"ok": True, "name": ("🔁 احتياطي: " if getattr(ctx, "backup", False) else "") + (me.first_name or "") + (f" @{me.username}" if me.username else "")})
         try:   # إحصائيات قناتنا: مشاهدات آخر المنشورات + عدد المشتركين (قناة عامة نملكها؛ لا محادثات شخصية)
             ch = await client.get_entity("wazifati_jobs")
             views = {str(m.id): (m.views or 0) async for m in client.iter_messages(ch, limit=150) if m.views}
@@ -413,6 +426,7 @@ async def run(ctx, sources, api_id, api_hash, sess):
                 ctx.log(f"⏸ FloodWait {e.seconds}s — إيقاف حساب القراءة لهذا التشغيل")
                 break
             except DEAD as e:
+                ctx.dead = True
                 ctx.api("/tg/status", {"ok": False, "alert": True, "err": type(e).__name__})
                 report_all(ctx, [s], "⏸ حساب القراءة متوقف")
                 break

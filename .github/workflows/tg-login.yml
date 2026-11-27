@@ -9,6 +9,11 @@ on:
         type: choice
         options: ['3 - دخول بمسح QR (موصى به)', '1 - إرسال الرمز', '2 - إدخال الرمز']
         default: '3 - دخول بمسح QR (موصى به)'
+      account:
+        description: 'أي حساب؟'
+        type: choice
+        options: ['الأساسي', 'الاحتياطي']
+        default: 'الأساسي'
       phone:
         description: 'رقم الهاتف (للمرحلة 1) مثل +9639xxxxxxxx'
         required: false
@@ -45,6 +50,7 @@ jobs:
           TG_2FA: ${{ secrets.TG_2FA }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           STEP: ${{ inputs.step }}
+          ACCOUNT: ${{ inputs.account }}
           PHONE: ${{ inputs.phone }}
           CODE: ${{ inputs.code }}
           PASSWORD: ${{ inputs.password }}
