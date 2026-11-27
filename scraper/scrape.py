@@ -318,6 +318,10 @@ def main():
             api("/tg/digest", {})
         except Exception as e:  # noqa
             log(f"تعذّر إرسال الملخص: {e}")
+    try:
+        api("/tg/channel/tick", {})   # قناة الوظائف: ينشر عند حلول موعد (9 و18 بتوقيت دمشق افتراضياً)
+    except Exception as e:  # noqa
+        log(f"تعذّر النشر في القناة: {e}")
     log(f"انتهى. أُضيف {added_all} إعلاناً جديداً.")
 
 

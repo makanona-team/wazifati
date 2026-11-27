@@ -2624,7 +2624,9 @@ public class MainActivity extends Activity {
             bsk.setOnClickListener(v -> adminSkills());
             Button brl = button(this, "📦 الإصدارات والنسخ القديمة", false);
             brl.setOnClickListener(v -> adminReleases());
-            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, bsk, brl, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
+            Button bch = button(this, "📣 قناة الوظائف على تيليغرام", false);
+            bch.setOnClickListener(v -> adminChannel());
+            for (Button bb : new Button[]{bs, bu, bf, bfl, be, brp, bft, bsk, brl, bch, ba, bm, bt}) ad.addView(bb, lpm(this, -1, -2, 6, 0));
             l.addView(ad, lpm(this, -1, -2, 0, 12));
         }
 
@@ -3551,6 +3553,104 @@ public class MainActivity extends Activity {
     // الأدمن: تقارير الأخطاء وفشل تسجيل الدخول (2.4)
     // =====================================================================
     private boolean reportsAll = false;
+
+    // ===== 3.1.2: قناة الوظائف =====
+    private void adminChannel() {
+        Dialog[] dh = new Dialog[1];
+        LinearLayout l = fullDialog("📣 قناة الوظائف", dh);
+        dh[0].show();
+        l.addView(text(this, "⏳", 14, MUTED, false));
+        get("/admin/channel", r -> {
+            l.removeAllViews();
+            JSONObject cfg = r.optJSONObject("cfg");
+            if (cfg == null) cfg = new JSONObject();
+            final String chat = cfg.optString("chat", "@wazifati_jobs");
+            LinearLayout c = card(this);
+            c.addView(text(this, "القناة: " + chat, 16, TEXT, true));
+            TextView op = text(this, "🔗 فتح القناة", 14, PRIMARY, true);
+            op.setPadding(0, dp(this, 6), 0, dp(this, 6));
+            op.setOnClickListener(v -> openUrl("https://t.me/" + chat.replace("@", "")));
+            c.addView(op);
+            JSONObject err = r.optJSONObject("err");
+            if (err != null) c.addView(text(this, "⚠️ آخر خطأ: " + err.optString("err") + "\nتأكد أن البوت مشرف في القناة وله صلاحية النشر.", 13, RED, false), lpm(this, -1, -2, 4, 4));
+            c.addView(text(this, "نُشر خلال 24 ساعة: " + r.optInt("today") + " • المجموع: " + r.optInt("total"), 13, MUTED, false), lpm(this, -1, -2, 4, 8));
+            Switch on = new Switch(this);
+            on.setText("النشر التلقائي");
+            on.setTextColor(TEXT);
+            on.setChecked(cfg.optInt("on", 1) == 1);
+            c.addView(on);
+            Switch tn = new Switch(this);
+            tn.setText("📑 منشور «مناقصات اليوم» مع آخر موعد يومي");
+            tn.setTextColor(TEXT);
+            tn.setChecked(cfg.optInt("tenders", 1) == 1);
+            c.addView(tn, lpm(this, -1, -2, 6, 6));
+            c.addView(text(this, "عدد الفرص في كل منشور:", 13, MUTED, false));
+            EditText n = input("8");
+            n.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            n.setText(String.valueOf(cfg.optInt("n", 8)));
+            c.addView(n, lpm(this, -1, -2, 4, 6));
+            c.addView(text(this, "مواعيد النشر (ساعات بتوقيت دمشق، مفصولة بفاصلة):", 13, MUTED, false));
+            JSONArray ta = cfg.optJSONArray("times");
+            StringBuilder ts = new StringBuilder();
+            for (int i = 0; ta != null && i < ta.length(); i++) ts.append(i > 0 ? "، " : "").append(ta.optInt(i));
+            EditText t = input("9، 18");
+            t.setText(ts.toString());
+            c.addView(t, lpm(this, -1, -2, 4, 6));
+            c.addView(text(this, "قد يتأخر النشر حتى ساعة عن الموعد (يتم مع دورة الجلب).", 12, MUTED, false));
+            Button save = button(this, "💾 حفظ الإعدادات", true);
+            save.setOnClickListener(v -> post("/admin/channel", jo("on", on.isChecked(), "tenders", tn.isChecked(), "n", n.getText().toString().trim(), "times", t.getText().toString().replace('،', ',')),
+                    x -> { Toast.makeText(this, "✅ حُفظت", Toast.LENGTH_SHORT).show(); dh[0].dismiss(); adminChannel(); }));
+            c.addView(save, lpm(this, -1, -2, 8, 0));
+            l.addView(c, lpm(this, -1, -2, 0, 12));
+
+            LinearLayout nc = card(this);
+            JSONArray nx = r.optJSONArray("next");
+            int cnt = nx == null ? 0 : nx.length();
+            nc.addView(text(this, "👀 المنشور القادم (" + cnt + " فرصة)", 16, TEXT, true));
+            if (cnt == 0) nc.addView(text(this, "لا توجد فرص جديدة غير منشورة حالياً.", 13, MUTED, false));
+            for (int i = 0; i < cnt; i++) {
+                JSONObject o = nx.optJSONObject(i);
+                if (o == null) continue;
+                final long id = o.optLong("id");
+                LinearLayout rw = new LinearLayout(this);
+                rw.setOrientation(LinearLayout.VERTICAL);
+                rw.addView(text(this, (i + 1) + ". " + str(o, "title"), 14, TEXT, true));
+                rw.addView(text(this, str(o, "org") + (str(o, "src").isEmpty() ? "" : " • " + str(o, "src")), 12, MUTED, false));
+                TextView sk = text(this, "🚫 لا تنشر هذه", 13, RED, true);
+                sk.setPadding(0, dp(this, 4), 0, dp(this, 8));
+                sk.setOnClickListener(v -> post("/admin/channel/skip", jo("id", id), x -> { dh[0].dismiss(); adminChannel(); }));
+                rw.addView(sk);
+                nc.addView(rw, lpm(this, -1, -2, 6, 0));
+            }
+            Button pv = button(this, "📝 معاينة نص المنشور", false);
+            final String prev = r.optString("preview");
+            pv.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("معاينة").setMessage(prev).setPositiveButton("حسناً", null).show());
+            nc.addView(pv, lpm(this, -1, -2, 8, 0));
+            Button now = button(this, "🚀 انشر الآن", true);
+            now.setEnabled(cnt > 0);
+            now.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("نشر " + cnt + " فرصة الآن؟")
+                    .setMessage("تُنشر مباشرة في " + chat + " ولن تتكرر لاحقاً.")
+                    .setPositiveButton("انشر", (d2, w) -> post("/admin/channel/post-now", jo(), x -> {
+                        Toast.makeText(this, x.optBoolean("ok") ? "✅ نُشرت " + x.optInt("n") + " فرصة" : "❌ " + x.optString("err"), Toast.LENGTH_LONG).show();
+                        dh[0].dismiss(); adminChannel(); }))
+                    .setNegativeButton("إلغاء", null).show());
+            nc.addView(now, lpm(this, -1, -2, 8, 0));
+            l.addView(nc, lpm(this, -1, -2, 0, 12));
+
+            JSONArray tz = r.optJSONArray("tenders");
+            int tc = tz == null ? 0 : tz.length();
+            LinearLayout tcard = card(this);
+            tcard.addView(text(this, "📑 مناقصات بانتظار النشر: " + tc, 16, TEXT, true));
+            for (int i = 0; i < Math.min(tc, 12); i++) { JSONObject o = tz.optJSONObject(i); if (o != null) tcard.addView(text(this, "• " + str(o, "title"), 13, TEXT, false)); }
+            Button tnow = button(this, "🚀 انشر المناقصات الآن", false);
+            tnow.setEnabled(tc > 0);
+            tnow.setOnClickListener(v -> post("/admin/channel/post-now", jo("tenders", true), x -> {
+                Toast.makeText(this, x.optBoolean("ok") ? "✅ نُشرت" : "❌ " + x.optString("err"), Toast.LENGTH_LONG).show();
+                dh[0].dismiss(); adminChannel(); }));
+            tcard.addView(tnow, lpm(this, -1, -2, 8, 0));
+            l.addView(tcard);
+        });
+    }
 
     // ===== 3.0.3: قاموس الحلول =====
     private void adminKb() {

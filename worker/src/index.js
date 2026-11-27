@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '3.1';
+const VERSION = '3.1.2';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -180,6 +180,7 @@ export class Db {
     // الدخول عبر تيليغرام (3.1): رمز لمرة واحدة ← المستخدم يضغط «ابدأ» في البوت ← جلسة
     this.run(`CREATE TABLE IF NOT EXISTS tg_login (nonce TEXT PRIMARY KEY, created INTEGER, token TEXT, name TEXT)`);
     // قاموس الحلول (3.0.3): نمط يطابق الخطأ ← السبب والحل ورسالة للمستخدم
+    this.run(`CREATE TABLE IF NOT EXISTS chan_posted (job_id INTEGER PRIMARY KEY, at INTEGER, msg_id INTEGER, skip INTEGER DEFAULT 0)`);
     this.run(`CREATE TABLE IF NOT EXISTS kb (id INTEGER PRIMARY KEY AUTOINCREMENT, match TEXT, title TEXT, cause TEXT, fix TEXT,
       user_msg TEXT, needs_code INTEGER DEFAULT 0, updated INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS sources (
@@ -336,6 +337,7 @@ export class Db {
         if (p === '/tg/secret') { this.run(`INSERT OR REPLACE INTO tg_secret(k,v,at) VALUES(?,?,?)`, String(b.k || 'session'), String(b.v || ''), Date.now()); return json({ ok: true }); }
         if (p === '/tg/status') return this.tgStatus(b);
         if (p === '/tg/digest') return this.digest(!!b.force);
+        if (p === '/tg/channel/tick') return await this.chanTick(url.origin, false);
         if (p === '/tg/libstats') return json({
           files: this.q(`SELECT provider, COUNT(*) n, SUM(CASE WHEN link LIKE 'https://t.me/wazifati_lib%' THEN 1 ELSE 0 END) lib FROM learn WHERE ftype IS NOT NULL GROUP BY provider`),
           sample: this.q(`SELECT title, link, url FROM learn WHERE ftype IS NOT NULL ORDER BY id DESC LIMIT 3`),
@@ -401,6 +403,7 @@ export class Db {
         if (p === '/admin/skills/top') return this.skillsTop();
         if (p === '/admin/link-reports') return json({ reports: this.q(`SELECT skill, url, COUNT(*) AS n, MAX(created) AS last FROM link_reports GROUP BY skill, url ORDER BY last DESC LIMIT 100`) });
         if (p === '/admin/reports') return this.getReports(url);
+        if (p === '/admin/channel') return json(this.chanInfo(url.origin));
         if (p === '/admin/kb') return json({ kb: this.q(`SELECT * FROM kb ORDER BY id DESC`) });
         if (p === '/admin/flags') return json({ flags: this.q(`SELECT j.id, j.title, j.src, j.url, j.hidden, COUNT(f.email) AS n, GROUP_CONCAT(f.email, '، ') AS who, MAX(f.created) AS last
           FROM flags f JOIN jobs j ON j.id=f.job_id WHERE j.hidden<2 GROUP BY j.id ORDER BY last DESC LIMIT 100`) });
@@ -410,6 +413,9 @@ export class Db {
         if (p === '/admin/sources/toggle') { this.run(`UPDATE sources SET enabled=?, fail_since=NULL, auto_off=0 WHERE id=?`, b.enabled ? 1 : 0, +b.id); return json({ ok: true }); }
         if (p === '/admin/learn/hide') { this.run(`UPDATE learn SET hidden=? WHERE id=?`, b.hide === false ? 0 : 1, +b.id); return json({ ok: true }); }
         if (p === '/admin/learn/tojob') return this.learnToJob(+b.id);
+        if (p === '/admin/channel') return json(this.chanSet(b));
+        if (p === '/admin/channel/skip') { if (b.undo) this.run(`DELETE FROM chan_posted WHERE job_id=? AND skip=1`, +b.id); else this.run(`INSERT OR IGNORE INTO chan_posted(job_id,at,msg_id,skip) VALUES(?,?,0,1)`, +b.id, Date.now()); return json({ ok: true }); }
+        if (p === '/admin/channel/post-now') return await this.chanTick(url.origin, b.tenders ? 'tenders' : 'jobs');
         if (p === '/admin/sources/purpose') { this.run(`UPDATE sources SET purpose=? WHERE id=?`, b.purpose === 'learn' ? 'learn' : 'jobs', +b.id); return json({ ok: true }); }
         if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/users/role') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذا الإجراء لمطوّر التطبيق فقط'); return this.setRole(me, b); }
@@ -1290,6 +1296,139 @@ export class Db {
     this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('digest_day',?)`, day);
     if (this.env.TG_BOT_TOKEN && this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg(L.join('\n')));
     return json({ ok: true, text: L.join('\n') });
+  }
+
+  // ===== قناة الوظائف على تيليغرام (3.1.2) =====
+  chanCfg() {
+    const d = { on: 1, chat: '@wazifati_jobs', n: 8, times: [9, 18], tenders: 1 };
+    try { return { ...d, ...JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan'`) || {}).v || '{}') }; } catch (_) { return d; }
+  }
+
+  chanSet(b) {
+    const c = this.chanCfg();
+    if (b.on != null) c.on = b.on ? 1 : 0;
+    if (b.tenders != null) c.tenders = b.tenders ? 1 : 0;
+    if (b.n != null) c.n = Math.max(1, Math.min(15, +b.n || 8));
+    if (b.times != null) {
+      const t = [...new Set(String(b.times).split(/[^\d]+/).map(Number).filter(x => x >= 0 && x <= 23))].sort((a, b) => a - b).slice(0, 6);
+      if (t.length) c.times = t;
+    }
+    if (b.chat) c.chat = String(b.chat).trim().slice(0, 64);
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('chan',?)`, JSON.stringify(c));
+    return { ok: true, cfg: c };
+  }
+
+  chanPick(n) {
+    const now = Date.now(), today = new Date(now + 3 * 3600e3).toISOString().slice(0, 10);
+    const rows = this.q(`SELECT id,title,org,specs,govs,deadline,apply,src,created FROM jobs
+      WHERE COALESCE(kind,'job')='job' AND hidden=0 AND doubt=0 AND created>? AND (deadline IS NULL OR deadline='' OR deadline>=?)
+      AND id NOT IN (SELECT job_id FROM chan_posted) ORDER BY id DESC LIMIT 300`, now - 3 * DAY, today);
+    const seenT = new Set();
+    const sc = r => (r.apply ? 3 : 0) + (r.deadline ? 2 : 0) + (r.org ? 1 : 0) + (/other/.test(r.specs || 'other') ? 0 : 1) - (now - r.created) / DAY;
+    const cand = rows.filter(r => { const k = norm(String(r.title || '')).slice(0, 40) + '|' + norm(String(r.org || '')).slice(0, 20); if (seenT.has(k)) return false; seenT.add(k); return true; })
+      .sort((a, b) => sc(b) - sc(a));
+    const out = [], ps = {}, pg = {};
+    for (const pass of [1, 2]) for (const r of cand) {
+      if (out.length >= n) break;
+      if (out.includes(r)) continue;
+      const s = String(r.specs || 'other').split(',')[0], g = String(r.govs || 'unknown').split(',')[0];
+      if (pass === 1 && ((ps[s] || 0) >= 2 || (pg[g] || 0) >= 3)) continue;
+      ps[s] = (ps[s] || 0) + 1; pg[g] = (pg[g] || 0) + 1; out.push(r);
+    }
+    return out;
+  }
+
+  chanTenders() {
+    const now = Date.now(), today = new Date(now + 3 * 3600e3).toISOString().slice(0, 10);
+    return this.q(`SELECT id,title,org,deadline,bond,tcat,govs,src FROM jobs WHERE kind='tender' AND hidden=0 AND created>? AND (deadline IS NULL OR deadline='' OR deadline>=?)
+      AND id NOT IN (SELECT job_id FROM chan_posted) ORDER BY id DESC LIMIT 12`, now - 2 * DAY, today);
+  }
+
+  chanText(rows, origin, tenders) {
+    const esc = x => String(x == null ? '' : x).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    // تنظيف: لا معرّفات قنوات أخرى ولا روابط ترويج ولا «تابعونا»
+    const clean = x => String(x || '').replace(/https?:\/\/\S+|t\.me\/\S+|@\w{4,}/gi, '').replace(/(تابعونا|انضموا|اشتركوا|للمزيد)[^\n]*/g, '').replace(/\s{2,}/g, ' ').trim();
+    const tag = x => '#' + String(x).replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_|_$/g, '');
+    const stag = x => tag(String(x).split(/\s+و|،|\s+/)[0]);
+    const lab = (map, v, skip) => String(v || '').split(',').filter(k => k && !skip.includes(k)).map(k => map[k]).filter(Boolean);
+    const h = new Date(Date.now() + 3 * 3600e3).getUTCHours();
+    const L = [tenders ? '📑 <b>مناقصات اليوم</b>' : `💼 <b>فرص عمل ${h < 14 ? 'الصباح' : 'المساء'}</b> — اختيار «وظيفتي»`, ''];
+    rows.forEach((r, i) => {
+      const title = esc(clean(r.title).slice(0, 120)) || 'فرصة';
+      const org = esc(clean(r.org).slice(0, 60));
+      const govs = lab(LABELS.govs, r.govs, ['unknown']);
+      const link = `${origin}/j/${r.id}`;
+      const e = [`${i + 1}. <b>${title}</b>`];
+      if (org) e.push(`🏢 ${org}`);
+      if (tenders) { if (r.bond) e.push(`💰 تأمين: ${esc(r.bond)}`); if (govs.length) e.push(`📍 ${esc(govs.join('، '))}`); }
+      else {
+        const specs = lab(LABELS.specs, r.specs, ['other']);
+        const meta = [govs.length ? '📍 ' + govs.join('، ') : '', specs.length ? '🎓 ' + specs.slice(0, 2).join('، ') : ''].filter(Boolean).join('  ');
+        if (meta) e.push(esc(meta));
+      }
+      if (r.deadline) e.push(`⏳ آخر موعد: ${esc(r.deadline)}`);
+      e.push(`🔗 <a href="${link}">التفاصيل وطريقة التقديم</a>` + (r.src ? ` • المصدر: ${esc(clean(r.src).slice(0, 40))}` : ''));
+      const tags = [...new Set([...lab(LABELS.govs, r.govs, ['unknown', 'all']).slice(0, 2).map(tag), ...(tenders ? [] : lab(LABELS.specs, r.specs, ['other']).slice(0, 2).map(stag))])];
+      if (tags.length) e.push(tags.join(' '));
+      L.push(e.join('\n'), '');
+    });
+    L.push(`📲 كل الفرص حسب اختصاصك ومحافظتك في تطبيق «وظيفتي» المجاني:\n${RELEASE}`);
+    let t = L.join('\n');
+    if (t.length > 4000) t = t.slice(0, 3990);
+    return t;
+  }
+
+  async chanSend(cfg, rows, origin, tenders) {
+    if (!this.env.TG_BOT_TOKEN) return { ok: false, err: 'TG_BOT_TOKEN غير مهيأ' };
+    if (!rows.length) return { ok: true, empty: true };
+    const r = await this.tgApi('sendMessage', { chat_id: cfg.chat, text: this.chanText(rows, origin, tenders), parse_mode: 'HTML', disable_web_page_preview: true });
+    if (!r.ok) {
+      const err = String(r.description || 'فشل الإرسال').slice(0, 200);
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('chan_err',?)`, JSON.stringify({ err, at: Date.now() }));
+      if (this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg('⚠️ تعذّر النشر في قناة الوظائف ' + cfg.chat + ': ' + err));
+      return { ok: false, err };
+    }
+    const at = Date.now();
+    for (const x of rows) this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip) VALUES(?,?,?,0)`, x.id, at, r.result.message_id);
+    this.run(`DELETE FROM meta WHERE k='chan_err'`);
+    if (!this.one(`SELECT v FROM meta WHERE k='chan_first'`)) {
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('chan_first',?)`, String(at));
+      if (this.env.TG_CHAT_ID) this.ctx.waitUntil(this.notifyTg(`✅ أول منشور في قناة الوظائف ${cfg.chat} تم بنجاح (${rows.length} عنصر).`));
+    }
+    this.run(`DELETE FROM chan_posted WHERE at < ?`, at - 60 * DAY);
+    return { ok: true, n: rows.length };
+  }
+
+  /** يُستدعى كل ساعة من الجالب، أو يدوياً من الأدمن («انشر الآن»: force='jobs'|'tenders'). */
+  async chanTick(origin, force) {
+    const cfg = this.chanCfg();
+    if (force === 'jobs') return json(await this.chanSend(cfg, this.chanPick(cfg.n), origin, false));
+    if (force === 'tenders') return json(await this.chanSend(cfg, this.chanTenders(), origin, true));
+    if (!cfg.on) return json({ off: true });
+    const dm = new Date(Date.now() + 3 * 3600e3), day = dm.toISOString().slice(0, 10), h = dm.getUTCHours();
+    let st = {}; try { st = JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_slots'`) || {}).v || '{}'); } catch (_) { /* */ }
+    if (st.day !== day) st = { day, done: [] };
+    const due = cfg.times.filter(t => h >= t && !st.done.includes(t));
+    if (!due.length) return json({ wait: true });
+    st.done.push(...due);
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('chan_slots',?)`, JSON.stringify(st));
+    const out = { jobs: await this.chanSend(cfg, this.chanPick(cfg.n), origin, false) };
+    if (cfg.tenders && due.includes(Math.max(...cfg.times))) out.tenders = await this.chanSend(cfg, this.chanTenders(), origin, true);
+    return json(out);
+  }
+
+  chanInfo(origin) {
+    const cfg = this.chanCfg(), since = Date.now() - DAY;
+    const next = this.chanPick(cfg.n), tn = this.chanTenders();
+    return {
+      cfg, err: JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_err'`) || {}).v || 'null'),
+      today: (this.one(`SELECT COUNT(*) n FROM chan_posted WHERE skip=0 AND at>?`, since) || {}).n || 0,
+      total: (this.one(`SELECT COUNT(*) n FROM chan_posted WHERE skip=0`) || {}).n || 0,
+      slots: JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_slots'`) || {}).v || '{}'),
+      next: next.map(r => ({ id: r.id, title: r.title, org: r.org, src: r.src, deadline: r.deadline })),
+      tenders: tn.map(r => ({ id: r.id, title: r.title, org: r.org })),
+      preview: this.chanText(next, origin, false).replace(/<[^>]+>/g, ''),
+    };
   }
 
   async notifyTg(text) {
