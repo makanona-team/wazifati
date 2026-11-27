@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '3.2';
+const VERSION = '3.2.1';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -185,7 +185,8 @@ export class Db {
     // قاموس الحلول (3.0.3): نمط يطابق الخطأ ← السبب والحل ورسالة للمستخدم
     this.run(`CREATE TABLE IF NOT EXISTS chan_posted (job_id INTEGER PRIMARY KEY, at INTEGER, msg_id INTEGER, skip INTEGER DEFAULT 0)`);
     this.run(`CREATE TABLE IF NOT EXISTS chan_review (job_id INTEGER PRIMARY KEY, state INTEGER DEFAULT 0, contact TEXT, at INTEGER, by TEXT)`);
-    for (const col of ['hl INTEGER DEFAULT 0', 'ed INTEGER DEFAULT 0', 'views INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE chan_posted ADD COLUMN ${col}`);
+    for (const col of ['hl INTEGER DEFAULT 0', 'ed INTEGER DEFAULT 0', 'views INTEGER DEFAULT 0', "kind TEXT DEFAULT 'job'", 'okey TEXT']) this.tryRun(`ALTER TABLE chan_posted ADD COLUMN ${col}`);
+    this.run(`CREATE TABLE IF NOT EXISTS chan_msgs (msg_id INTEGER PRIMARY KEY, at INTEGER, kind TEXT)`);
     this.tryRun(`ALTER TABLE chan_review ADD COLUMN warned INTEGER DEFAULT 0`);
     this.run(`CREATE TABLE IF NOT EXISTS ev (day TEXT, k TEXT, v TEXT, n INTEGER, PRIMARY KEY(day,k,v))`);
     this.run(`CREATE TABLE IF NOT EXISTS job_ev (job_id INTEGER, k TEXT, n INTEGER, PRIMARY KEY(job_id,k))`);
@@ -433,7 +434,7 @@ export class Db {
         if (p === '/admin/channel') return json(this.chanSet(b));
         if (p === '/admin/channel/skip') { if (b.undo) this.run(`DELETE FROM chan_posted WHERE job_id=? AND skip=1`, +b.id); else this.run(`INSERT OR IGNORE INTO chan_posted(job_id,at,msg_id,skip) VALUES(?,?,0,1)`, +b.id, Date.now()); return json({ ok: true }); }
         if (p === '/admin/channel/review') return json(this.reviewSet(+b.id, b.state != null ? Math.max(0, Math.min(3, +b.state)) : (b.ok ? 1 : 2), me.email));
-        if (p === '/admin/channel/post-now') return await this.chanTick(url.origin, b.tenders ? 'tenders' : b.hl ? 'hl' : 'jobs');
+        if (p === '/admin/channel/post-now') return await this.chanTick(url.origin, b.reset ? 'reset' : b.tenders ? 'tenders' : b.hl ? 'hl' : 'jobs');
         if (p === '/admin/sources/purpose') { this.run(`UPDATE sources SET purpose=? WHERE id=?`, b.purpose === 'learn' ? 'learn' : 'jobs', +b.id); return json({ ok: true }); }
         if (p === '/admin/sources/delete') { this.run(`DELETE FROM sources WHERE id=?`, +b.id); return json({ ok: true }); }
         if (p === '/admin/users/role') { if (me.email !== FIRST_ADMIN) throw new HttpErr(403, 'هذا الإجراء لمطوّر التطبيق فقط'); return this.setRole(me, b); }
@@ -670,6 +671,17 @@ export class Db {
       if (arg === 'on' || arg === 'off') this.chanSet({ on: arg === 'on' });
       if (arg === 'mode') this.chanSet({ mode: cfg.mode === 'all' ? 'best' : 'all' });
       const c2 = this.chanCfg(), info = this.chanInfo(SITE);
+      if (arg === 'reset') {
+        text = `🧹 مسح القناة وإعادة النشر؟\n\nيحذف البوت كل منشوراته في ${c2.chat} (منشوراتك اليدوية لا تُمس)، ثم يعيد تثبيت ملف التطبيق ويعيد نشر ${info.fillCount} فرصة ومناقصة من آخر 7 أيام بالترتيب الزمني وبصمت (20 منشوراً بالدقيقة تقريباً). المشتركون لا يتأثرون.`;
+        kb = [[{ text: '✅ نعم، امسح وأعد النشر', callback_data: 'c:reset!' }, { text: 'إلغاء', callback_data: 'c' }]];
+        return this.botShow(chat, mid, text, kb);
+      }
+      if (arg === 'reset!') {
+        const r = await this.chanReset(SITE);
+        text = `🧹 حُذف ${r.deleted} منشور من ${r.total}.\n📌 ملف التطبيق: ${r.pin}\n📥 بدأت التعبئة: نُشر ${r.first && r.first.n || 0} حتى الآن، والباقي يُنشر تلقائياً كل دقيقة. سيصلك تنبيه عند الانتهاء.`;
+        kb = [[{ text: '📣 القناة', callback_data: 'c' }], back];
+        return this.botShow(chat, mid, text, kb);
+      }
       if (arg === 'post!' || arg === 'hl!') {
         const r = await (await this.chanTick(SITE, arg === 'hl!' ? 'hl' : 'jobs')).json();
         text = r.ok ? (r.empty ? 'لا توجد فرص جديدة للنشر الآن.' : `✅ نُشرت ${r.n} ${arg === 'hl!' ? 'في منشور «أبرز الفرص»' : 'فرصة'}`) : '❌ ' + r.err;
@@ -682,9 +694,10 @@ export class Db {
         kb = [[{ text: '🚀 انشر الآن', callback_data: 'c:post' }], [{ text: '📣 القناة', callback_data: 'c' }], back];
       } else {
         const subs = (this.one(`SELECT n FROM ev WHERE k='chan_subs' ORDER BY day DESC LIMIT 1`) || {}).n || 0;
-        text = `📣 قناة الوظائف ${c2.chat}\n\nالنشر التلقائي: ${c2.on ? '▶ يعمل' : '⏸ متوقف'}\nالطريقة: ${c2.mode === 'all' ? 'كل الفرص بصمت + «أبرز الفرص» بإشعار' : 'أبرز الفرص فقط'}\nالمواعيد: ${c2.times.join(' و ')} • حد يومي ${c2.cap}\n👥 المشتركون: ${subs}\n📤 نُشر خلال 24 ساعة: ${info.today}\n🕓 بانتظار النشر: ${info.waiting}\n⏳ بانتظار المراجعة: ${info.counts.pending}${info.err ? '\n⚠️ آخر خطأ: ' + info.err.err : ''}`;
+        text = `📣 قناة الوظائف ${c2.chat}\n\nالنشر التلقائي: ${c2.on ? '▶ يعمل' : '⏸ متوقف'}${info.fill && info.fill.on ? `\n📥 التعبئة جارية: نُشر ${info.fill.n}` : ''}\nالطريقة: ${c2.mode === 'all' ? 'كل فرصة ومناقصة فور التقاطها بصمت + «أبرز الفرص» بإشعار' : 'أبرز الفرص فقط'}\nالمواعيد: ${c2.times.join(' و ')} • حد يومي ${c2.cap}\n👥 المشتركون: ${subs}\n📤 نُشر خلال 24 ساعة: ${info.today}\n🕓 بانتظار النشر: ${info.waiting}\n⏳ بانتظار المراجعة: ${info.counts.pending}${info.err ? '\n⚠️ آخر خطأ: ' + info.err.err : ''}`;
         kb = [[{ text: '👀 الدفعة القادمة', callback_data: 'c:next' }, { text: '🚀 انشر الآن', callback_data: 'c:post' }], [{ text: '⭐ أبرز الفرص الآن', callback_data: 'c:hl' }],
-          [{ text: c2.on ? '⏸ إيقاف النشر' : '▶ تشغيل النشر', callback_data: c2.on ? 'c:off' : 'c:on' }, { text: c2.mode === 'all' ? '🔁 أبرز الفرص فقط' : '🔁 كل الفرص بصمت', callback_data: 'c:mode' }], back];
+          [{ text: c2.on ? '⏸ إيقاف النشر' : '▶ تشغيل النشر', callback_data: c2.on ? 'c:off' : 'c:on' }, { text: c2.mode === 'all' ? '🔁 أبرز الفرص فقط' : '🔁 كل الفرص فوراً', callback_data: 'c:mode' }],
+          [{ text: '🧹 مسح القناة وإعادة النشر', callback_data: 'c:reset' }], back];
       }
     } else if (k === 'r') {
       const st = [0, 2, 3].includes(+arg) ? +arg : 0;
@@ -779,22 +792,24 @@ export class Db {
   }
 
   // ===== الوظائف =====
-  /** فرصة من تيليغرام نُشرت في قناتنا ← رابط منشورنا بدل القناة الأخرى */
-  pubUrl(r) {
+  /** فرصة من تيليغرام نُشرت في قناتنا ← رابط منشورنا ومصدرها «قناة وظيفتي» بدل القناة الأخرى.
+   *  المرفوض/المؤرشف/غير المنشور يبقى بمصدره الأصلي. المواقع الحقيقية تبقى كما هي دائماً. */
+  pubUrl(r) { return this.pubInfo(r).u; }
+  pubInfo(r) {
     const u = String(r.url || '');
-    if (!/^https?:\/\/(t\.me|telegram\.me)\//i.test(u)) return u;
-    if (!this._cmap || Date.now() - this._cmap.at > 300e3) {
+    if (!/^https?:\/\/(t\.me|telegram\.me)\//i.test(u)) return { u, src: r.src };
+    if (!this._cmap || Date.now() - this._cmap.at > 120e3) {
       const m = new Map(); for (const x of this.q(`SELECT job_id, msg_id FROM chan_posted WHERE skip=0 AND msg_id>0`)) m.set(x.job_id, x.msg_id);
       this._cmap = { at: Date.now(), m, cfg: this.chanCfg() };
     }
-    const mid = this._cmap.m.get(r.id);
-    return (mid && this.chanLink(this._cmap.cfg, mid)) || u;
+    const mid = this._cmap.m.get(r.id), link = mid && this.chanLink(this._cmap.cfg, mid);
+    return link ? { u: link, src: '📣 قناة وظيفتي' } : { u, src: r.src };
   }
 
   jobRow(r) {
     return {
       id: r.id, t: r.title, o: r.org, s: r.specs, g: r.govs, c: r.sector, d: r.deadline,
-      p: r.posted, src: r.src, n: (r.srcs || '').split('\n').filter(Boolean).length, u: this.pubUrl(r), a: r.apply, x: r.text, sh: r.shared_by ? 1 : 0,
+      p: r.posted, src: this.pubInfo(r).src, n: (r.srcs || '').split('\n').filter(Boolean).length, u: this.pubUrl(r), a: r.apply, x: r.text, sh: r.shared_by ? 1 : 0,
       im: r.image || '', dt: r.doubt ? 1 : 0, k: r.kind || 'job', tc: r.tcat || '', bd: r.bond || '',
     };
   }
@@ -1071,6 +1086,7 @@ export class Db {
     if (b.sourceId && out.learn) this.run(`UPDATE sources SET learn_total = COALESCE(learn_total,0) + ? WHERE id=?`, out.learn, b.sourceId);
     if (b.sourceId && out.notjob) this.run(`UPDATE sources SET rejected = COALESCE(rejected,0) + ? WHERE id=?`, out.notjob, b.sourceId);
     this.cleanup();
+    if (out.added) this.ctx.waitUntil(this.chanFlush());   // النشر الفوري في القناة
     return json(out);
   }
 
@@ -1465,7 +1481,7 @@ export class Db {
 
   // ===== قناة الوظائف على تيليغرام (3.1.2) =====
   chanCfg() {
-    const d = { on: 1, chat: '@wazifati_jobs', n: 8, times: [9, 18], tenders: 1, mode: 'all', cap: 40 };
+    const d = { on: 1, chat: '@wazifati_jobs', n: 8, times: [9, 18], tenders: 1, mode: 'all', cap: 150 };
     try { return { ...d, ...JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan'`) || {}).v || '{}') }; } catch (_) { return d; }
   }
 
@@ -1474,7 +1490,7 @@ export class Db {
     if (b.on != null) c.on = b.on ? 1 : 0;
     if (b.tenders != null) c.tenders = b.tenders ? 1 : 0;
     if (b.n != null) c.n = Math.max(1, Math.min(15, +b.n || 8));
-    if (b.cap != null) c.cap = Math.max(5, Math.min(150, +b.cap || 40));
+    if (b.cap != null) c.cap = Math.max(5, Math.min(400, +b.cap || 150));
     if (b.mode != null) c.mode = b.mode === 'best' ? 'best' : 'all';
     if (b.times != null) {
       const t = [...new Set(String(b.times).split(/[^\d]+/).map(Number).filter(x => x >= 0 && x <= 23))].sort((a, b) => a - b).slice(0, 6);
@@ -1507,21 +1523,44 @@ export class Db {
     return (phones.length || handles.length) ? [...new Set([...phones, ...handles])].slice(0, 4).join(' ، ') + (hasWa ? ' (واتساب)' : '') : '';
   }
 
-  /** يجهّز المرشّحين: يُدخل ما يحتاج مراجعة إلى chan_review ويعيد القابل للنشر فقط.
+  /** مناقصة من «مصدر نظامي»: جهة واضحة + عنصر رسمي (رقم/تأمين/موعد/دفتر شروط/موقع أو إيميل رسمي) */
+  /** جهة المناقصة: من التصنيف، أو من صيغة «تعلن/يعلن <الجهة> عن…» */
+  tenderOrg(r) {
+    const o = this.cleanText(this.unNorm(r.text, r.org)).trim();
+    if (o) return o;
+    const m = String(r.text || '').match(/(?:تعلن|يعلن|أعلنت|اعلنت)\s+([^\n،,:]{4,70}?)\s+(?:عن|عزمها|رغبتها)/);
+    return m ? m[1].trim() : '';
+  }
+
+  tenderFormal(r) {
+    const org = this.tenderOrg(r);
+    if (org.length < 3) return false;
+    const T = String(r.text || '');
+    return !!(r.bond || r.deadline || /(مناقص[ةه] رقم|اعلان رقم|إعلان رقم|رقم المناقص|رقم الإعلان|رقم الاعلان|دفتر (ال)?شروط|استلام (ال)?(وثائق|دفاتر|دفتر)|تأمين|التأمين|https?:\/\/(?!t\.me)|[\w.+-]+@[\w-]+\.[\w.]+|tender no|rfq|rfp|itb)/i.test(T));
+  }
+
+  /** مفتاح الجهة لتجميع مناقصاتها (بعد توحيد الكتابة وحذف الكلمات العامة) */
+  orgKey(org) {
+    const stop = new Set(['ال', 'مؤسسه', 'الموسسه', 'موسسه', 'المؤسسه', 'شركه', 'الشركه', 'مديريه', 'المديريه', 'هييه', 'الهييه', 'مجلس', 'العامه', 'العام', 'السوريه', 'سوريه', 'في', 'لل', 'ل', 'و']);
+    return norm(String(org || '')).replace(/[^\p{L}\p{N}\s]+/gu, ' ').split(/\s+/).filter(w => w && !stop.has(w)).join('').slice(0, 24);
+  }
+
+  /** المرشّحون للنشر (وظائف ومناقصات). freshDays: نافذة الجديد (3 عادةً، 7 في التعبئة).
    *  الحالات: 0 بانتظار، 1 موافق، 2 مرفوض، 3 مؤرشف (5 أيام بلا قرار). الموافق عليه يُنشر حتى 14 يوماً ما دام موعده قائماً. */
-  chanCands() {
+  chanCands(freshDays = 3) {
     const now = Date.now(), today = new Date(now + 3 * 3600e3).toISOString().slice(0, 10);
-    const rows = this.q(`SELECT id,title,org,specs,govs,deadline,apply,src,url,text,created FROM jobs
-      WHERE COALESCE(kind,'job')='job' AND hidden=0 AND doubt=0 AND created>? AND (deadline IS NULL OR deadline='' OR deadline>=?)
-      AND id NOT IN (SELECT job_id FROM chan_posted) ORDER BY id DESC LIMIT 400`, now - 14 * DAY, today);
+    const rows = this.q(`SELECT id,title,org,specs,govs,deadline,apply,src,url,text,created,posted,kind,bond,tcat FROM jobs
+      WHERE hidden=0 AND (doubt=0 OR kind='tender') AND created>? AND (deadline IS NULL OR deadline='' OR deadline>=?)
+      AND id NOT IN (SELECT job_id FROM chan_posted) ORDER BY id DESC LIMIT 800`, now - Math.max(14, freshDays) * DAY, today);
     const rev = {}; for (const x of this.q(`SELECT job_id, state FROM chan_review`)) rev[x.job_id] = x.state;
     const out = []; let added = 0;
     for (const r of rows) {
-      const fresh = r.created > now - 3 * DAY;
-      if (!this.chanSyria(r)) continue;
+      const fresh = r.created > now - freshDays * DAY, tender = r.kind === 'tender';
+      if (!this.chanSyria(r, tender ? 1 : 0)) continue;
       const c = this.chanContact(r.text);
-      if (c) {
-        if (rev[r.id] == null) { if (!fresh) continue; this.run(`INSERT OR IGNORE INTO chan_review(job_id,state,contact,at) VALUES(?,0,?,?)`, r.id, c, now); rev[r.id] = 0; added++; }
+      const needs = tender ? !this.tenderFormal(r) : !!c;
+      if (needs) {
+        if (rev[r.id] == null) { if (!fresh) continue; this.run(`INSERT OR IGNORE INTO chan_review(job_id,state,contact,at) VALUES(?,0,?,?)`, r.id, c || (tender ? 'مناقصة بلا جهة أو عنصر رسمي واضح' : ''), now); rev[r.id] = 0; added++; }
         if (rev[r.id] !== 1) continue;
         r.keepContact = 1;
       } else if (rev[r.id] === 2 || rev[r.id] === 3 || !fresh) continue;
@@ -1534,7 +1573,7 @@ export class Db {
 
   /** n=0 ← كل المرشّحين (مرتبين حسب الجودة) بلا حدود توازن */
   chanPick(n, rows) {
-    rows = rows || this.chanCands().out;
+    rows = rows || this.chanCands().out.filter(r => r.kind !== 'tender');
     const seenT = new Set();
     const cand = rows.filter(r => { const k = norm(String(r.title || '')).slice(0, 40) + '|' + norm(String(r.org || '')).slice(0, 20); if (seenT.has(k)) return false; seenT.add(k); return true; })
       .sort((a, b) => this.chanScore(b) - this.chanScore(a));
@@ -1583,9 +1622,7 @@ export class Db {
   }
 
   chanTenders() {
-    const now = Date.now(), today = new Date(now + 3 * 3600e3).toISOString().slice(0, 10);
-    return this.q(`SELECT id,title,org,deadline,bond,tcat,govs,src,text FROM jobs WHERE kind='tender' AND hidden=0 AND created>? AND (deadline IS NULL OR deadline='' OR deadline>=?)
-      AND id NOT IN (SELECT job_id FROM chan_posted) ORDER BY id DESC LIMIT 40`, now - 2 * DAY, today).filter(r => this.chanSyria(r, 1)).slice(0, 12);
+    return this.chanCands().out.filter(r => r.kind === 'tender').slice(0, 12);
   }
 
   chanFmt() {
@@ -1620,22 +1657,54 @@ export class Db {
     return e.join('\n').slice(0, 3800);
   }
 
-  /** منشور «مناقصات اليوم» المجمّع */
+  /** منشور مناقصة منفردة */
+  chanTenderOne(r) {
+    const { esc, tag, lab } = this.chanFmt();
+    const title = esc(this.cleanText(this.unNorm(r.text, r.title)).slice(0, 140)) || 'مناقصة';
+    const org = esc(this.tenderOrg(r).slice(0, 80));
+    const govs = lab(LABELS.govs, r.govs, ['unknown']);
+    const e = [`📑 <b>${title}</b>`];
+    if (org) e.push(`🏢 ${org}`);
+    if (r.tcat && LABELS.tcats[r.tcat]) e.push(`🗂 ${esc(LABELS.tcats[r.tcat])}`);
+    if (r.bond) e.push(`💰 التأمين: ${esc(r.bond)}`);
+    if (govs.length) e.push(`📍 ${esc(govs.join('، '))}`);
+    if (r.deadline) e.push(`⏳ آخر موعد لتقديم العروض: ${esc(r.deadline)}`);
+    const tn = norm(String(r.title || ''));
+    const ex = this.cleanText(r.text, r.keepContact).split('\n').map(x => x.trim()).filter(x => x.length > 3 && norm(x) !== tn).slice(0, 4).join('\n');
+    if (ex) e.push('', esc(ex.length > 360 ? ex.slice(0, 357) + '…' : ex));
+    const site = this.srcSite(r);
+    if (site) e.push('', `🌐 المصدر: ${esc(site)}`);
+    e.push('', ['#مناقصات', ...lab(LABELS.govs, r.govs, ['unknown', 'all']).slice(0, 2).map(tag)].join(' '));
+    return e.join('\n').slice(0, 3800);
+  }
+
+  /** منشور مجمّع لعدة مناقصات من نفس الجهة خلال 24 ساعة */
+  chanTenderGroup(rows, origin) {
+    const { esc, tag, lab } = this.chanFmt();
+    const org = esc(this.tenderOrg(rows[0]).slice(0, 80)) || 'جهة واحدة';
+    const L = [`📑 <b>مناقصات ${org} (${rows.length})</b>`, ''];
+    rows.forEach((r, i) => {
+      const t = esc(this.cleanText(this.unNorm(r.text, r.title)).slice(0, 120)) || 'مناقصة';
+      const bits = [r.deadline ? `⏳ ${esc(r.deadline)}` : '', r.bond ? `💰 ${esc(r.bond)}` : ''].filter(Boolean).join(' • ');
+      L.push(`${i + 1}. <b>${t}</b>${bits ? '\n   ' + bits : ''}\n   📄 <a href="${origin}/j/${r.id}?c=ch">التفاصيل كاملة</a>`);
+    });
+    const govs = [...new Set(rows.flatMap(r => lab(LABELS.govs, r.govs, ['unknown', 'all'])))].slice(0, 2);
+    L.push('', ['#مناقصات', ...govs.map(tag)].join(' '));
+    return L.join('\n').slice(0, 4000);
+  }
+
+  /** منشور «مناقصات اليوم» (ملخص بروابط منشوراتنا) */
   chanTenderText(rows, origin) {
     const { esc, lab } = this.chanFmt();
+    const cfg = this.chanCfg();
     const L = ['📑 <b>مناقصات اليوم</b>', ''];
     rows.forEach((r, i) => {
-      const e = [`${i + 1}. <b>${esc(this.cleanText(this.unNorm(r.text, r.title)).slice(0, 120)) || 'مناقصة'}</b>`];
-      const org = esc(this.cleanText(this.unNorm(r.text, r.org)).slice(0, 60));
-      if (org) e.push(`🏢 ${org}`);
-      if (r.bond) e.push(`💰 تأمين: ${esc(r.bond)}`);
-      const govs = lab(LABELS.govs, r.govs, ['unknown']);
-      if (govs.length) e.push(`📍 ${esc(govs.join('، '))}`);
-      if (r.deadline) e.push(`⏳ آخر موعد: ${esc(r.deadline)}`);
-      e.push(`📄 <a href="${origin}/j/${r.id}">التفاصيل كاملة</a>`);
-      L.push(e.join('\n'), '');
+      const link = (r.msg_id && this.chanLink(cfg, r.msg_id)) || `${origin}/j/${r.id}?c=ch`;
+      const org = esc(this.cleanText(this.unNorm(r.text, r.org)).slice(0, 50));
+      const g = lab(LABELS.govs, r.govs, ['unknown']).slice(0, 1).join('');
+      L.push(`${i + 1}. <a href="${link}">${esc(this.cleanText(this.unNorm(r.text, r.title)).slice(0, 90)) || 'مناقصة'}</a>${org ? ' — ' + org : ''}${r.deadline ? ' • ⏳' + esc(r.deadline) : ''}${g ? ' • 📍' + esc(g) : ''}`);
     });
-    L.push(`📲 كل المناقصات والفرص في تطبيق «وظيفتي» المجاني:\n${RELEASE}`);
+    L.push('', `📲 كل المناقصات والفرص في تطبيق «وظيفتي» المجاني:\n${SITE}/download?from=ch`);
     return L.join('\n').slice(0, 4000);
   }
 
@@ -1678,7 +1747,8 @@ export class Db {
       const res = await this.tgApi('sendMessage', { chat_id: cfg.chat, text: this.chanJobText(r), parse_mode: 'HTML', disable_web_page_preview: true,
         disable_notification: silent || i > 0, reply_markup: this.chanKb(r, origin, !silent && i === rows.length - 1) });
       if (!res.ok) { if (!n) return this.chanFail(cfg, res); break; }
-      this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip) VALUES(?,?,?,0)`, r.id, Date.now(), res.result.message_id);
+      this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip,kind) VALUES(?,?,?,0,'job')`, r.id, Date.now(), res.result.message_id);
+      this.chanMsg(res.result.message_id, 'job');
       this.evAdd('chan_post');
       n++;
     }
@@ -1709,6 +1779,7 @@ export class Db {
     const res = await this.tgApi('sendMessage', { chat_id: cfg.chat, text: L.join('\n').slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true,
       reply_markup: { inline_keyboard: [[{ text: '📲 حمّل تطبيق وظيفتي — فرص حسب اختصاصك', url: `${origin}/download?from=ch` }]] } });
     if (!res.ok) return this.chanFail(cfg, res);
+    this.chanMsg(res.result.message_id, 'hl');
     for (const r of top) this.run(`UPDATE chan_posted SET hl=? WHERE job_id=?`, Date.now(), r.id);
     return { ok: true, n: top.length };
   }
@@ -1730,18 +1801,133 @@ export class Db {
 
   async chanSendTenders(cfg, rows, origin) {
     if (!this.env.TG_BOT_TOKEN) return { ok: false, err: 'TG_BOT_TOKEN غير مهيأ' };
+    if (cfg.mode !== 'best') rows = this.q(`SELECT p.job_id id, MIN(p.msg_id) msg_id, j.title, j.org, j.text, j.deadline, j.govs FROM chan_posted p JOIN jobs j ON j.id=p.job_id
+      WHERE p.kind='tender' AND p.skip=0 AND p.msg_id>0 AND p.at>? GROUP BY p.job_id ORDER BY p.at LIMIT 25`, Date.now() - DAY);
     if (!rows.length) return { ok: true, empty: true };
     const res = await this.tgApi('sendMessage', { chat_id: cfg.chat, text: this.chanTenderText(rows, origin), parse_mode: 'HTML', disable_web_page_preview: true });
     if (!res.ok) return this.chanFail(cfg, res);
-    for (const x of rows) this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip) VALUES(?,?,?,0)`, x.id, Date.now(), res.result.message_id);
+    this.chanMsg(res.result.message_id, 'tsum');
+    if (cfg.mode === 'best') for (const x of rows) this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip,kind) VALUES(?,?,?,0,'tender')`, x.id, Date.now(), res.result.message_id);
     this.chanDone(cfg, rows.length + ' مناقصة');
     return { ok: true, n: rows.length };
+  }
+
+  chanMsg(id, kind) { try { this.run(`INSERT OR REPLACE INTO chan_msgs(msg_id,at,kind) VALUES(?,?,?)`, id, Date.now(), kind); } catch (_) { /* */ } }
+
+  /** النشر الفوري: يفرغ طابور الفرص والمناقصات الجاهزة (أقدمها أولاً) ضمن حدود تيليغرام (18/دقيقة)؛
+   *  إن بقي شيء يجدول نفسه بعد دقيقة (منبّه الـDurable Object). في وضع «التعبئة» نافذة 7 أيام وبلا حد يومي. */
+  async chanFlush() {
+    if (this._fl) return { busy: true };
+    this._fl = 1;
+    try {
+      const cfg = this.chanCfg();
+      if (!this.env.TG_BOT_TOKEN || !cfg.on || cfg.mode === 'best') return { off: true };
+      let fill = null; try { fill = JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_fill'`) || {}).v || 'null'); } catch (_) { /* */ }
+      if (fill && !fill.on) fill = null;
+      const now = Date.now();
+      const lastMin = (this.one(`SELECT COUNT(*) n FROM chan_msgs WHERE at>?`, now - 60e3) || {}).n || 0;
+      let room = Math.max(0, 18 - lastMin);
+      if (!fill) {
+        const day = (this.one(`SELECT COUNT(*) n FROM chan_msgs WHERE at>? AND kind IN ('job','tender')`, now - DAY) || {}).n || 0;
+        room = Math.min(room, Math.max(0, cfg.cap - day));
+      }
+      const all = this.chanCands(fill ? 7 : 3).out;
+      // بلا تكرار للعنوان+الجهة، الأقدم أولاً
+      const seen = new Set(), q = [];
+      for (const r of all.sort((a, b) => a.created - b.created)) {
+        const k = r.kind + '|' + norm(String(r.title || '')).slice(0, 40) + '|' + norm(String(r.org || '')).slice(0, 20);
+        if (seen.has(k)) { this.run(`INSERT OR IGNORE INTO chan_posted(job_id,at,msg_id,skip,kind) VALUES(?,?,0,1,?)`, r.id, now, r.kind || 'job'); continue; }
+        seen.add(k); q.push(r);
+      }
+      let n = 0, err = null;
+      for (const r of q.slice(0, room)) {
+        const res = r.kind === 'tender' ? await this.chanPostTender(cfg, r, SITE) : await this.chanPostJob(cfg, r, SITE);
+        if (!res.ok) { err = res; break; }
+        n++;
+        if (!fill && r.posted && r.posted > now - 2 * DAY && r.posted < now) { this.evAdd('speed', '', Math.round((now - r.posted) / 60e3)); this.evAdd('speed_n'); }
+      }
+      if (err && !n) { await this.chanFail(cfg, err); return { ok: false, err: err.description }; }
+      if (n) { this._cmap = null; this.chanDone(cfg, n + ' منشور'); }
+      const left = q.length - n;
+      if (fill) {
+        fill.n = (fill.n || 0) + n;
+        if (left <= 0) {
+          fill.on = 0;
+          this.ctx.waitUntil(this.notifyAdmins(`✅ امتلأت القناة: ${fill.n} منشور خلال ${Math.max(1, Math.round((Date.now() - fill.at) / 60e3))} دقيقة.`));
+        }
+        this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('chan_fill',?)`, JSON.stringify(fill));
+      }
+      if (left > 0 && (fill || err || lastMin + n >= 18)) { try { await this.ctx.storage.setAlarm(Date.now() + 62e3); } catch (_) { /* */ } }
+      return { ok: true, n, left, fill: fill ? fill.n : undefined };
+    } finally { this._fl = 0; }
+  }
+
+  async alarm() { try { await this.chanFlush(); } catch (_) { /* */ } }
+
+  async chanPostJob(cfg, r, origin) {
+    const res = await this.tgApi('sendMessage', { chat_id: cfg.chat, text: this.chanJobText(r), parse_mode: 'HTML', disable_web_page_preview: true,
+      disable_notification: true, reply_markup: this.chanKb(r, origin, false) });
+    if (!res.ok) return res;
+    this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip,kind) VALUES(?,?,?,0,'job')`, r.id, Date.now(), res.result.message_id);
+    this.chanMsg(res.result.message_id, 'job');
+    this.evAdd('chan_post');
+    return res;
+  }
+
+  /** مناقصة: منفردة، أو تُضاف لمنشور نفس الجهة خلال 24 ساعة (تعديل بدل منشور جديد) */
+  async chanPostTender(cfg, r, origin) {
+    const okey = this.orgKey(this.tenderOrg(r));
+    const grp = okey ? this.one(`SELECT msg_id FROM chan_posted WHERE kind='tender' AND okey=? AND skip=0 AND msg_id>0 AND at>? ORDER BY at DESC LIMIT 1`, okey, Date.now() - DAY) : null;
+    if (grp) {
+      const rows = this.q(`SELECT j.* FROM chan_posted p JOIN jobs j ON j.id=p.job_id WHERE p.msg_id=? ORDER BY p.at`, grp.msg_id);
+      rows.push(r);
+      const ed = await this.tgApi('editMessageText', { chat_id: cfg.chat, message_id: grp.msg_id, text: this.chanTenderGroup(rows, origin), parse_mode: 'HTML', disable_web_page_preview: true,
+        reply_markup: { inline_keyboard: [[{ text: '📲 حمّل تطبيق وظيفتي', url: `${origin}/download?from=ch` }]] } });
+      if (ed.ok) {
+        this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip,kind,okey) VALUES(?,?,?,0,'tender',?)`, r.id, Date.now(), grp.msg_id, okey);
+        this.evAdd('chan_post');
+        return { ok: true };
+      }
+    }
+    const res = await this.tgApi('sendMessage', { chat_id: cfg.chat, text: this.chanTenderOne(r), parse_mode: 'HTML', disable_web_page_preview: true, disable_notification: true,
+      reply_markup: { inline_keyboard: [[{ text: '📄 التفاصيل كاملة والوثائق', url: `${origin}/j/${r.id}?c=ch` }]] } });
+    if (!res.ok) return res;
+    this.run(`INSERT OR REPLACE INTO chan_posted(job_id,at,msg_id,skip,kind,okey) VALUES(?,?,?,0,'tender',?)`, r.id, Date.now(), res.result.message_id, okey);
+    this.chanMsg(res.result.message_id, 'tender');
+    this.evAdd('chan_post');
+    return res;
+  }
+
+  /** 🧹 مسح القناة وإعادة النشر: يحذف منشورات البوت المسجّلة فقط، يصفّر السجل، يعيد تثبيت الملف ويبدأ التعبئة */
+  async chanReset(origin) {
+    const cfg = this.chanCfg();
+    const ids = new Set();
+    for (const x of this.q(`SELECT msg_id FROM chan_msgs`)) ids.add(x.msg_id);
+    for (const x of this.q(`SELECT DISTINCT msg_id FROM chan_posted WHERE msg_id>0`)) ids.add(x.msg_id);
+    try { const p = JSON.parse((this.one(`SELECT v FROM meta WHERE k='apk_pin'`) || {}).v || '{}'); if (p.mid) ids.add(p.mid); } catch (_) { /* */ }
+    const arr = [...ids].filter(Boolean).sort((a, b) => a - b);
+    let del = 0;
+    for (let i = 0; i < arr.length; i += 100) {
+      const r = await this.tgApi('deleteMessages', { chat_id: cfg.chat, message_ids: arr.slice(i, i + 100) });
+      if (r.ok) del += arr.slice(i, i + 100).length;
+      else for (const id of arr.slice(i, i + 100)) { const x = await this.tgApi('deleteMessage', { chat_id: cfg.chat, message_id: id }); if (x.ok) del++; }
+    }
+    this.run(`DELETE FROM chan_posted`);
+    this.run(`DELETE FROM chan_msgs`);
+    this.run(`DELETE FROM meta WHERE k IN ('apk_pin','chan_err')`);
+    this._cmap = null;
+    this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('chan_fill',?)`, JSON.stringify({ on: 1, at: Date.now(), n: 0 }));
+    let pin = '';
+    try { pin = await this.apkPin(cfg); } catch (e) { pin = String(e); }
+    const fl = await this.chanFlush();
+    return { ok: true, deleted: del, total: arr.length, pin, first: fl };
   }
 
   /** يُستدعى كل ساعة من الجالب، أو يدوياً من الأدمن («انشر الآن»: force='jobs'|'tenders'|'hl'). */
   async chanTick(origin, force) {
     const cfg = this.chanCfg();
-    if (force === 'jobs') return json(await this.chanSendJobs(cfg, this.chanPick(cfg.mode === 'all' ? 15 : cfg.n), origin, cfg.mode === 'all'));
+    if (force === 'jobs') return json(cfg.mode === 'all' ? await this.chanFlush() : await this.chanSendJobs(cfg, this.chanPick(cfg.n), origin, false));
+    if (force === 'reset') return json(await this.chanReset(origin));
     if (force === 'tenders') return json(await this.chanSendTenders(cfg, this.chanTenders(), origin));
     if (force === 'hl') return json(await this.chanHighlights(cfg, origin));
     const out = {};
@@ -1752,11 +1938,7 @@ export class Db {
     if (!cfg.on) return json({ ...out, off: true });
     try { out.edits = await this.chanEdits(cfg, origin); } catch (_) { /* */ }
     const dm = new Date(Date.now() + 3 * 3600e3), day = dm.toISOString().slice(0, 10), h = dm.getUTCHours();
-    if (cfg.mode === 'all') {
-      const today = (this.one(`SELECT COUNT(*) n FROM chan_posted WHERE skip=0 AND at>? AND msg_id>0`, Date.now() - DAY) || {}).n || 0;
-      const room = Math.max(0, Math.min(15, cfg.cap - today));   // 15 بالساعة تحت حدود تيليغرام
-      if (room) out.jobs = await this.chanSendJobs(cfg, this.chanPick(0).slice(0, room), origin, true);
-    }
+    if (cfg.mode === 'all') out.flush = await this.chanFlush();
     let st = {}; try { st = JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_slots'`) || {}).v || '{}'); } catch (_) { /* */ }
     if (st.day !== day) st = { day, done: [] };
     const due = cfg.times.filter(t => h >= t && !st.done.includes(t));
@@ -1796,19 +1978,23 @@ export class Db {
     this.run(`INSERT INTO chan_review(job_id,state,contact,at,by,warned) VALUES(?,?,?,?,?,0) ON CONFLICT(job_id) DO UPDATE SET state=excluded.state, at=excluded.at, by=excluded.by, warned=0`,
       +id, state, this.chanContact((this.one(`SELECT text FROM jobs WHERE id=?`, +id) || {}).text), Date.now(), by);
     this.evAdd('review', ['', 'ok', 'no', 'arch'][state] || 'undo');
+    if (state === 1) this.ctx.waitUntil(this.chanFlush());
     return { ok: true };
   }
 
   chanInfo(origin) {
     const cfg = this.chanCfg(), since = Date.now() - DAY;
-    const all = this.chanPick(0);
-    const next = cfg.mode === 'all' ? all.slice(0, 15) : this.chanPick(cfg.n), tn = this.chanTenders();
+    const cands = this.chanCands().out;
+    const all = this.chanPick(0, cands.filter(r => r.kind !== 'tender'));
+    const next = cfg.mode === 'all' ? all.slice(0, 15) : this.chanPick(cfg.n), tn = cands.filter(r => r.kind === 'tender').slice(0, 12);
+    let fill = null; try { fill = JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_fill'`) || {}).v || 'null'); } catch (_) { /* */ }
     const cnt = st => (this.one(`SELECT COUNT(*) n FROM chan_review r JOIN jobs j ON j.id=r.job_id WHERE r.state=? AND j.hidden=0`, st) || {}).n || 0;
     return {
       cfg, err: JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_err'`) || {}).v || 'null'),
       today: (this.one(`SELECT COUNT(*) n FROM chan_posted WHERE skip=0 AND at>?`, since) || {}).n || 0,
       total: (this.one(`SELECT COUNT(*) n FROM chan_posted WHERE skip=0`) || {}).n || 0,
-      waiting: all.length,
+      waiting: all.length + tn.length, fill,
+      fillCount: this.chanCands(7).out.length,
       slots: JSON.parse((this.one(`SELECT v FROM meta WHERE k='chan_slots'`) || {}).v || '{}'),
       review: this.chanReviewList(0), counts: { pending: cnt(0), rejected: cnt(2), archived: cnt(3) },
       next: next.map(r => ({ id: r.id, title: this.unNorm(r.text, r.title), org: this.unNorm(r.text, r.org), src: this.srcSite(r), deadline: r.deadline, contact: r.keepContact ? 1 : 0 })),
@@ -1918,6 +2104,7 @@ ${(rel.notes || []).length ? `<div class="c"><b>✨ الجديد في هذه ا�
     const res = await this.apkSend(cfg.chat, { disable_notification: true });
     if (!res.ok) { this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('apk_pin',?)`, JSON.stringify({ ...st, fail: Date.now(), ftag: rel.tag })); return 'send-fail: ' + (res.description || ''); }
     const mid = res.result.message_id;
+    this.chanMsg(mid, 'apk');
     const pin = await this.tgApi('pinChatMessage', { chat_id: cfg.chat, message_id: mid, disable_notification: true });
     if (st.mid) this.ctx.waitUntil(this.tgApi('unpinChatMessage', { chat_id: cfg.chat, message_id: st.mid }));
     this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('apk_pin',?)`, JSON.stringify({ tag: rel.tag, mid }));
@@ -2044,6 +2231,7 @@ ${(rel.notes || []).length ? `<div class="c"><b>✨ الجديد في هذه ا�
     const subsNow = (this.one(`SELECT n FROM ev WHERE k='chan_subs' ORDER BY day DESC LIMIT 1`) || {}).n || 0;
     const subsThen = (this.one(`SELECT n FROM ev WHERE k='chan_subs' AND day<=? ORDER BY day DESC LIMIT 1`, this.dayDm(days)) || {}).n;
     const posts = this.evSum('chan_post', days);
+    const spN = this.evSum('speed_n', days), spAvg = spN ? Math.round(this.evSum('speed', days) / spN) : 0;
     const views = this.evSum('job_view', days), chView = (this.one(`SELECT SUM(n) n FROM ev WHERE k='job_view' AND v='ch' AND day>?`, this.dayDm(days)) || {}).n || 0;
     const clicks = this.evSum('apply_click', days);
     const KN = { mail: '📧', call: '📞', wa: '💬', link: '🔗', form: '📋' };
@@ -2063,6 +2251,7 @@ ${(rel.notes || []).length ? `<div class="c"><b>✨ الجديد في هذه ا�
       `📲 تثبيتات جديدة: ${inst} • 👤 حسابات جديدة: ${acc}`,
       `🔻 التحويل: ${page} زيارة ← ${apk + botf} تحميل ← ${inst} تثبيت ← ${acc} حساب`,
       `📣 القناة: ${subsNow} مشترك${subsThen != null ? ` (${subsNow - subsThen >= 0 ? '+' : ''}${subsNow - subsThen})` : ''} • منشورات: ${posts}`,
+      spN ? `⚡ سرعة النشر: متوسط ${spAvg < 60 ? spAvg + ' دقيقة' : (spAvg / 60).toFixed(1) + ' ساعة'} من نشر المصدر حتى قناتنا (${spN} منشور)` : '',
       topPost ? `👁 أكثر منشور مشاهدة: ${this.unNorm(topPost.text, topPost.title).slice(0, 50)} (${topPost.views})` : '',
       `🧲 صفحات الفرص: ${views} زيارة (من القناة ${chView})`,
       `✋ ضغطات التقديم: ${clicks}${ck ? ' — ' + ck : ''}`,

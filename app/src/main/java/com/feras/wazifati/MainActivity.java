@@ -3726,6 +3726,16 @@ public class MainActivity extends Activity {
             JSONObject err = r.optJSONObject("err");
             if (err != null) c.addView(text(this, "⚠️ آخر خطأ: " + err.optString("err") + "\nتأكد أن البوت مشرف في القناة وله صلاحية النشر.", 13, RED, false), lpm(this, -1, -2, 4, 4));
             c.addView(text(this, "نُشر خلال 24 ساعة: " + r.optInt("today") + " • المجموع: " + r.optInt("total"), 13, MUTED, false), lpm(this, -1, -2, 4, 8));
+            JSONObject fill = r.optJSONObject("fill");
+            if (fill != null && fill.optInt("on") == 1) c.addView(text(this, "📥 التعبئة جارية: نُشر " + fill.optInt("n") + " حتى الآن (تُكمل تلقائياً كل دقيقة)", 13, ORANGE, true), lpm(this, -1, -2, 0, 8));
+            Button rst = button(this, "🧹 مسح القناة وإعادة النشر (" + r.optInt("fillCount") + " من آخر 7 أيام)", false);
+            rst.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("🧹 مسح القناة وإعادة النشر؟")
+                    .setMessage("يحذف البوت كل منشوراته في " + chat + " (منشوراتك اليدوية لا تُمس)، ثم يعيد تثبيت ملف التطبيق ويعيد نشر " + r.optInt("fillCount") + " فرصة ومناقصة من آخر 7 أيام بالترتيب الزمني وبصمت (قرابة 20 منشوراً بالدقيقة). المشتركون لا يتأثرون، وسيصلك تنبيه على البوت عند الانتهاء.")
+                    .setPositiveButton("امسح وأعد النشر", (d2, w) -> post("/admin/channel/post-now", jo("reset", true), x -> {
+                        Toast.makeText(this, x.optBoolean("ok") ? "🧹 حُذف " + x.optInt("deleted") + " منشور — بدأت التعبئة" : "❌ " + x.optString("err"), Toast.LENGTH_LONG).show();
+                        dh[0].dismiss(); adminChannel(); }))
+                    .setNegativeButton("إلغاء", null).show());
+            c.addView(rst, lpm(this, -1, -2, 0, 8));
             Switch on = new Switch(this);
             on.setText("النشر التلقائي");
             on.setTextColor(TEXT);
@@ -3737,14 +3747,14 @@ public class MainActivity extends Activity {
             tn.setChecked(cfg.optInt("tenders", 1) == 1);
             c.addView(tn, lpm(this, -1, -2, 6, 6));
             Switch md = new Switch(this);
-            md.setText("كل الفرص فور وصولها (بصمت) + «⭐ أبرز الفرص» بإشعار في المواعيد");
+            md.setText("كل فرصة ومناقصة فور التقاطها (بصمت) + «⭐ أبرز الفرص» بإشعار في المواعيد");
             md.setTextColor(TEXT);
             md.setChecked(!"best".equals(cfg.optString("mode", "all")));
             c.addView(md, lpm(this, -1, -2, 0, 6));
             c.addView(text(this, "الحد الأعلى للمنشورات يومياً (وضع كل الفرص):", 13, MUTED, false));
-            EditText cap = input("40");
+            EditText cap = input("150");
             cap.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-            cap.setText(String.valueOf(cfg.optInt("cap", 40)));
+            cap.setText(String.valueOf(cfg.optInt("cap", 150)));
             c.addView(cap, lpm(this, -1, -2, 4, 6));
             c.addView(text(this, "عدد الفرص في «أبرز الفرص» (أو في كل دفعة بوضع الأبرز فقط):", 13, MUTED, false));
             EditText n = input("8");
@@ -3865,8 +3875,10 @@ public class MainActivity extends Activity {
             LinearLayout tcard = card(this);
             tcard.addView(text(this, "📑 مناقصات بانتظار النشر: " + tc, 16, TEXT, true));
             for (int i = 0; i < Math.min(tc, 12); i++) { JSONObject o = tz.optJSONObject(i); if (o != null) tcard.addView(text(this, "• " + str(o, "title"), 13, TEXT, false)); }
-            Button tnow = button(this, "🚀 انشر المناقصات الآن", false);
-            tnow.setEnabled(tc > 0);
+            boolean allMode = !"best".equals(cfg.optString("mode", "all"));
+            if (allMode) tcard.addView(text(this, "كل مناقصة من مصدر نظامي تُنشر فوراً (مناقصات الجهة الواحدة تُجمع بمنشور واحد). الزر أدناه ينشر ملخص «📑 مناقصات اليوم» بإشعار.", 12, MUTED, false), lpm(this, -1, -2, 4, 0));
+            Button tnow = button(this, allMode ? "📑 انشر ملخص «مناقصات اليوم» الآن" : "🚀 انشر المناقصات الآن", false);
+            tnow.setEnabled(allMode || tc > 0);
             tnow.setOnClickListener(v -> post("/admin/channel/post-now", jo("tenders", true), x -> {
                 Toast.makeText(this, x.optBoolean("ok") ? "✅ نُشرت" : "❌ " + x.optString("err"), Toast.LENGTH_LONG).show();
                 dh[0].dismiss(); adminChannel(); }));

@@ -256,7 +256,8 @@ def main():
         print("WZ_API / WZ_KEY غير مضبوطين", file=sys.stderr)
         sys.exit(1)
     sources = api("/sources").get("sources", [])
-    log(f"المصادر المفعّلة: {len(sources)}")
+    fast = os.environ.get("WZ_FAST") == "1"   # الجلب السريع كل 10 دقائق: القنوات العامة والمواقع فقط
+    log(f"المصادر المفعّلة: {len(sources)}" + (" (جلب سريع)" if fast else ""))
     added_all = 0
     deferred = []   # مصادر تحتاج حساب القراءة الخاص (مجموعات، قنوات خاصة، بوتات)
     for s in sources:
@@ -303,6 +304,8 @@ def main():
             api("/report", {"id": sid, "ok": False, "err": str(e)[:180]})
             log(f"❌ {name}: {e}")
         time.sleep(1)
+    if deferred and fast:
+        deferred = []   # حساب القراءة في الجلب الساعي فقط (حتى لا يحظره تيليغرام)
     if deferred:
         try:
             import tgu

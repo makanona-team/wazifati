@@ -1,0 +1,38 @@
+name: جلب سريع
+
+# كل 10 دقائق: القنوات العامة والمواقع فقط (حساب القراءة يبقى في «جلب الفرص» كل ساعة).
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: scrape-fast
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: الجلب السريع
+        env:
+          SIGN_PASS: ${{ secrets.SIGN_PASS }}
+          WZ_FAST: '1'
+        run: |
+          git fetch -q origin config && WZ_API=$(git show origin/config:api-url.txt | tr -d '\r\n ')
+          export WZ_API
+          export WZ_KEY=$(printf '%s' "$SIGN_PASS:wazifati-ingest" | sha256sum | cut -c1-40)
+          python3 scraper/scrape.py
+
+      - name: إبقاء الجدولة فعّالة (keepalive)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/scrape-fast.yml/enable" || true
