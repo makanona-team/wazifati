@@ -3342,29 +3342,29 @@ public class MainActivity extends Activity {
                     + "\n🔄 آخر جلب: " + (r.optLong("lastRun") > 0 ? ago(r.optLong("lastRun")) : "—"), 15, TEXT, false));
             l.addView(c, lpm(this, -1, -2, 0, 10));
             // 3.2: الوصول (صفحة التحميل ← التحميل ← التثبيت ← الحساب، القناة، التقديم، طلباتي)
-            LinearLayout rc = card(this);
-            LinearLayout rr = row(this);
-            TextView rt = text(this, "⏳", 14, TEXT, false);
-            rt.setTextIsSelectable(true);
-            int[] ds = {1, 7, 30};
-            String[] dn = {"اليوم", "7 أيام", "30 يوماً"};
-            TextView[] chips = new TextView[3];
-            Runnable[] load = new Runnable[1];
-            int[] cur = {7};
-            load[0] = () -> {
-                rt.setText("⏳");
-                get("/admin/reach?d=" + cur[0], x -> rt.setText(x.optString("text") + "\n\n" + x.optString("sum")));
+            LinearLayout reachCard = card(this);
+            LinearLayout reachRow = row(this);
+            TextView reachTxt = text(this, "⏳", 14, TEXT, false);
+            reachTxt.setTextIsSelectable(true);
+            int[] reachDs = {1, 7, 30};
+            String[] reachDn = {"اليوم", "7 أيام", "30 يوماً"};
+            TextView[] reachChips = new TextView[3];
+            Runnable[] reachLoad = new Runnable[1];
+            int[] reachCur = {7};
+            reachLoad[0] = () -> {
+                reachTxt.setText("⏳");
+                get("/admin/reach?d=" + reachCur[0], x -> reachTxt.setText(x.optString("text") + "\n\n" + x.optString("sum")));
             };
             for (int i = 0; i < 3; i++) {
-                final int di = ds[i];
-                chips[i] = chip(this, dn[i], di == 7);
-                chips[i].setOnClickListener(v -> { cur[0] = di; for (int k = 0; k < 3; k++) setChip(this, chips[k], ds[k] == di); load[0].run(); });
-                rr.addView(chips[i], weight());
+                final int di = reachDs[i];
+                reachChips[i] = chip(this, reachDn[i], di == 7);
+                reachChips[i].setOnClickListener(v -> { reachCur[0] = di; for (int k = 0; k < 3; k++) setChip(this, reachChips[k], reachDs[k] == di); reachLoad[0].run(); });
+                reachRow.addView(reachChips[i], weight());
             }
-            rc.addView(rr, lpm(this, -1, -2, 0, 8));
-            rc.addView(rt);
-            l.addView(rc, lpm(this, -1, -2, 0, 10));
-            get("/admin/reach?d=7", x -> rt.setText(x.optString("text") + "\n\n" + x.optString("sum")));
+            reachCard.addView(reachRow, lpm(this, -1, -2, 0, 8));
+            reachCard.addView(reachTxt);
+            l.addView(reachCard, lpm(this, -1, -2, 0, 10));
+            get("/admin/reach?d=7", x -> reachTxt.setText(x.optString("text") + "\n\n" + x.optString("sum")));
 
             JSONObject ins = r.optJSONObject("installs");
             if (ins != null) {
