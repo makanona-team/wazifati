@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '3.0.3';
+const VERSION = '3.1';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -177,6 +177,8 @@ export class Db {
     for (const col of ['ftype TEXT', 'fsize TEXT', 'howto TEXT', 'specs TEXT', 'hay TEXT', 'reports INTEGER DEFAULT 0']) this.tryRun(`ALTER TABLE learn ADD COLUMN ${col}`);
     this.run(`CREATE TABLE IF NOT EXISTS tg_secret (k TEXT PRIMARY KEY, v TEXT, at INTEGER)`);
     this.run(`CREATE TABLE IF NOT EXISTS legacy_seen (k TEXT PRIMARY KEY, ver TEXT, last INTEGER)`);
+    // الدخول عبر تيليغرام (3.1): رمز لمرة واحدة ← المستخدم يضغط «ابدأ» في البوت ← جلسة
+    this.run(`CREATE TABLE IF NOT EXISTS tg_login (nonce TEXT PRIMARY KEY, created INTEGER, token TEXT, name TEXT)`);
     // قاموس الحلول (3.0.3): نمط يطابق الخطأ ← السبب والحل ورسالة للمستخدم
     this.run(`CREATE TABLE IF NOT EXISTS kb (id INTEGER PRIMARY KEY AUTOINCREMENT, match TEXT, title TEXT, cause TEXT, fix TEXT,
       user_msg TEXT, needs_code INTEGER DEFAULT 0, updated INTEGER)`);
@@ -323,6 +325,9 @@ export class Db {
       if (req.method === 'POST' && p === '/client/report') return this.clientReport(b);
       if (req.method === 'POST' && p === '/client/ping') return this.clientPing(req, b);
       if (req.method === 'POST' && p === '/auth') return await this.auth(b);
+      if (req.method === 'POST' && p === '/tg/login/start') return await this.tgLoginStart(url);
+      if (req.method === 'POST' && p === '/tg/login/poll') return this.tgLoginPoll(b);
+      if (req.method === 'POST' && p === '/tg/webhook') return await this.tgWebhook(req, b);
       if (this.keyOk(req)) {
         if (p === '/ingest') return this.ingest(b);
         if (p === '/known') return this.known(b);
@@ -480,6 +485,74 @@ export class Db {
     const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
     this.run(`INSERT INTO sessions(token,email,created,dev) VALUES(?,?,?,?)`, token, email, now, String(b.dev || '').slice(0, 80));
     return json({ token, me: this.meJson(this.one(`SELECT * FROM accounts WHERE email=?`, email)) });
+  }
+
+  async tgSecret() {
+    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('wz-webhook:' + (this.env.TG_BOT_TOKEN || '')));
+    return [...new Uint8Array(d)].slice(0, 20).map(x => x.toString(16).padStart(2, '0')).join('');
+  }
+
+  async tgApi(method, body) {
+    const r = await fetch(`https://api.telegram.org/bot${this.env.TG_BOT_TOKEN}/${method}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    return r.json().catch(() => ({}));
+  }
+
+  /** يبدأ دخولاً عبر تيليغرام: رمز لمرة واحدة صالح 5 دقائق + رابط البوت. يضبط الـwebhook أول مرة تلقائياً. */
+  async tgLoginStart(url) {
+    if (!this.env.TG_BOT_TOKEN) throw new HttpErr(503, 'الدخول عبر تيليغرام غير مهيأ على الخادم');
+    const hook = url.origin + '/tg/webhook';
+    if ((this.one(`SELECT v FROM meta WHERE k='tg_hook'`) || {}).v !== hook) {
+      const r = await this.tgApi('setWebhook', { url: hook, secret_token: await this.tgSecret(), allowed_updates: ['message'], drop_pending_updates: true });
+      if (!r.ok) throw new HttpErr(502, 'تعذّر ربط البوت: ' + (r.description || ''));
+      const me = await this.tgApi('getMe');
+      if (me.ok) this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_bot_user',?)`, me.result.username);
+      this.run(`INSERT OR REPLACE INTO meta(k,v) VALUES('tg_hook',?)`, hook);
+    }
+    const now = Date.now();
+    this.run(`DELETE FROM tg_login WHERE created < ?`, now - 15 * 60e3);
+    const nonce = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+    this.run(`INSERT INTO tg_login(nonce,created) VALUES(?,?)`, nonce, now);
+    const bot = (this.one(`SELECT v FROM meta WHERE k='tg_bot_user'`) || {}).v || 'wazifati_bot';
+    return json({ nonce, link: `https://t.me/${bot}?start=login_${nonce}`, expires: now + 5 * 60e3 });
+  }
+
+  tgLoginPoll(b) {
+    const r = this.one(`SELECT * FROM tg_login WHERE nonce=?`, String(b.nonce || ''));
+    if (!r || Date.now() - r.created > 5 * 60e3) return json({ expired: true });
+    if (!r.token) return json({ pending: true });
+    this.run(`DELETE FROM tg_login WHERE nonce=?`, r.nonce);   // لمرة واحدة
+    const s = this.one(`SELECT email FROM sessions WHERE token=?`, r.token);
+    if (!s) return json({ expired: true });
+    return json({ token: r.token, me: this.meJson(this.one(`SELECT * FROM accounts WHERE email=?`, s.email)) });
+  }
+
+  async tgWebhook(req, b) {
+    if (req.headers.get('X-Telegram-Bot-Api-Secret-Token') !== await this.tgSecret()) return json({ ok: false }, 403);
+    const m = b.message;
+    if (!m || !m.from || m.from.is_bot || !m.chat || m.chat.type !== 'private') return json({ ok: true });
+    const text = String(m.text || '');
+    const mm = text.match(/^\/start\s+login_([A-Za-z0-9]{20,64})/);
+    const reply = t => this.ctx.waitUntil(this.tgApi('sendMessage', { chat_id: m.chat.id, text: t }));
+    if (!mm) {
+      reply('👋 أهلاً بك في بوت «وظيفتي».\nللدخول إلى التطبيق: افتح التطبيق ← «✈️ الدخول عبر تيليغرام».\n📲 تحميل التطبيق: ' + RELEASE);
+      return json({ ok: true });
+    }
+    const row = this.one(`SELECT * FROM tg_login WHERE nonce=?`, mm[1]);
+    if (!row || Date.now() - row.created > 5 * 60e3) { reply('⌛ انتهت صلاحية رابط الدخول. ارجع للتطبيق واضغط «الدخول عبر تيليغرام» مجدداً.'); return json({ ok: true }); }
+    if (row.token) { reply('✅ تم الدخول مسبقاً، ارجع إلى التطبيق.'); return json({ ok: true }); }
+    const email = `tg${m.from.id}@telegram.user`;   // معرّف ثابت لحساب تيليغرام (لا نحصل على رقم الهاتف)
+    const name = [m.from.first_name, m.from.last_name].filter(Boolean).join(' ').slice(0, 80) || (m.from.username ? '@' + m.from.username : 'مستخدم تيليغرام');
+    const now = Date.now();
+    const acc = this.one(`SELECT * FROM accounts WHERE email=?`, email);
+    if (acc && acc.status === 'blocked') { reply('⛔ هذا الحساب موقوف. تواصل مع مدير التطبيق.'); return json({ ok: true }); }
+    if (!acc) this.run(`INSERT INTO accounts(email,name,photo,role,status,created,last_seen) VALUES(?,?,?,?,?,?,?)`, email, name, '', 'user', 'active', now, now);
+    else this.run(`UPDATE accounts SET name=?, last_seen=? WHERE email=?`, name, now, email);
+    const token = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+    this.run(`INSERT INTO sessions(token,email,created,dev) VALUES(?,?,?,?)`, token, email, now, 'telegram');
+    this.run(`UPDATE tg_login SET token=?, name=? WHERE nonce=?`, token, name, row.nonce);
+    reply(`✅ تم تسجيل دخولك إلى «وظيفتي» باسم ${name}.\nارجع الآن إلى التطبيق 👈`);
+    return json({ ok: true });
   }
 
   who(req) {

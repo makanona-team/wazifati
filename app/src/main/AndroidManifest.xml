@@ -8,6 +8,12 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- 3.1: لمعرفة إن كانت خدمات Google موجودة (هواوي بدونها) -->
+    <queries>
+        <package android:name="com.google.android.gms" />
+        <package android:name="org.telegram.messenger" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

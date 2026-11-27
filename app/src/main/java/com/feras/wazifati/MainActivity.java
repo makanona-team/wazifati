@@ -361,12 +361,25 @@ public class MainActivity extends Activity {
         Button g = button(this, "G   الدخول بحساب Google", true);
         g.setTextSize(17);
         g.setMinHeight(dp(this, 54));
-        l.addView(g, lp(-1, -2));
+        Button tgb = button(this, "✈️   الدخول عبر تيليغرام", !hasGms());
+        tgb.setTextSize(17);
+        tgb.setMinHeight(dp(this, 54));
+        tgb.setOnClickListener(v -> telegramLogin(tgb));
+        if (!hasGms()) {   // هواوي وغيرها: لا خدمات Google ← تيليغرام أولاً
+            TextView hw = text(this, "📱 هاتفك لا يدعم الدخول بحساب Google، استخدم تيليغرام", 13, ORANGE, true);
+            hw.setGravity(Gravity.CENTER);
+            l.addView(hw, lpm(this, -1, -2, 0, 8));
+            l.addView(tgb, lp(-1, -2));
+            l.addView(g, lpm(this, -1, -2, 10, 0));
+        } else {
+            l.addView(g, lp(-1, -2));
+            l.addView(tgb, lpm(this, -1, -2, 10, 0));
+        }
         Button gu = button(this, "👀  تصفّح كضيف بدون حساب", false);
         gu.setMinHeight(dp(this, 50));
         gu.setOnClickListener(v -> { Store.p(this).edit().putBoolean("guest", true).apply(); Sync.pingInstall(this, true); recreate(); });
         if (Store.flag(this, "guest_mode")) l.addView(gu, lpm(this, -1, -2, 10, 0));
-        TextView note = text(this, "بلا كلمة سر — اختر حسابك بضغطة واحدة، وتعود محفوظاتك على أي هاتف.", 12, MUTED, false);
+        TextView note = text(this, "بلا كلمة سر — ادخل بحساب Google أو تيليغرام بضغطة، وتعود محفوظاتك على أي هاتف.", 12, MUTED, false);
         note.setGravity(Gravity.CENTER);
         note.setPadding(0, dp(this, 16), 0, 0);
         l.addView(note);
@@ -388,6 +401,78 @@ public class MainActivity extends Activity {
             });
         });
         return l;
+    }
+
+    /** هل على الهاتف خدمات Google Play؟ (هواوي الحديثة بلا خدمات Google) */
+    private boolean hasGms() {
+        try { getPackageManager().getPackageInfo("com.google.android.gms", 0); return true; } catch (Exception e) { return false; }
+    }
+
+    // ===== 3.1: الدخول عبر تيليغرام — رمز لمرة واحدة، يضغط المستخدم «ابدأ» في البوت، والتطبيق ينتظر =====
+    private volatile boolean tgWaiting;
+
+    private void telegramLogin(Button b) {
+        Context app = getApplicationContext();
+        b.setEnabled(false);
+        b.setText("جارٍ فتح تيليغرام…");
+        new Thread(() -> {
+            JSONObject st = null;
+            String err = null;
+            try { Api.token = ""; st = Api.post("/tg/login/start", new JSONObject()); } catch (Throwable e) { err = e.getMessage(); }
+            final JSONObject fs = st;
+            final String fe = err;
+            ui.post(() -> {
+                b.setEnabled(true);
+                b.setText("✈️   الدخول عبر تيليغرام");
+                if (fs == null || fs.optString("nonce").isEmpty()) { Toast.makeText(this, "تعذّر بدء الدخول: " + fe, Toast.LENGTH_LONG).show(); return; }
+                String nonce = fs.optString("nonce");
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(fs.optString("link"))));
+                } catch (Exception e) {
+                    new AlertDialog.Builder(this).setTitle("تيليغرام غير مثبّت").setMessage("ثبّت تطبيق تيليغرام أولاً، أو ادخل بحساب Google أو كضيف.").setPositiveButton("حسناً", null).show();
+                    return;
+                }
+                AlertDialog wait = new AlertDialog.Builder(this).setTitle("✈️ الدخول عبر تيليغرام")
+                        .setMessage("في تيليغرام اضغط «ابدأ» (Start) في بوت وظيفتي، ثم ارجع إلى هنا.\n\n⏳ بانتظار التأكيد…")
+                        .setNegativeButton("إلغاء", (d, w) -> tgWaiting = false)
+                        .setPositiveButton("فتح تيليغرام مجدداً", null).setCancelable(false).create();
+                wait.setOnShowListener(d -> wait.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                    try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(fs.optString("link")))); } catch (Exception ignored) { }
+                }));
+                wait.show();
+                tgWaiting = true;
+                new Thread(() -> {
+                    long end = System.currentTimeMillis() + 5 * 60_000L;
+                    while (tgWaiting && System.currentTimeMillis() < end) {
+                        try {
+                            Thread.sleep(2000);
+                            JSONObject r = Api.post("/tg/login/poll", new JSONObject().put("nonce", nonce));
+                            if (r.optBoolean("expired")) break;
+                            if (!r.optString("token").isEmpty()) {
+                                tgWaiting = false;
+                                Store.p(app).edit().putString("token", r.optString("token")).putBoolean("guest", false).apply();
+                                Api.token = r.optString("token");
+                                JSONObject me = r.optJSONObject("me");
+                                if (me != null) {
+                                    Store.applyMe(app, me);
+                                    JSONObject pr = me.optJSONObject("prefs");
+                                    if (pr != null) Store.applyPrefs(app, pr, me.optLong("updated", System.currentTimeMillis()));
+                                }
+                                Sync.pingInstall(app, true);
+                                ui.post(() -> { safeDismiss(wait); recreate(); });
+                                return;
+                            }
+                        } catch (Throwable ignored) { }
+                    }
+                    boolean cancelled = !tgWaiting;
+                    tgWaiting = false;
+                    ui.post(() -> {
+                        safeDismiss(wait);
+                        if (!cancelled) Toast.makeText(this, "⌛ انتهت مهلة الدخول، حاول مجدداً", Toast.LENGTH_LONG).show();
+                    });
+                }).start();
+            });
+        }).start();
     }
 
     private void finishLogin(String idToken, Button g) {
