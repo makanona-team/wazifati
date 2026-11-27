@@ -82,6 +82,7 @@ public class MainActivity extends Activity {
         setTheme(Ui.themeRes());
         super.onCreate(b);
         if (Api.VER.isEmpty()) Api.VER = Updater.current(this);
+        new Thread(() -> { try { Updater.cleanup(getApplicationContext()); } catch (Throwable ignored) { } }).start();
         getWindow().setStatusBarColor(HEADER);
         getWindow().setNavigationBarColor(CARD);
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
@@ -3802,8 +3803,11 @@ public class MainActivity extends Activity {
         b.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout tx = new LinearLayout(this);
         tx.setOrientation(LinearLayout.VERTICAL);
-        tx.addView(text(this, "📱 نسختك " + cur + "  •  ✨ متوفر " + n.version + (n.pre ? "  🧪 تجريبية" : ""), 14, Color.WHITE, true));
-        tx.addView(text(this, "اضغط هنا للتحديث الآن — يُنزَّل ويُثبَّت من داخل التطبيق", 12, Color.WHITE, false));
+        boolean rdy = Updater.ready(this, n.version) != null;
+        tx.addView(text(this, rdy ? "✅ التحديث " + n.version + " جاهز — اضغط للتثبيت" : "📱 نسختك " + cur + "  •  ✨ متوفر " + n.version + (n.pre ? "  🧪 تجريبية" : ""), 14, Color.WHITE, true));
+        String pubPath = p.getString("upd_pub_path", "");
+        tx.addView(text(this, rdy ? "محمّل مسبقاً، لا حاجة لتنزيله مجدداً" + (pubPath.contains(n.version) ? "\n📂 ونسخة في: " + pubPath : "")
+                : "اضغط هنا للتحديث الآن — يُنزَّل ويُثبَّت من داخل التطبيق", 12, Color.WHITE, false));
         b.addView(tx, new LinearLayout.LayoutParams(0, -2, 1));
         TextView later = text(this, "لاحقاً", 12, Color.WHITE, true);
         later.setPadding(dp(this, 10), dp(this, 6), 0, dp(this, 6));
@@ -3835,6 +3839,33 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     private Updater.Info pendingUpd;
 
+    /** قبل التثبيت: شرح تحذير Play Protect + مسار نسخة في «التنزيلات» للتثبيت اليدوي عند الحاجة. */
+    private void installWithNote(Updater.Info info, File f) {
+        Context app = getApplicationContext();
+        Runnable go = () -> new Thread(() -> {
+            String pub = Updater.publicCopy(app, f, info.version);
+            String err = null;
+            try { Updater.install(app, f); } catch (Throwable e) { err = e.getMessage(); }
+            final String fe = err;
+            ui.post(() -> {
+                if (fe != null) Toast.makeText(app, "تعذّر فتح التثبيت: " + fe, Toast.LENGTH_LONG).show();
+                if (!pub.isEmpty()) Store.p(app).edit().putString("upd_pub_path", pub).apply();
+                if (!isFinishing()) show(tab);
+            });
+        }).start();
+        if (Store.p(this).getBoolean("pp_note_off", false)) { go.run(); return; }
+        CheckBox cb = new CheckBox(this);
+        cb.setText("لا تُظهر هذه الرسالة مجدداً");
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(this, 20), dp(this, 4), dp(this, 20), 0);
+        box.addView(text(this, "قد يظهر تحذير من «Google Play Protect» لأن التطبيق ليس من متجر Play.\n\nالتطبيق آمن: اضغط «مزيد من التفاصيل» ثم «التثبيت على أي حال».\n\nإن توقف التثبيت لا تقلق: الملف محفوظ، اضغط الشريط «✅ التحديث جاهز» لإعادة التثبيت دون تنزيل، أو ثبّته من مجلد «التنزيلات/Wazifati».", 14, TEXT, false));
+        box.addView(cb, lpm(this, -1, -2, 8, 0));
+        new AlertDialog.Builder(this).setTitle("🛡 قبل التثبيت").setView(box)
+                .setPositiveButton("متابعة التثبيت", (d, w) -> { if (cb.isChecked()) Store.p(this).edit().putBoolean("pp_note_off", true).apply(); go.run(); })
+                .setNegativeButton("لاحقاً", null).show();
+    }
+
     private void download(Updater.Info info) {
         if (!getPackageManager().canRequestPackageInstalls()) {
             pendingUpd = info;
@@ -3842,6 +3873,8 @@ public class MainActivity extends Activity {
             startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
             return;
         }
+        File ready = Updater.ready(this, info.version);
+        if (ready != null) { installWithNote(info, ready); return; }   // محمّل مسبقاً: لا تنزيل
         ProgressDialog pd = new ProgressDialog(this);
         pd.setMessage("جارٍ التحميل…");
         pd.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
@@ -3851,14 +3884,17 @@ public class MainActivity extends Activity {
         Context app = getApplicationContext();
         new Thread(() -> {
             String err = null;
+            File f = null;
             try {
-                File f = Updater.download(app, info.apkUrl, pct -> ui.post(() -> pd.setProgress(pct)));
-                Updater.install(app, f);
+                f = Updater.download(app, info.apkUrl, info.version, pct -> ui.post(() -> pd.setProgress(pct)));
             } catch (Throwable e) { err = e.getMessage(); }
             final String fe = err;
+            final File ff = f;
             ui.post(() -> {
                 safeDismiss(pd);
-                if (fe != null) Toast.makeText(getApplicationContext(), "فشل التحديث: " + fe, Toast.LENGTH_LONG).show();
+                if (fe != null) { Toast.makeText(getApplicationContext(), "فشل التحديث: " + fe, Toast.LENGTH_LONG).show(); return; }
+                if (!isFinishing()) installWithNote(info, ff);
+                else try { Updater.install(app, ff); } catch (Throwable ignored) { }
             });
         }).start();
     }

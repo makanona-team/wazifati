@@ -241,15 +241,49 @@ public final class Updater {
         if (nm != null) nm.notify(4, n);
     }
 
-    public static File download(Context c, String url, Progress pr) throws Exception {
-        File f = new File(c.getCacheDir(), "update.apk");
+    // ===== 3.1.1: ملف التحديث يُحفظ لكل نسخة ولا يُنزَّل مرتين، ويكمل من حيث انقطع =====
+    static File dir(Context c) {
+        File d = new File(c.getFilesDir(), "updates");
+        d.mkdirs();
+        return d;
+    }
+
+    /** ملف نسخة مكتمل التنزيل (إن وُجد)، فلا حاجة لتنزيله مجدداً. */
+    public static File ready(Context c, String ver) {
+        if (ver == null || ver.isEmpty()) return null;
+        File f = new File(dir(c), "Wazifati-" + ver + ".apk");
+        long want = Store.p(c).getLong("upd_size_" + ver, -1);
+        return f.exists() && want > 0 && f.length() == want ? f : null;
+    }
+
+    /** بعد نجاح التحديث: احذف ملفات النسخ المثبّتة أو الأقدم. */
+    public static void cleanup(Context c) {
+        String cur = current(c);
+        File[] fs = dir(c).listFiles();
+        if (fs != null) for (File f : fs) {
+            String v = f.getName().replaceAll("^Wazifati-|\\.apk(\\.part)?$", "");
+            if (cmp(v, cur) <= 0) f.delete();
+        }
+        new File(c.getCacheDir(), "update.apk").delete();
+    }
+
+    public static File download(Context c, String url, String ver, Progress pr) throws Exception {
+        File done0 = ready(c, ver);
+        if (done0 != null) { pr.on(100); return done0; }
+        File f = new File(dir(c), "Wazifati-" + ver + ".apk");
+        File part = new File(dir(c), "Wazifati-" + ver + ".apk.part");
+        long have = part.exists() ? part.length() : 0;
         HttpURLConnection con = open(url);
+        if (have > 0) con.setRequestProperty("Range", "bytes=" + have + "-");
         int code = con.getResponseCode();
-        if (code != 200) throw new Exception("HTTP " + code);
+        boolean resume = code == 206;
+        if (code != 200 && !resume) throw new Exception("HTTP " + code);
+        if (!resume) have = 0;
         long total = con.getContentLengthLong();
-        try (InputStream in = con.getInputStream(); FileOutputStream out = new FileOutputStream(f)) {
+        if (total > 0) total += have;
+        try (InputStream in = con.getInputStream(); FileOutputStream out = new FileOutputStream(part, resume)) {
             byte[] b = new byte[65536];
-            long done = 0;
+            long done = have;
             int n, last = -1;
             while ((n = in.read(b)) > 0) {
                 out.write(b, 0, n);
@@ -260,8 +294,33 @@ public final class Updater {
                 }
             }
         }
-        if (total > 0 && f.length() != total) throw new Exception("التحميل لم يكتمل");
+        if (total > 0 && part.length() != total) throw new Exception("التحميل لم يكتمل — اضغط مجدداً ليكمل من حيث توقف");
+        if (f.exists()) f.delete();
+        if (!part.renameTo(f)) throw new Exception("تعذّر حفظ الملف");
+        Store.p(c).edit().putLong("upd_size_" + ver, f.length()).apply();
         return f;
+    }
+
+    /** نسخة في «التنزيلات/Wazifati» ليثبّتها المستخدم من مدير الملفات (أندرويد 10+). تعيد المسار المعروض أو "". */
+    public static String publicCopy(Context c, File f, String ver) {
+        if (Build.VERSION.SDK_INT < 29) return "";
+        String name = "Wazifati-" + ver + ".apk", shown = "التنزيلات/Wazifati/" + name;
+        if (Store.p(c).getBoolean("upd_pub_" + ver, false)) return shown;
+        try {
+            android.content.ContentValues v = new android.content.ContentValues();
+            v.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+            v.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive");
+            v.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/Wazifati");
+            android.net.Uri u = c.getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+            if (u == null) return "";
+            try (OutputStream out = c.getContentResolver().openOutputStream(u); InputStream in = new FileInputStream(f)) {
+                byte[] b = new byte[65536];
+                int n;
+                while ((n = in.read(b)) > 0) out.write(b, 0, n);
+            }
+            Store.p(c).edit().putBoolean("upd_pub_" + ver, true).apply();
+            return shown;
+        } catch (Throwable e) { return ""; }
     }
 
     public static void install(Context c, File f) throws Exception {

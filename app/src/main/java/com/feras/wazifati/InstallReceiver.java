@@ -21,7 +21,7 @@ public class InstallReceiver extends BroadcastReceiver {
         } else if (st != PackageInstaller.STATUS_SUCCESS) {
             String msg = i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
             if (st == PackageInstaller.STATUS_FAILURE_ABORTED) msg = "أُلغي التثبيت";
-            Toast.makeText(c, "لم يكتمل التثبيت" + (msg != null ? ": " + msg : ""), Toast.LENGTH_LONG).show();
+            Toast.makeText(c, "لم يكتمل التثبيت" + (msg != null ? ": " + msg : "") + "\nالملف محفوظ — اضغط «التحديث جاهز» لإعادة التثبيت دون تنزيل", Toast.LENGTH_LONG).show();
         }
     }
 }
