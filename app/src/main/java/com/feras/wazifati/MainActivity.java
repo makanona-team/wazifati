@@ -3726,8 +3726,8 @@ public class MainActivity extends Activity {
             JSONObject err = r.optJSONObject("err");
             if (err != null) c.addView(text(this, "⚠️ آخر خطأ: " + err.optString("err") + "\nتأكد أن البوت مشرف في القناة وله صلاحية النشر.", 13, RED, false), lpm(this, -1, -2, 4, 4));
             c.addView(text(this, "نُشر خلال 24 ساعة: " + r.optInt("today") + " • المجموع: " + r.optInt("total"), 13, MUTED, false), lpm(this, -1, -2, 4, 8));
-            JSONObject fill = r.optJSONObject("fill");
-            if (fill != null && fill.optInt("on") == 1) c.addView(text(this, "📥 التعبئة جارية: نُشر " + fill.optInt("n") + " حتى الآن (تُكمل تلقائياً كل دقيقة)", 13, ORANGE, true), lpm(this, -1, -2, 0, 8));
+            JSONObject fillSt = r.optJSONObject("fill");
+            if (fillSt != null && fillSt.optInt("on") == 1) c.addView(text(this, "📥 التعبئة جارية: نُشر " + fillSt.optInt("n") + " حتى الآن (تُكمل تلقائياً كل دقيقة)", 13, ORANGE, true), lpm(this, -1, -2, 0, 8));
             Button rst = button(this, "🧹 مسح القناة وإعادة النشر (" + r.optInt("fillCount") + " من آخر 7 أيام)", false);
             rst.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("🧹 مسح القناة وإعادة النشر؟")
                     .setMessage("يحذف البوت كل منشوراته في " + chat + " (منشوراتك اليدوية لا تُمس)، ثم يعيد تثبيت ملف التطبيق ويعيد نشر " + r.optInt("fillCount") + " فرصة ومناقصة من آخر 7 أيام بالترتيب الزمني وبصمت (قرابة 20 منشوراً بالدقيقة). المشتركون لا يتأثرون، وسيصلك تنبيه على البوت عند الانتهاء.")
