@@ -2785,19 +2785,19 @@ public class MainActivity extends Activity {
         l.addView(ac, lpm(this, -1, -2, 0, 12));
 
         // 3.3: البوت، صورة الحالة، تعلّم
-        LinearLayout tc = card(this);
-        Button bb = button(this, "🔔 فرص اختصاصك تصلك على تيليغرام (البوت)", true);
-        bb.setOnClickListener(v -> openUrl("https://t.me/wazifati_bot?start=app"));
-        tc.addView(bb);
-        Button st = button(this, "📸 شارك فرص اليوم على حالة واتساب", false);
-        st.setOnClickListener(v -> shareStatusImage());
-        tc.addView(st, lpm(this, -1, -2, 6, 0));
+        LinearLayout toolsCard = card(this);
+        Button botBtn = button(this, "🔔 فرص اختصاصك تصلك على تيليغرام (البوت)", true);
+        botBtn.setOnClickListener(v -> openUrl("https://t.me/wazifati_bot?start=app"));
+        toolsCard.addView(botBtn);
+        Button stBtn = button(this, "📸 شارك فرص اليوم على حالة واتساب", false);
+        stBtn.setOnClickListener(v -> shareStatusImage());
+        toolsCard.addView(stBtn, lpm(this, -1, -2, 6, 0));
         if (Store.flag(this, "learn_tab")) {
-            Button lr = button(this, "🎓 تعلّم: دورات ومنح وملفات", false);
-            lr.setOnClickListener(v -> show(T_LEARN));
-            tc.addView(lr, lpm(this, -1, -2, 6, 0));
+            Button lrBtn = button(this, "🎓 تعلّم: دورات ومنح وملفات", false);
+            lrBtn.setOnClickListener(v -> show(T_LEARN));
+            toolsCard.addView(lrBtn, lpm(this, -1, -2, 6, 0));
         }
-        l.addView(tc, lpm(this, -1, -2, 0, 12));
+        l.addView(toolsCard, lpm(this, -1, -2, 0, 12));
 
         if (Store.flag(this, "cv_match")) l.addView(cvCard(), lpm(this, -1, -2, 0, 12));
 
