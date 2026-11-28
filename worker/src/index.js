@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '3.4';
+const VERSION = '3.4.1';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -2078,23 +2078,31 @@ export class Db {
   /** شاشات الاشتراك (تعديل الرسالة نفسها في كل خطوة) */
   subScreen(s, step) {
     const has = (csv, k) => String(csv || '').split(',').includes(k);
+    // أسماء مختصرة لأزرار البوت فقط (تيليغرام يقصّ الطويل من بدايته فتختفي علامة ✅)؛ الأسماء الكاملة في سطر «اخترت»
+    const SHORT = { admin: '👥 موارد بشرية', finance: '💰 مالية ومحاسبة', logistics: '📦 مشتريات ولوجستيك', meal: '📊 متابعة وتقييم', protection: '🛡 حماية وحالات',
+      health: '🩺 صحة وتغذية', wash: '🚰 مياه وإصحاح', livelihoods: '🌾 سبل عيش وزراعة', education: '📚 تعليم', engineering: '🏗 هندسة ومأوى', oil: '⛽ نفط وطاقة',
+      it: '💻 تقنية وبرمجة', management: '🗂 إدارة برامج', media: '🎙 إعلام وترجمة', legal: '⚖️ قانون', drivers: '🚗 سائقون وخدمات', sales: '🛒 مبيعات وتسويق', training: '🎓 تدريب ومنح' };
+    const lbl = (on, t) => on ? '✅ ' + String(t).replace(/^\S+\s/, '') : t;
     if (step === 'specs') {
       const all = s.specs === 'all';
       const rows = [];
-      for (let i = 0; i < SPECS.length; i += 2) rows.push(SPECS.slice(i, i + 2).map(x => ({ text: (all || has(s.specs, x.id) ? '✅ ' : '') + x.name, callback_data: 'u:sp:' + x.id })));
-      rows.push([{ text: (s.tenders ? '✅ ' : '') + '📑 المناقصات وطلبات العروض', callback_data: 'u:tn' }]);
-      rows.push([{ text: (all ? '✅ ' : '') + '🌐 كل الاختصاصات', callback_data: 'u:sp:all' }]);
+      for (let i = 0; i < SPECS.length; i += 2) rows.push(SPECS.slice(i, i + 2).map(x => ({ text: lbl(all || has(s.specs, x.id), SHORT[x.id] || x.name), callback_data: 'u:sp:' + x.id })));
+      rows.push([{ text: lbl(s.tenders, '📑 المناقصات وطلبات العروض'), callback_data: 'u:tn' }]);
+      rows.push([{ text: lbl(all, '🌐 كل الاختصاصات'), callback_data: 'u:sp:all' }]);
       rows.push([{ text: 'التالي: المحافظة ⬅', callback_data: 'u:next1' }]);
-      return { text: '1️⃣ اختر اختصاصك (يمكنك اختيار أكثر من واحد) ثم اضغط «التالي»:', kb: rows };
+      const picked = all ? ['كل الاختصاصات'] : String(s.specs || '').split(',').filter(Boolean).map(k => LABELS.specs[k]).filter(Boolean);
+      if (s.tenders) picked.push('المناقصات');
+      return { text: '1️⃣ اختر اختصاصك (يمكنك اختيار أكثر من واحد) ثم اضغط «التالي»:\n\n' + (picked.length ? '✅ اخترت: ' + picked.join('، ') : 'لم تختر شيئاً بعد.'), kb: rows };
     }
     if (step === 'govs') {
       const all = s.govs === 'all';
       const G = Object.entries(LABELS.govs).filter(([k]) => !['all', 'remote', 'abroad', 'unknown'].includes(k));
       const rows = [];
       for (let i = 0; i < G.length; i += 2) rows.push(G.slice(i, i + 2).map(([k, n]) => ({ text: (all || has(s.govs, k) ? '✅ ' : '') + n, callback_data: 'u:gv:' + k })));
-      rows.push([{ text: (has(s.govs, 'remote') ? '✅ ' : '') + '💻 عمل عن بُعد', callback_data: 'u:gv:remote' }, { text: (all ? '✅ ' : '') + '🇸🇾 كل المحافظات', callback_data: 'u:gv:all' }]);
+      rows.push([{ text: lbl(has(s.govs, 'remote'), '💻 عن بُعد'), callback_data: 'u:gv:remote' }, { text: lbl(all, '🇸🇾 كل المحافظات'), callback_data: 'u:gv:all' }]);
       rows.push([{ text: '➡ رجوع', callback_data: 'u:edit' }, { text: 'التالي ⬅', callback_data: 'u:next2' }]);
-      return { text: '2️⃣ اختر محافظتك (أو أكثر) ثم اضغط «التالي»:', kb: rows };
+      const pg = all ? ['كل المحافظات'] : String(s.govs || '').split(',').filter(Boolean).map(k => LABELS.govs[k]).filter(Boolean);
+      return { text: '2️⃣ اختر محافظتك (أو أكثر) ثم اضغط «التالي»:\n\n' + (pg.length ? '✅ اخترت: ' + pg.join('، ') : 'لم تختر شيئاً بعد.'), kb: rows };
     }
     if (step === 'mode') return { text: '3️⃣ متى تصلك الفرص؟', kb: [[{ text: '⚡ فوراً — كل فرصة لحظة نشرها', callback_data: 'u:md:instant' }], [{ text: '🌙 ملخص واحد يومياً مساءً', callback_data: 'u:md:daily' }], [{ text: '➡ رجوع', callback_data: 'u:next1' }]] };
     // done / status
