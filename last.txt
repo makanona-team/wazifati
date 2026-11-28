@@ -1,0 +1,34 @@
+status: success run: 46173220381
+npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead
+
+ ⛅️ wrangler 4.169.0
+────────────────────
+Total Upload: 326.92 KiB / gzip: 82.27 KiB
+Worker Startup Time: 3 ms
+Your Worker has access to the following bindings:
+Binding                                Resource                  
+env.DB (Db)                            Durable Object            
+env.GOOGLE_CLIENT_ID ("(hidden)")      Environment Variable      
+
+Uploaded wazifati (2.33 sec)
+Deployed wazifati triggers (1.12 sec)
+  https://wazifati.eng-feras8585.workers.dev
+Current Version ID: a048b797-28ad-4957-8f66-c0a1e3bba392
+
+Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+URL=https://wazifati.eng-feras8585.workers.dev
+
+ ⛅️ wrangler 4.169.0
+────────────────────
+🌀 Creating the secret for the Worker "wazifati"
+✨ Success! Uploaded secret INGEST_KEY
+
+ ⛅️ wrangler 4.169.0
+────────────────────
+🌀 Creating the secret for the Worker "wazifati"
+✨ Success! Uploaded secret TG_BOT_TOKEN
+
+ ⛅️ wrangler 4.169.0
+────────────────────
+🌀 Creating the secret for the Worker "wazifati"
+✨ Success! Uploaded secret TG_CHAT_ID
