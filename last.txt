@@ -1,0 +1,59 @@
+status: success run: 46167454806
+المصادر المفعّلة: 53
+✅ كفاءات (tg): 18 منشور → {'added': 0, 'dup': 0, 'seen': 18, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ Syrian Power (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 20, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ خطوة سوريا (tg): 20 منشور → {'added': 6, 'dup': 3, 'seen': 11, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ وظائف سوريا وتركيا (tg): 20 منشور → {'added': 1, 'dup': 5, 'seen': 14, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ فرص عمل للسوريين (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 19, 'notjob': 1, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ ReliefWeb (reliefweb): 20 منشور → {'added': 0, 'dup': 0, 'seen': 20, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ North Syria Jobs (site): 0 منشور → {}
+✅ SAMS (site): 0 منشور → {}
+✅ UN Talent (site): 0 منشور → {}
+✅ HR Reem (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 20, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ wazifni | وظّفني (tg): 20 منشور → {'added': 6, 'dup': 0, 'seen': 14, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ وظفني || SYR (tg): 20 منشور → {'added': 1, 'dup': 9, 'seen': 1, 'notjob': 9, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ تكاتف للوظائف والمناقصات في سوريا (tg): 20 منشور → {'added': 3, 'dup': 12, 'seen': 0, 'notjob': 5, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ منصة آدم للوظائف (tg): 20 منشور → {'added': 1, 'dup': 4, 'seen': 10, 'notjob': 5, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ إعلانات أنصر (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 20, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ Syrian Jobs Portal || بوابة الوظائف السوريَّة (tg): 18 منشور → {'added': 2, 'dup': 3, 'seen': 11, 'notjob': 2, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ مصباح ـ للوظائف || SYR (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 19, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 1, 'learn': 0}
+   تفاصيل فشلت: https://faq.whatsapp.com/ HTTP Error 400: Bad Request
+✅ https://whatsapp.com/channel/0029Vb5scas1t90dy9pCId3A (site): 0 منشور → {}
+   تفاصيل فشلت: https://faq.whatsapp.com/ HTTP Error 400: Bad Request
+✅ https://whatsapp.com/channel/0029VbDcRyHIt5s49nkpFk05 (site): 0 منشور → {}
+   تفاصيل فشلت: https://faq.whatsapp.com/ HTTP Error 400: Bad Request
+✅ https://whatsapp.com/channel/0029Vb9NTgBFnSzGJfky2D38 (site): 0 منشور → {}
+✅ https://neareast.bamboohr.com/careers (site): 0 منشور → {}
+✅ https://estm.fa.em2.oraclecloud.com (site): 0 منشور → {}
+✅ https://hknsyria.com/Careers/Index (site): 0 منشور → {}
+✅ NES Jobs - وظائف بهار شرق (tg): 18 منشور → {'added': 0, 'dup': 0, 'seen': 18, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ وظائف ونماذج مقابلات في سوريا ودول الجوار 2 (tg): 20 منشور → {'added': 0, 'dup': 6, 'seen': 14, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ وزارة التنمية الإدارية السورية (tg): 7 منشور → {'added': 0, 'dup': 0, 'seen': 7, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ https://scm.org/ (site): 0 منشور → {}
+   تفاصيل فشلت: https://www.ihsanrd.org/ar/publications_reports/ HTTP Error 404: Not Found
+✅ https://career.ihsanrd.org/ar/vacancies-syria/ (site): 0 منشور → {}
+✅ منصة التوظيف (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 18, 'notjob': 2, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ التعلم من أجل التغيير (شهادات Coursera/edX) (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 20, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ التعلم الحر EDLibre (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 18, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 2}
+✅ مبرمجين الوطن العربي (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 19, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 1, 'learn': 0}
+✅ freeCodeCamp (rss): 10 منشور → {'added': 0, 'dup': 0, 'seen': 10, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ ReliefWeb Training (rss): 20 منشور → {'added': 0, 'dup': 0, 'seen': 20, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ Orange Organization - منظمة أورنج (tg): 20 منشور → {'added': 1, 'dup': 0, 'seen': 19, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+✅ https://novaterra.energy/vacancies/ (site): 0 منشور → {}
+✅ خطوة #التنمية_البشرية (tg): 20 منشور → {'added': 0, 'dup': 0, 'seen': 18, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 2}
+❌ https://www.job.sy/index.php: <urlopen error [Errno 104] Connection reset by peer>
+   تفاصيل فشلت: https://faq.whatsapp.com/ HTTP Error 400: Bad Request
+✅ https://whatsapp.com/channel/0029VbAeAEXJkK7D7JfFbX0g (site): 0 منشور → {}
+👤 وظائف حكومية: 51 منشور → {'added': 0, 'dup': 0, 'seen': 50, 'notjob': 1, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+👤 وظائف عامة: 52 منشور → {'added': 0, 'dup': 0, 'seen': 50, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 2, 'learn': 0}
+👤 Monitoring and Evaluation Global: 57 منشور → {'added': 0, 'dup': 0, 'seen': 57, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+👤 متخصصو المراقبة والتقييم عالمياً: 58 منشور → {'added': 0, 'dup': 0, 'seen': 45, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 13, 'learn': 0}
+👤 Aqua Energy Expo (Webinars): 37 منشور → {'added': 0, 'dup': 0, 'seen': 37, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+👤 تدريب المراقبة والتقييم والمساءلة والتعلم MEAL Dpro: 22 منشور → {'added': 0, 'dup': 0, 'seen': 22, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+🤖 مكتبة بناء القدرات: 0 عنصر (فُهرس مؤخراً)
+   🤖 قسم التدريب 👨🏻‍💻 ← 25-حماية - PSS ← 22-حماية - CP: 82 عنصر → {'added': 0, 'dup': 0, 'seen': 82, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+   🤖 قسم التدريب 👨🏻‍💻 ← 25-حماية - PSS ← 23-حماية - GBV: 52 عنصر → {'added': 0, 'dup': 0, 'seen': 52, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+   🤖 قسم التدريب 👨🏻‍💻 ← 25-حماية - PSS ← 24-حماية - PFA: 15 عنصر → {'added': 0, 'dup': 0, 'seen': 15, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+   🤖 قسم التدريب 👨🏻‍💻 ← 25-حماية - PSS ← 26-حماية - الصحة النفسية: 10 عنصر → {'added': 0, 'dup': 0, 'seen': 10, 'notjob': 0, 'old': 0, 'expired': 0, 'short': 0, 'learn': 0}
+🤖 روبوت حقك تاخد دورك: 159 عنصر (باقٍ 52 قسم)
+انتهى. أُضيف 21 إعلاناً جديداً.
