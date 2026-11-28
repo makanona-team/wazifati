@@ -4176,9 +4176,12 @@ public class MainActivity extends Activity {
             int[] tstate = {0, 2, 3};
             LinearLayout rbox = new LinearLayout(this);
             rbox.setOrientation(LinearLayout.VERTICAL);
+            final int[] rcnt = {rc, cnts == null ? 0 : cnts.optInt("rejected"), cnts == null ? 0 : cnts.optInt("archived")};
+            final TextView[] rtabs = new TextView[3];
             for (int i = 0; i < 3; i++) {
                 final int st = tstate[i];
                 TextView tc = chip(this, tnames[i], st == chanRevState);
+                rtabs[i] = tc;
                 tc.setOnClickListener(v -> { chanRevState = st; dh[0].dismiss(); adminChannel(); });
                 tabs.addView(tc, weight());
             }
@@ -4206,8 +4209,22 @@ public class MainActivity extends Activity {
                     LinearLayout br = row(this);
                     Button yes = button(this, chanRevState == 0 ? "✅ موافق" : "✅ موافق وانشر", true), no = button(this, chanRevState == 0 ? "❌ رفض" : "↩ تراجع", false);
                     yes.setEnabled(o.optInt("expired") != 1);
-                    yes.setOnClickListener(v -> post("/admin/channel/review", jo("id", id, "state", 1), z -> { dh[0].dismiss(); adminChannel(); }));
-                    no.setOnClickListener(v -> post("/admin/channel/review", jo("id", id, "state", chanRevState == 0 ? 2 : 0), z -> { dh[0].dismiss(); adminChannel(); }));
+                    // 3.4.1: القرار يُطبَّق في مكانه — تختفي الفرصة من القائمة دون إعادة تحميل الصفحة أو الرجوع لأعلاها
+                    final int from = chanRevState;
+                    java.util.function.IntConsumer decide = to -> post("/admin/channel/review", jo("id", id, "state", to), z -> {
+                        rbox.removeView(rw);
+                        int fi = from == 0 ? 0 : from == 2 ? 1 : 2;
+                        rcnt[fi] = Math.max(0, rcnt[fi] - 1);
+                        if (to == 0) rcnt[0]++; else if (to == 2) rcnt[1]++;
+                        String[] lb = {"⏳ بانتظار (", "🚫 مرفوضة (", "🗄 مؤرشفة ("};
+                        for (int q = 0; q < 3; q++) rtabs[q].setText(lb[q] + rcnt[q] + ")");
+                        Store.p(this).edit().putInt("pending_chan", rcnt[0]).apply();
+                        setStatus();
+                        Toast.makeText(this, to == 1 ? "✅ تمت الموافقة — تُنشر الآن" : to == 2 ? "❌ رُفضت — تبقى في التطبيق فقط" : "↩ أُعيدت إلى «بانتظار»", Toast.LENGTH_SHORT).show();
+                        if (rbox.getChildCount() == 0) rbox.addView(text(this, from == 0 ? "لا شيء بانتظار المراجعة ✅" : "القائمة فارغة.", 13, MUTED, false));
+                    });
+                    yes.setOnClickListener(v -> { yes.setEnabled(false); no.setEnabled(false); decide.accept(1); });
+                    no.setOnClickListener(v -> { yes.setEnabled(false); no.setEnabled(false); decide.accept(from == 0 ? 2 : 0); });
                     LinearLayout.LayoutParams w1 = new LinearLayout.LayoutParams(0, -2, 1f), w2 = new LinearLayout.LayoutParams(0, -2, 1f);
                     w2.rightMargin = dp(this, 8);
                     br.addView(yes, w1);
@@ -4235,7 +4252,7 @@ public class MainActivity extends Activity {
                 rw.addView(text(this, str(o, "org") + (str(o, "src").isEmpty() ? "" : " • 🌐 " + str(o, "src")) + (o.optInt("contact") == 1 ? " • 📞 تمت الموافقة" : ""), 12, MUTED, false));
                 TextView sk = text(this, "🚫 لا تنشر هذه", 13, RED, true);
                 sk.setPadding(0, dp(this, 4), 0, dp(this, 8));
-                sk.setOnClickListener(v -> post("/admin/channel/skip", jo("id", id), x -> { dh[0].dismiss(); adminChannel(); }));
+                sk.setOnClickListener(v -> post("/admin/channel/skip", jo("id", id), x -> { nc.removeView(rw); Toast.makeText(this, "🚫 لن تُنشر هذه الفرصة", Toast.LENGTH_SHORT).show(); }));
                 rw.addView(sk);
                 nc.addView(rw, lpm(this, -1, -2, 6, 0));
             }
