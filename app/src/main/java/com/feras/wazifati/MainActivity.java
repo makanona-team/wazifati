@@ -40,6 +40,8 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import android.graphics.drawable.GradientDrawable;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -85,8 +87,9 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         if (Api.VER.isEmpty()) Api.VER = Updater.current(this);
         new Thread(() -> { try { Updater.cleanup(getApplicationContext()); } catch (Throwable ignored) { } }).start();
-        getWindow().setStatusBarColor(HEADER);
+        getWindow().setStatusBarColor(CARD);
         getWindow().setNavigationBarColor(CARD);
+        if (!DARK) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
         CrashHandler.install(this);
         Sync.init(this);
@@ -95,6 +98,10 @@ public class MainActivity extends Activity {
         Sync.channels(this);
         if (outdated()) { setContentView(forceScreen()); return; }
         checkMinAsync();
+        if (!Sync.loggedIn(this) && !Store.guest(this) && !Store.p(this).getBoolean("onb_done", false) && getIntent().getData() == null) {
+            setContentView(onboardScreen());   // 3.4: أول فتح — الاختصاص ثم المحافظة، بلا حساب
+            return;
+        }
         if (!Sync.loggedIn(this) && !Store.guest(this)) {
             Uri link = getIntent().getData();
             if (link != null && "wazifati".equals(link.getScheme())) Store.p(this).edit().putBoolean("guest", true).apply();   // رابط مشاركة: ادخل كضيف مباشرة
@@ -406,6 +413,98 @@ public class MainActivity extends Activity {
         return l;
     }
 
+    // ===== 3.4: أول فتح — «ما اختصاصك؟» ثم «أين تبحث عن عمل؟» =====
+    private int onbStep = 0;
+    private Set<String> onbSpecs, onbGovs;
+
+    private View onboardScreen() {
+        if (onbSpecs == null) { onbSpecs = new LinkedHashSet<>(Store.set(this, "specs")); onbGovs = new LinkedHashSet<>(Store.set(this, "govs")); }
+        getWindow().setStatusBarColor(CARD);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(CARD);
+        root.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        root.setPadding(dp(this, 20), dp(this, 18), dp(this, 20), dp(this, 18));
+        LinearLayout top = row(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        top.addView(text(this, "خطوة " + (onbStep + 1) + " من 2", 14, MUTED, true), new LinearLayout.LayoutParams(0, -2, 1));
+        TextView skip = text(this, onbStep == 0 ? "تخطَّ" : "رجوع", 14, PRIMARY, true);
+        skip.setPadding(dp(this, 10), dp(this, 10), dp(this, 4), dp(this, 10));
+        skip.setOnClickListener(v -> { if (onbStep == 0) onbFinish(); else { onbStep = 0; setContentView(onboardScreen()); } });
+        top.addView(skip);
+        root.addView(top);
+        LinearLayout bar = row(this);
+        bar.setBackground(round(this, LINE, 3));
+        View fill = new View(this);
+        fill.setBackground(round(this, PRIMARY, 3));
+        bar.addView(fill, new LinearLayout.LayoutParams(0, dp(this, 6), onbStep + 1));
+        bar.addView(new View(this), new LinearLayout.LayoutParams(0, dp(this, 6), 1 - onbStep));
+        root.addView(bar, lpm(this, -1, dp(this, 6), 8, 18));
+        root.addView(text(this, onbStep == 0 ? "ما اختصاصك؟" : "أين تبحث عن عمل؟", 28, TEXT, true));
+        TextView sub = text(this, onbStep == 0 ? "اختر واحداً أو أكثر، ونعرض لك الفرص المناسبة فوراً. لا حاجة لحساب الآن." : "اختر محافظة أو أكثر، أو «كل المحافظات».", 15, MUTED, false);
+        sub.setLineSpacing(0, 1.2f);
+        root.addView(sub, lpm(this, -1, -2, 6, 14));
+        ScrollView sv = new ScrollView(this);
+        android.widget.GridLayout grid = new android.widget.GridLayout(this);
+        grid.setColumnCount(2);
+        java.util.Map<String, String> src = new LinkedHashMap<>();
+        if (onbStep == 0) for (Map.Entry<String, String> e : Labels.SPECS.entrySet()) { if (!"other".equals(e.getKey())) src.put(e.getKey(), e.getValue()); }
+        else {
+            src.put("all", "🇸🇾 كل المحافظات");
+            for (Map.Entry<String, String> e : Labels.GOVS.entrySet()) if (!Arrays.asList("all", "unknown", "abroad").contains(e.getKey())) src.put(e.getKey(), e.getValue());
+        }
+        Set<String> sel = onbStep == 0 ? onbSpecs : onbGovs;
+        for (Map.Entry<String, String> e : src.entrySet()) {
+            final String k = e.getKey();
+            TextView b = text(this, "", 15, TEXT, false);
+            b.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            b.setPadding(dp(this, 14), dp(this, 6), dp(this, 14), dp(this, 6));
+            b.setMinHeight(dp(this, 56));
+            Runnable paint = () -> {
+                boolean on = sel.contains(k);
+                b.setText((on ? "✓ " : "") + e.getValue());
+                b.setTextColor(on ? PRIMARY : TEXT);
+                b.setTypeface(on ? Ui.BOLD : Ui.REG);
+                GradientDrawable g = outline(this, on ? PRIMARY_LIGHT : CARD, on ? PRIMARY : LINE, 14);
+                if (on) g.setStroke(dp(this, 2), PRIMARY);
+                b.setBackground(g);
+            };
+            paint.run();
+            b.setOnClickListener(v -> {
+                if ("all".equals(k)) { boolean was = sel.contains("all"); sel.clear(); if (!was) sel.add("all"); }
+                else { sel.remove("all"); if (!sel.remove(k)) sel.add(k); }
+                if (onbStep == 1) { setContentView(onboardScreen()); return; }
+                paint.run();
+            });
+            android.widget.GridLayout.LayoutParams gp = new android.widget.GridLayout.LayoutParams(
+                    android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED), android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1f));
+            gp.width = 0;
+            gp.setMargins(dp(this, 4), dp(this, 4), dp(this, 4), dp(this, 4));
+            grid.addView(b, gp);
+        }
+        sv.addView(grid);
+        root.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1));
+        Button next = button(this, onbStep == 0 ? "التالي: المحافظة" : "اعرض الفرص المناسبة", true);
+        next.setTextSize(17);
+        next.setMinHeight(dp(this, 54));
+        next.setOnClickListener(v -> { if (onbStep == 0) { onbStep = 1; setContentView(onboardScreen()); } else onbFinish(); });
+        root.addView(next, lpm(this, -1, -2, 12, 0));
+        return root;
+    }
+
+    private void onbFinish() {
+        Set<String> gv = new LinkedHashSet<>(onbGovs);
+        gv.remove("all");
+        Store.putSet(this, "specs", onbSpecs);
+        Store.putSet(this, "govs", gv);
+        android.content.SharedPreferences.Editor e = Store.p(this).edit().putBoolean("onb_done", true).putBoolean("setup_done", true);
+        if (!Sync.loggedIn(this) && Store.flag(this, "guest_mode")) e.putBoolean("guest", true);
+        e.apply();
+        if (Sync.loggedIn(this)) Sync.pushPrefs(this);
+        Sync.pingInstall(this, true);
+        recreate();
+    }
+
     /** هل على الهاتف خدمات Google Play؟ (هواوي الحديثة بلا خدمات Google) */
     private boolean hasGms() {
         try { getPackageManager().getPackageInfo("com.google.android.gms", 0); return true; } catch (Exception e) { return false; }
@@ -523,12 +622,13 @@ public class MainActivity extends Activity {
         root.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
 
         LinearLayout head = row(this);
-        head.setBackgroundColor(HEADER);
-        head.setPadding(dp(this, 14), dp(this, 8), dp(this, 6), dp(this, 8));
+        head.setBackground(outline(this, CARD, CARD, 0));
+        head.setElevation(dp(this, 2));
+        head.setPadding(dp(this, 16), dp(this, 10), dp(this, 6), dp(this, 10));
         LinearLayout ht = new LinearLayout(this);
         ht.setOrientation(LinearLayout.VERTICAL);
-        ht.addView(text(this, "💼 وظيفتي", 20, Color.WHITE, true));
-        status = oneLine(text(this, "", 11, 0xCCFFFFFF, false));
+        ht.addView(text(this, "وظيفتي", 22, PRIMARY, true));
+        status = oneLine(text(this, "", 12, MUTED, false));
         ht.addView(status);
         head.addView(ht, new LinearLayout.LayoutParams(0, -2, 1));
 
@@ -560,7 +660,7 @@ public class MainActivity extends Activity {
         LinearLayout nav = row(this);
         nav.setBackgroundColor(CARD);
         nav.setElevation(dp(this, 8));
-        String[] names = {"🔎\nالفرص", "📑\nالمناقصات", "🎓\nتعلّم", "⭐\nالمحفوظة", "🎯\nفلتري", "☰\nالمزيد"};
+        String[] names = {"💼\nالفرص", "📑\nالمناقصات", "🎓\nتعلّم", "⭐\nالمحفوظة", "🎯\nاهتماماتي", "☰\nالمزيد"};
         for (int i = 0; i < 6; i++) {
             final int k = i;
             TextView t = text(this, names[i], 12, MUTED, false);
@@ -577,7 +677,7 @@ public class MainActivity extends Activity {
     }
 
     private TextView headBtn(String icon, String label) {
-        TextView t = text(this, "", 10, 0xE6FFFFFF, false);
+        TextView t = text(this, "", 10, MUTED, false);
         t.setText(headLabel(icon, label));
         t.setGravity(Gravity.CENTER);
         t.setPadding(dp(this, 8), dp(this, 2), dp(this, 8), dp(this, 2));
@@ -592,7 +692,7 @@ public class MainActivity extends Activity {
 
     private void setStatus() {
         if (status == null) return;
-        if (bell != null) { int un = Sync.annUnread(this); bell.setText(headLabel(un > 0 ? "🔔" + un : "🔔", "إشعارات")); bell.setTextColor(un > 0 ? 0xFFFFD54F : Color.WHITE); }
+        if (bell != null) { int un = Sync.annUnread(this); bell.setText(headLabel(un > 0 ? "🔔" + un : "🔔", "إشعارات")); bell.setTextColor(un > 0 ? RED : MUTED); }
         long ls = Store.p(this).getLong("last_sync", 0);
         status.setText(Ui.today() + " • " + (syncing ? "جارٍ المزامنة…" : (all.size() + " فرصة • آخر مزامنة " + (ls == 0 ? "—" : ago(ls)))));
         int pend = Store.admin(this) ? Store.p(this).getInt("pending_sources", 0) + Store.p(this).getInt("pending_fixes", 0) + Store.p(this).getInt("pending_flags", 0) + Store.p(this).getInt("pending_edits", 0) + Store.p(this).getInt("pending_reports", 0) + Store.p(this).getInt("pending_chan", 0) : 0;
@@ -650,7 +750,7 @@ public class MainActivity extends Activity {
         tab = k;
         for (int i = 0; i < 6; i++) {
             tabs[i].setTextColor(i == k ? PRIMARY : MUTED);
-            tabs[i].setTypeface(i == k ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            tabs[i].setTypeface(i == k ? Ui.BOLD : Typeface.DEFAULT);
         }
         content.removeAllViews();
         hideKeyboard();
@@ -891,7 +991,7 @@ public class MainActivity extends Activity {
         hs.setHorizontalScrollBarEnabled(false);
         LinearLayout chips = row(this);
         chips.setPadding(0, dp(this, 6), 0, dp(this, 6));
-        TextView cFilter = chip(this, "🎯 حسب فلتري", useFilter && hasFilter);
+        TextView cFilter = chip(this, "🎯 حسب اهتماماتي", useFilter && hasFilter);
         TextView cNew = chip(this, "🆕 الجديد", onlyNew);
         TextView cExp = chip(this, "⏳ إخفاء المنتهي", Store.bool(this, "hide_expired"));
         TextView cShared = chip(this, "🤝 مشاركات الأصدقاء", onlyShared);
@@ -914,6 +1014,32 @@ public class MainActivity extends Activity {
         }
         hs.addView(chips);
         l.addView(hs);
+
+        if (guest()) {   // 3.4: الزائر يرى اهتماماته التي اختارها مع «تعديل»
+            Set<String> gs1 = Store.set(this, "specs"), gv1 = Store.set(this, "govs");
+            LinearLayout ir = row(this);
+            ir.setPadding(dp(this, 4), dp(this, 2), dp(this, 4), dp(this, 6));
+            String ints = (gs1.isEmpty() ? "كل الاختصاصات" : Labels.names(Labels.SPECS, String.join(",", gs1))) + " • " + (gv1.isEmpty() ? "كل المحافظات" : Labels.names(Labels.GOVS, String.join(",", gv1)));
+            ir.addView(oneLine(text(this, "🎯 اهتماماتك: " + ints, 13, MUTED, false)), new LinearLayout.LayoutParams(0, -2, 1));
+            TextView ed = text(this, "تعديل", 13, PRIMARY, true);
+            ed.setPadding(dp(this, 10), dp(this, 4), dp(this, 4), dp(this, 4));
+            ed.setOnClickListener(v -> { onbStep = 0; setContentView(onboardScreen()); });
+            ir.addView(ed);
+            l.addView(ir);
+        }
+        int unseen = 0;
+        for (Store.Job x : all) if (x.seen == 0 && x.tender() == tenders) unseen++;
+        if (unseen > 0 && !onlyNew) {
+            TextView nb = text(this, "↑ " + unseen + (tenders ? " مناقصة جديدة" : " فرصة جديدة") + " منذ آخر فتح", 14, Color.WHITE, true);
+            nb.setBackground(round(this, PRIMARY, 18));
+            nb.setPadding(dp(this, 16), dp(this, 7), dp(this, 16), dp(this, 7));
+            nb.setGravity(Gravity.CENTER);
+            nb.setOnClickListener(v -> { onlyNew = true; show(tab); });
+            LinearLayout.LayoutParams nbp = new LinearLayout.LayoutParams(-2, -2);
+            nbp.gravity = Gravity.CENTER_HORIZONTAL;
+            nbp.bottomMargin = dp(this, 6);
+            l.addView(nb, nbp);
+        }
 
         countLabel = text(this, "", 12, MUTED, false);
         countLabel.setPadding(dp(this, 4), 0, dp(this, 4), dp(this, 4));
@@ -1116,7 +1242,7 @@ public class MainActivity extends Activity {
 
     private float rtlHeight(android.text.TextPaint tp, String s, float size, boolean bold, int w) {
         tp.setTextSize(size);
-        tp.setTypeface(bold ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
+        tp.setTypeface(bold ? Ui.BOLD : android.graphics.Typeface.DEFAULT);
         return android.text.StaticLayout.Builder.obtain(s, 0, s.length(), tp, w).setTextDirection(android.text.TextDirectionHeuristics.RTL).setMaxLines(3)
                 .setEllipsize(android.text.TextUtils.TruncateAt.END).build().getHeight();
     }
@@ -1124,7 +1250,7 @@ public class MainActivity extends Activity {
     /** يكتب نصاً عربياً (من اليمين) ويعيد أسفل النص المكتوب */
     private float drawRtl(android.graphics.Canvas cv, android.text.TextPaint tp, String s, float size, boolean bold, float x, float y, int w) {
         tp.setTextSize(size);
-        tp.setTypeface(bold ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
+        tp.setTypeface(bold ? Ui.BOLD : android.graphics.Typeface.DEFAULT);
         android.text.StaticLayout sl = android.text.StaticLayout.Builder.obtain(s, 0, s.length(), tp, w)
                 .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL).setTextDirection(android.text.TextDirectionHeuristics.RTL).setMaxLines(3)
                 .setEllipsize(android.text.TextUtils.TruncateAt.END).build();
@@ -1358,46 +1484,53 @@ public class MainActivity extends Activity {
             Context c = MainActivity.this;
             if (cv == null) {
                 h = new Holder();
+                // 3.4: بطاقة بتسلسل واضح — مربع الأيام الباقية، ثم العنوان، الجهة، سطر المكان والاختصاص
                 LinearLayout card = card(c);
                 card.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+                LinearLayout outer = row(c);
+                outer.setGravity(Gravity.TOP);
+                h.box = new FrameLayout(c);
+                outer.addView(h.box, new LinearLayout.LayoutParams(dp(c, 58), -2));
+                LinearLayout col = new LinearLayout(c);
+                col.setOrientation(LinearLayout.VERTICAL);
+                col.setPadding(dp(c, 12), 0, 0, 0);
                 LinearLayout r1 = row(c);
-                h.badge = pill(c, "جديد", ORANGE);
-                h.badge.setTextSize(11);
-                h.badge.setPadding(dp(c, 8), dp(c, 1), dp(c, 8), dp(c, 1));
-                LinearLayout.LayoutParams bp = lp(-2, -2);
-                bp.leftMargin = dp(c, 6);
-                r1.addView(h.badge, bp);
+                r1.setGravity(Gravity.CENTER_VERTICAL);
                 h.title = text(c, "", 16.5f, TEXT, true);
                 h.title.setMaxLines(2);
                 h.title.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 r1.addView(h.title, new LinearLayout.LayoutParams(0, -2, 1));
-                h.marks = text(c, "", 14, TEXT, false);
+                h.badge = new TextView(c);
+                h.badge.setBackground(round(c, PRIMARY, 5));
+                LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(c, 9), dp(c, 9));
+                bp.leftMargin = dp(c, 4);
+                bp.rightMargin = dp(c, 6);
+                r1.addView(h.badge, bp);
+                h.marks = text(c, "", 13, TEXT, false);
                 r1.addView(h.marks);
                 h.match = text(c, "", 12, Color.WHITE, true);
                 h.match.setPadding(dp(c, 7), dp(c, 2), dp(c, 7), dp(c, 2));
                 LinearLayout.LayoutParams mp = lp(-2, -2);
                 mp.rightMargin = dp(c, 6);
                 r1.addView(h.match, mp);
-                card.addView(r1);
-                h.org = oneLine(text(c, "", 13, MUTED, false));
-                h.org.setPadding(0, dp(c, 3), 0, 0);
-                card.addView(h.org);
+                col.addView(r1);
+                h.org = oneLine(text(c, "", 14, MUTED, false));
+                h.org.setPadding(0, dp(c, 2), 0, 0);
+                col.addView(h.org);
+                h.tags = oneLine(text(c, "", 13, MUTED, false));
+                h.tags.setPadding(0, dp(c, 2), 0, 0);
+                col.addView(h.tags);
                 h.snip = text(c, "", 12, TEXT, false);
                 h.snip.setMaxLines(3);
                 h.snip.setPadding(0, dp(c, 4), 0, 0);
-                card.addView(h.snip);
-                h.tags = text(c, "", 12, PRIMARY, false);
-                h.tags.setMaxLines(2);
-                h.tags.setPadding(0, dp(c, 4), 0, 0);
-                card.addView(h.tags);
-                card.addView(divider(c), lpm(c, -1, -2, 8, 0));
-                LinearLayout r3 = row(c);
-                r3.setPadding(0, dp(c, 8), 0, 0);
+                col.addView(h.snip);
+                h.meta = oneLine(text(c, "", 11.5f, MUTED, false));
+                h.meta.setPadding(0, dp(c, 4), 0, 0);
+                col.addView(h.meta);
                 h.deadline = text(c, "", 12, GREEN, true);
-                r3.addView(h.deadline, new LinearLayout.LayoutParams(0, -2, 1));
-                h.meta = oneLine(text(c, "", 11, MUTED, false));
-                r3.addView(h.meta);
-                card.addView(r3);
+                h.deadline.setVisibility(View.GONE);
+                outer.addView(col, new LinearLayout.LayoutParams(0, -2, 1));
+                card.addView(outer);
                 cv = card;
                 cv.setTag(h);
             } else h = (Holder) cv.getTag();
@@ -1421,9 +1554,10 @@ public class MainActivity extends Activity {
             String g = Labels.names(Labels.GOVS, j.govs), s = Labels.names(Labels.SPECS, j.specs);
             if (j.tender()) {
                 String tc = Labels.TCATS.get(j.tcat.isEmpty() ? "other" : j.tcat);
-                h.tags.setText(tc + "   📍 " + (g.isEmpty() ? "غير محدد" : g) + (j.bond.isEmpty() ? "" : "   💰 تأمين " + j.bond));
-            } else h.tags.setText("📍 " + (g.isEmpty() ? "غير محدد" : g) + "   🏷 " + (s.isEmpty() ? "غير مصنف" : s));
-            deadlineText(h.deadline, j);
+                h.tags.setText(tc + " • " + (g.isEmpty() ? "غير محدد" : g) + (j.bond.isEmpty() ? "" : " • 💰 " + j.bond));
+            } else h.tags.setText((g.isEmpty() ? "غير محدد" : g) + " • " + (s.isEmpty() ? "غير مصنف" : s));
+            h.box.removeAllViews();
+            h.box.addView(countdownBox(j, 58), new FrameLayout.LayoutParams(-1, -2));
             h.meta.setText((j.doubt == 1 ? "⚠️ قد لا يكون وظيفة • " : "") + ago(j.posted) + " • " + j.src + (j.nSrc > 1 ? " +" + (j.nSrc - 1) : ""));
             String id = String.valueOf(j.id);
             h.marks.setText((favs.contains(id) ? "⭐" : "") + (applied.contains(id) ? "✅" : "") + (j.shared != 0 ? "🤝" : "") + (j.image.isEmpty() ? "" : "📷"));
@@ -1438,7 +1572,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static class Holder { TextView badge, title, marks, match, org, snip, tags, deadline, meta; }
+    private static class Holder { TextView badge, title, marks, match, org, snip, tags, deadline, meta; FrameLayout box; }
 
     private void deadlineText(TextView t, Store.Job j) {
         int d = Store.daysLeft(j);
@@ -1600,11 +1734,22 @@ public class MainActivity extends Activity {
         Dialog d = dh[0];
 
         LinearLayout c = card(this);
+        // 3.4: رأس الفرصة — مربع الأيام الباقية + العنوان والجهة والموعد
+        LinearLayout hd = row(this);
+        hd.setGravity(Gravity.TOP);
+        hd.addView(countdownBox(j, 64), lp(dp(this, 64), -2));
+        LinearLayout hcol = new LinearLayout(this);
+        hcol.setOrientation(LinearLayout.VERTICAL);
+        hcol.setPadding(dp(this, 12), 0, 0, 0);
         TextView title = text(this, "", 19, TEXT, true);
         title.setText(Search.highlight(j.title, Search.parse(query), Search.HL_BG(), Search.HL_FG()));
         title.setTextIsSelectable(true);
-        c.addView(title);
-        if (!j.org.isEmpty()) c.addView(text(this, j.org, 15, MUTED, false));
+        title.setLineSpacing(0, 1.15f);
+        hcol.addView(title);
+        if (!j.org.isEmpty()) hcol.addView(text(this, j.org, 15, MUTED, false), lpm(this, -1, -2, 2, 0));
+        if (!j.deadline.isEmpty()) hcol.addView(text(this, "آخر موعد: " + j.deadline, 13, MUTED, false), lpm(this, -1, -2, 2, 0));
+        hd.addView(hcol, new LinearLayout.LayoutParams(0, -2, 1));
+        c.addView(hd);
         addInfo(c, "📍 المكان", Labels.names(Labels.GOVS, j.govs));
         if (j.tender()) {
             addInfo(c, "📑 النوع", "مناقصة / طلب عروض");
@@ -1612,9 +1757,7 @@ public class MainActivity extends Activity {
             if (!j.bond.isEmpty()) addInfo(c, "💰 التأمين الأولي", j.bond);
         } else addInfo(c, "🏷 الاختصاص", Labels.names(Labels.SPECS, j.specs));
         addInfo(c, "🏢 الجهة", Labels.SECTORS.get(j.sector));
-        TextView dl = text(this, "", 14, GREEN, true);
-        deadlineText(dl, j);
-        if (dl.getText().length() > 0) { dl.setPadding(0, dp(this, 6), 0, 0); c.addView(dl); }
+        if (Store.daysLeft(j) < 0 && Store.daysLeft(j) != Integer.MIN_VALUE) { TextView dl = text(this, "⛔ انتهى التقديم", 14, RED, true); dl.setPadding(0, dp(this, 6), 0, 0); c.addView(dl); }
         if (Match.enabled(this) && !j.tender()) {
             Match.Result mr = Match.score(this, j, Match.profile(this));
             TextView mt = text(this, "🎯 مناسبة لك " + mr.pct + "%" + (mr.why.isEmpty() ? "" : "\nيطابق: " + String.join("، ", mr.why)), 14, Match.color(mr.pct), true);
@@ -1631,19 +1774,14 @@ public class MainActivity extends Activity {
         l.addView(c, lpm(this, -1, -2, 0, 10));
         if (!j.image.isEmpty()) l.addView(imageView(j.image), lpm(this, -1, -2, 0, 10));
 
-        LinearLayout r1 = row(this);
+        View qaView = j.tender() ? null : quickApply(j);
+        if (qaView != null) l.addView(qaView, lpm(this, -1, -2, 0, 8));
+        final int textIdx = l.getChildCount();   // نص الإعلان يأتي بعد طريقة التقديم مباشرة
         if (j.url.startsWith("http")) {
-            Button open = button(this, "📄 الإعلان الأصلي", j.apply.isEmpty());
+            Button open = button(this, j.url.contains("t.me/wazifati_jobs") ? "📣 الإعلان في قناة وظيفتي" : "📄 الإعلان الأصلي", false);
             open.setOnClickListener(v -> openUrl(j.url));
-            r1.addView(open, weight());
+            l.addView(open, lpm(this, -1, -2, 0, 8));
         }
-        if (!j.apply.isEmpty()) {
-            Button ap = button(this, j.apply.startsWith("mailto:") ? (j.tender() ? "✉️ طلب الوثائق بالبريد" : "✉️ التقديم بالبريد") : (j.tender() ? "📝 وثائق المناقصة" : "📝 رابط التقديم"), true);
-            ap.setOnClickListener(v -> { trackApply(j, j.apply.startsWith("mailto:") ? "📧 إيميل" : "🔗 رابط التقديم"); openUrl(j.apply); });
-            r1.addView(ap, weight());
-        }
-        if (r1.getChildCount() > 0) l.addView(r1, lpm(this, -1, -2, 0, 8));
-        if (!j.tender()) { View qa = quickApply(j); if (qa != null) l.addView(qa, lpm(this, -1, -2, 0, 8)); }
         if (Store.flag(this, "learn_tab") && !j.tender()) {
             boolean[] hc = new boolean[1];
             List<JSONObject> ms = Skills.missingFor(this, j, hc);
@@ -1683,9 +1821,7 @@ public class MainActivity extends Activity {
                     + (j.url.startsWith("http") ? "\nالإعلان: " + j.url : "") + "\n\n🔗 " + Api.base() + "/j/" + j.id + "?c=share\n— عبر تطبيق وظيفتي\n🔔 فرص اختصاصك تصلك على تيليغرام مجاناً: t.me/wazifati_bot?start=share";
             startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, body), "مشاركة الفرصة"));
         });
-        if (!guest()) { r2.addView(fav, weight()); r2.addView(app, weight()); }
-        r2.addView(share, weight());
-        l.addView(r2, lpm(this, -1, -2, 0, 8));
+        if (!guest()) { r2.addView(app, weight()); l.addView(r2, lpm(this, -1, -2, 0, 8)); }
 
         if (!guest()) {
             LinearLayout r3 = row(this);
@@ -1733,10 +1869,76 @@ public class MainActivity extends Activity {
         body.setLinksClickable(true);
         body.setPadding(0, dp(this, 6), 0, 0);
         tc.addView(body);
-        l.addView(tc, lp(-1, -2));
+        l.addView(tc, textIdx, lpm(this, -1, -2, 0, 8));
+        TextView fr = text(this, "⚠️ لا تدفع أي مبلغ مقابل وظيفة • بلّغ عن احتيال", 12, MUTED, false);
+        fr.setGravity(Gravity.CENTER);
+        fr.setPadding(0, dp(this, 6), 0, dp(this, 6));
+        fr.setOnClickListener(v -> openUrl("https://t.me/wazifati_bot?start=report_" + j.id));
+        l.addView(fr, textIdx + 1);
+
+        // 3.4: شريط ثابت أسفل التفاصيل: قدّم الآن + حفظ + مشاركة
+        LinearLayout foot = row(this);
+        foot.setBackgroundColor(CARD);
+        foot.setElevation(dp(this, 8));
+        foot.setPadding(dp(this, 12), dp(this, 10), dp(this, 12), dp(this, 12));
+        final ScrollView sv = (ScrollView) l.getParent();
+        Button now = button(this, j.tender() ? "📝 الوثائق والتقديم" : "✋ قدّم الآن", true);
+        now.setTextSize(16);
+        now.setMinHeight(dp(this, 50));
+        now.setOnClickListener(v -> {
+            if (!j.apply.isEmpty()) { trackApply(j, j.apply.startsWith("mailto:") ? "📧 إيميل" : "🔗 رابط التقديم"); openUrl(j.apply); }
+            else if (qaView != null) sv.smoothScrollTo(0, Math.max(0, qaView.getTop() - dp(this, 8)));
+            else sv.smoothScrollTo(0, Math.max(0, tc.getTop() - dp(this, 8)));
+        });
+        foot.addView(now, new LinearLayout.LayoutParams(0, dp(this, 50), 1));
+        if (!guest()) {
+            fav.setText(Store.set(this, "favs").contains(id) ? "⭐" : "☆");
+            fav.setTextSize(20);
+            fav.setOnClickListener(v -> {
+                boolean on = Store.toggle(this, "favs", id);
+                fav.setText(on ? "⭐" : "☆");
+                Toast.makeText(this, on ? (Store.bool(this, "remind") && Store.daysLeft(j) != Integer.MIN_VALUE ? "⭐ حُفظت — سيصلك تذكير قبل يوم من الإغلاق" : "⭐ حُفظت") : "أُزيلت من المحفوظة", Toast.LENGTH_SHORT).show();
+                Sync.pushPrefs(this);
+            });
+            LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(dp(this, 54), dp(this, 50));
+            fp.rightMargin = dp(this, 8);
+            foot.addView(fav, fp);
+        }
+        share.setText("↗");
+        share.setTextSize(20);
+        LinearLayout.LayoutParams spp = new LinearLayout.LayoutParams(dp(this, 54), dp(this, 50));
+        spp.rightMargin = dp(this, 8);
+        foot.addView(share, spp);
+        ((ViewGroup) sv.getParent()).addView(foot);
 
         d.setOnDismissListener(x -> { if (adapter != null) adapter.set(adapter.items); });
         d.show();
+    }
+
+    /** 3.4: مربع العدّ التنازلي — الأيام الباقية بلون الاستعجال (أحمر ≤2، برتقالي ≤7، أخضر، رمادي بلا موعد) */
+    private LinearLayout countdownBox(Store.Job j, int size) {
+        int d = Store.daysLeft(j);
+        int bg, fg;
+        String num, lbl;
+        if (d == Integer.MIN_VALUE) { bg = DARK ? 0xFF2A3038 : 0xFFEEF1F6; fg = MUTED; num = "—"; lbl = "بلا موعد"; }
+        else if (d < 0) { bg = DARK ? 0xFF2A3038 : 0xFFEEF1F6; fg = MUTED; num = "✕"; lbl = "انتهى"; }
+        else if (d <= 2) { bg = RED; fg = Color.WHITE; num = d == 0 ? "!" : String.valueOf(d); lbl = d == 0 ? "اليوم" : d == 1 ? "يوم" : "يومان"; }
+        else if (d <= 7) { bg = DARK ? 0xFF3A2A12 : 0xFFFFF1E0; fg = DARK ? ORANGE : 0xFFA65400; num = String.valueOf(d); lbl = "أيام"; }
+        else { bg = DARK ? 0xFF1F3A27 : 0xFFE6F4EA; fg = DARK ? GREEN : 0xFF1E6B30; num = String.valueOf(d); lbl = d <= 10 ? "أيام" : "يوماً"; }
+        LinearLayout b = new LinearLayout(this);
+        b.setOrientation(LinearLayout.VERTICAL);
+        b.setGravity(Gravity.CENTER);
+        b.setBackground(round(this, bg, 12));
+        b.setPadding(0, dp(this, 8), 0, dp(this, 8));
+        b.setMinimumHeight(dp(this, size - 6));
+        TextView n = text(this, num, size >= 64 ? 28 : 24, fg, true);
+        n.setGravity(Gravity.CENTER);
+        n.setIncludeFontPadding(false);
+        b.addView(n);
+        TextView t = text(this, lbl, 11.5f, fg, false);
+        t.setGravity(Gravity.CENTER);
+        b.addView(t);
+        return b;
     }
 
     private LinearLayout.LayoutParams weight() {

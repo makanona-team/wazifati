@@ -4,7 +4,7 @@ import { classify, dupKeys, LABELS, jobScore, tenderInfo, learnInfo, SPECS, norm
 import { PRIVACY, TERMS } from './pages.js';
 import { analyzeCV, diffProfiles } from './cv.js';
 
-const VERSION = '3.3';
+const VERSION = '3.4';
 const DEFAULT_FLAGS = {
   tenders: true,        // قسم المناقصات
   cv_match: true,       // السيرة الذاتية ونسبة التطابق
@@ -832,11 +832,19 @@ export class Db {
   }
 
   /** الزائر (بلا جلسة صالحة): أحدث GUEST_JOBS وظيفة وGUEST_TENDERS مناقصة فقط، مع عدد المقفل. */
-  guestJobs() {
+  guestJobs(url) {
     const now = Date.now();
+    // 3.4: الزائر يرى أحدث الفرص المطابقة لاهتماماته التي اختارها عند أول فتح (sp/gv) إن وُجدت
+    const sp = new Set(String((url && url.searchParams.get('sp')) || '').split(',').filter(Boolean));
+    const gv = new Set(String((url && url.searchParams.get('gv')) || '').split(',').filter(Boolean));
+    const fits = r => (!sp.size || String(r.specs || '').split(',').some(x => sp.has(x))) && (!gv.size || String(r.govs || '').split(',').some(x => gv.has(x) || x === 'all'));
     const okDl = new Date(now - 2 * DAY).toISOString().slice(0, 10);
     const base = `hidden=0 AND doubt=0 AND created > ? AND (deadline IS NULL OR deadline='' OR deadline >= ?)`;
-    const pick = (kind, n) => this.q(`SELECT * FROM jobs WHERE ${base} AND COALESCE(kind,'job')=? ORDER BY id DESC LIMIT ?`, now - FIRST_DAYS * DAY, okDl, kind, n);
+    const pick = (kind, n) => {
+      const rows = this.q(`SELECT * FROM jobs WHERE ${base} AND COALESCE(kind,'job')=? ORDER BY id DESC LIMIT 600`, now - FIRST_DAYS * DAY, okDl, kind);
+      const m = kind === 'job' && (sp.size || gv.size) ? rows.filter(fits) : [];
+      return (m.length >= Math.min(n, 3) ? m : rows).slice(0, n);
+    };
     const cnt = kind => this.one(`SELECT COUNT(*) AS n FROM jobs WHERE ${base} AND COALESCE(kind,'job')=?`, now - FIRST_DAYS * DAY, okDl, kind).n;
     const rows = [...pick('job', GUEST_JOBS), ...pick('tender', GUEST_TENDERS)].sort((a, b) => a.id - b.id);
     const mx = (this.one(`SELECT MAX(id) AS m FROM jobs`) || {}).m || 0;
@@ -914,7 +922,7 @@ export class Db {
       return json({ now: Date.now(), last: one, max: one, more: false, jobs: r ? [this.jobRow(r)] : [] });
     }
     const t = bearer(req);
-    if (!t || !this.one(`SELECT 1 FROM sessions WHERE token=?`, t)) return this.guestJobs();
+    if (!t || !this.one(`SELECT 1 FROM sessions WHERE token=?`, t)) return this.guestJobs(url);
     const since = +url.searchParams.get('since') || 0;
     const limit = Math.min(+url.searchParams.get('limit') || 800, 2000);
     const rows = since > 0

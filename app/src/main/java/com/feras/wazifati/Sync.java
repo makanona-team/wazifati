@@ -131,7 +131,9 @@ public final class Sync {
     static void syncGuest(Context c) throws Exception {
         synchronized (LOCK) {
             init(c);
-            JSONObject r = Api.get("/jobs");
+            // 3.4: الزائر يرى أحدث الفرص المطابقة لاهتماماته التي اختارها عند أول فتح
+            String sp = String.join(",", Store.set(c, "specs")), gv = String.join(",", Store.set(c, "govs"));
+            JSONObject r = Api.get("/jobs" + (sp.isEmpty() && gv.isEmpty() ? "" : "?sp=" + android.net.Uri.encode(sp) + "&gv=" + android.net.Uri.encode(gv)));
             JSONArray arr = r.optJSONArray("jobs");
             List<Store.Job> l = new ArrayList<>();
             Store st = Store.get(c);

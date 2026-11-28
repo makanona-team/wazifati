@@ -69,6 +69,17 @@ jobs:
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in .github/signing/wazifati.jks.enc -out "$RUNNER_TEMP/k.jks" -pass env:SIGN_PASS
           echo "WZ_KEYSTORE=$RUNNER_TEMP/k.jks" >> "$GITHUB_ENV"
 
+      - name: جلب الخط العربي (fonts)
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          mkdir -p app/src/main/assets/fonts
+          for w in Regular Bold; do
+            curl -fsSL --retry 3 -o "app/src/main/assets/fonts/IBMPlexSansArabic-$w.ttf" \
+              "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexsansarabic/IBMPlexSansArabic-$w.ttf" || echo "⚠️ تعذّر جلب الخط $w — سيُستخدم خط الهاتف"
+          done
+          curl -fsSL -o app/src/main/assets/fonts/OFL.txt "https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexsansarabic/OFL.txt" || true
+          ls -la app/src/main/assets/fonts || true
+
       - name: البناء (build)
         if: steps.check.outputs.skip != 'true'
         env:

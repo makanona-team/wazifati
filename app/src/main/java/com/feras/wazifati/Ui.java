@@ -23,6 +23,16 @@ public final class Ui {
             TEXT = 0xFF1C2333, MUTED = 0xFF5B6472, GREEN = 0xFF2E7D32, RED = 0xFFC62828, ORANGE = 0xFFE65100, LINE = 0xFFE1E6EE,
             WARN_BG = 0xFFFFF3CD, OK_BG = 0xFFDDF3E2, INFO_BG = 0xFFE3EDFB;
     public static boolean DARK = false;
+    /** 3.4: خط IBM Plex Sans Arabic (يُجلب عند البناء إلى assets/fonts)؛ وإلا خط الهاتف. */
+    public static Typeface REG = Typeface.DEFAULT, BOLD = Typeface.DEFAULT_BOLD;
+    private static boolean fontsLoaded;
+
+    static void loadFonts(Context c) {
+        if (fontsLoaded) return;
+        fontsLoaded = true;
+        try { REG = Typeface.createFromAsset(c.getAssets(), "fonts/IBMPlexSansArabic-Regular.ttf"); } catch (Throwable e) { REG = Typeface.DEFAULT; }
+        try { BOLD = Typeface.createFromAsset(c.getAssets(), "fonts/IBMPlexSansArabic-Bold.ttf"); } catch (Throwable e) { BOLD = REG == Typeface.DEFAULT ? Typeface.DEFAULT_BOLD : Typeface.create(REG, Typeface.BOLD); }
+    }
 
     /** يحدد الوضع حسب إعداد المستخدم: auto / light / dark. */
     public static boolean isDark(Context c) {
@@ -34,15 +44,16 @@ public final class Ui {
     }
 
     public static void apply(Context c) {
+        loadFonts(c);
         DARK = isDark(c);
         if (DARK) {
             PRIMARY = 0xFF5B9BFF; PRIMARY_LIGHT = 0xFF1B2A44; BG = 0xFF0F1216; CARD = 0xFF1E232B; HEADER = 0xFF161A20;
             TEXT = 0xFFECEEF1; MUTED = 0xFFB4BBC4; GREEN = 0xFF6FCF76; RED = 0xFFFF6B66; ORANGE = 0xFFFFA726; LINE = 0xFF343B44;
             WARN_BG = 0xFF3A3220; OK_BG = 0xFF1F3A27; INFO_BG = 0xFF1B2A44;
         } else {
-            PRIMARY = 0xFF1565C0; PRIMARY_LIGHT = 0xFFE3EDFB; BG = 0xFFF3F6FB; CARD = 0xFFFFFFFF; HEADER = 0xFF1565C0;
-            TEXT = 0xFF1C2333; MUTED = 0xFF5B6472; GREEN = 0xFF2E7D32; RED = 0xFFC62828; ORANGE = 0xFFE65100; LINE = 0xFFE1E6EE;
-            WARN_BG = 0xFFFFF3CD; OK_BG = 0xFFDDF3E2; INFO_BG = 0xFFE3EDFB;
+            PRIMARY = 0xFF1E5BB8; PRIMARY_LIGHT = 0xFFE7EEFA; BG = 0xFFF3F5F9; CARD = 0xFFFFFFFF; HEADER = 0xFF1E5BB8;
+            TEXT = 0xFF172033; MUTED = 0xFF5B6478; GREEN = 0xFF2E7D32; RED = 0xFFC62828; ORANGE = 0xFFE65100; LINE = 0xFFE3E7EF;
+            WARN_BG = 0xFFFFF3CD; OK_BG = 0xFFDDF3E2; INFO_BG = 0xFFE7EEFA;
         }
     }
 
@@ -83,7 +94,7 @@ public final class Ui {
         t.setText(s);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
         t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTypeface(bold ? BOLD : REG);
         t.setTextDirection(View.TEXT_DIRECTION_ANY_RTL);
         return t;
     }
@@ -100,9 +111,9 @@ public final class Ui {
         b.setAllCaps(false);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         b.setTextColor(filled ? Color.WHITE : PRIMARY);
-        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTypeface(BOLD);
         b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33000000),
-                filled ? round(c, PRIMARY, 12) : outline(c, CARD, PRIMARY, 12), null));
+                filled ? round(c, PRIMARY, 14) : outline(c, CARD, LINE, 14), null));
         b.setPadding(dp(c, 14), 0, dp(c, 14), 0);
         b.setMinHeight(dp(c, 46));
         b.setMinimumHeight(dp(c, 46));
